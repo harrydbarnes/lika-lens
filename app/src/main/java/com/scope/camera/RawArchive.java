@@ -87,7 +87,7 @@ final class RawArchive {
         Integer staticWhite = characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL);
         Integer dynamicWhite = result == null ? null : result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL);
         BlackLevelPattern staticBlack = characteristics.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN);
-        RggbChannelVector dynamicBlack = result == null ? null : result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL);
+        float[] dynamicBlack = result == null ? null : result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL);
         long exposure = result == null || result.get(CaptureResult.SENSOR_EXPOSURE_TIME) == null
                 ? 0L : result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
         Integer isoValue = result == null ? null : result.get(CaptureResult.SENSOR_SENSITIVITY);
@@ -102,7 +102,7 @@ final class RawArchive {
                 : new float[]{gains.getRed(), gains.getGreenEven(), gains.getGreenOdd(), gains.getBlue()};
 
         Integer illum1 = characteristics.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT1);
-        Integer illum2 = characteristics.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT2);
+        Byte illum2 = characteristics.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT2);
         float[] toXyz1 = profileMatrix(characteristics.get(CameraCharacteristics.SENSOR_FORWARD_MATRIX1),
                 characteristics.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM1),
                 characteristics.get(CameraCharacteristics.SENSOR_CALIBRATION_TRANSFORM1));
@@ -120,12 +120,13 @@ final class RawArchive {
         frame.blackLevels = new float[4];
         for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) {
             float black = staticBlack == null ? 64f : staticBlack.getOffsetForIndex(x, y);
-            if (dynamicBlack != null) black = dynamicBlackFor(dynamicBlack, cfa, x, y);
+            if (dynamicBlack != null && dynamicBlack.length >= 4) black = dynamicBlackFor(dynamicBlack, x, y);
             frame.blackLevels[y * 2 + x] = black;
         }
         frame.wbGains = wb; frame.neutralPoint = neutralValues;
         frame.sensorToXyz1 = toXyz1; frame.sensorToXyz2 = toXyz2;
-        frame.illuminant1 = illum1 == null ? 0 : illum1; frame.illuminant2 = illum2 == null ? 0 : illum2;
+        frame.illuminant1 = illum1 == null ? 0 : illum1;
+        frame.illuminant2 = illum2 == null ? 0 : Byte.toUnsignedInt(illum2);
         frame.captureBuffer = source;
         frame.rowStride = rowStride; frame.pixelStride = pixelStride;
 
@@ -198,11 +199,8 @@ final class RawArchive {
         }
     }
 
-    private static float dynamicBlackFor(RggbChannelVector b, int cfa, int x, int y) {
-        int color = colorAt(x, y, cfa);
-        if (color == 0) return b.getRed();
-        if (color == 2) return b.getBlue();
-        return (y & 1) == 0 ? b.getGreenEven() : b.getGreenOdd();
+    private static float dynamicBlackFor(float[] blackLevels, int x, int y) {
+        return blackLevels[((y & 1) << 1) | (x & 1)];
     }
 
     private static int colorAt(int x, int y, int cfa) {

@@ -25,9 +25,9 @@ import android.hardware.camera2.CaptureFailure;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
-import android.media.DngCreator;
+import android.hardware.camera2.DngCreator;
 import android.media.Image;
-import android.media.ImageFormat;
+import android.graphics.ImageFormat;
 import android.media.ImageReader;
 import android.net.Uri;
 import android.os.Build;
@@ -1067,8 +1067,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             float score = Float.MAX_VALUE;
             for (String id : cameraManager.getCameraIdList()) {
                 CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
-                Integer facing = c.get(CameraCharacteristics.LENS_FACING);
-                if (facing == null || facing != CameraCharacteristics.LENS_FACING_BACK) continue;
+                Integer lensFacing = c.get(CameraCharacteristics.LENS_FACING);
+                if (lensFacing == null || lensFacing != CameraCharacteristics.LENS_FACING_BACK) continue;
                 float[] focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
                 if (focal == null || focal.length == 0) continue;
                 float physical = focal[0] / Math.max(.1f, primaryFocalLength);

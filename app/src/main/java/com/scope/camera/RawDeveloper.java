@@ -460,10 +460,10 @@ final class RawDeveloper {
                 mr *= .25f; mg *= .25f; mb *= .25f; neighbourLuma *= .25f;
                 float gradient = Math.abs(luma-neighbourLuma);
                 float blend = strength * Math.max(0f, 1f-gradient*5f);
-                float nr = luma + cr*(1f-blend) + mr*blend;
-                float ng = luma + cg*(1f-blend) + mg*blend;
-                float nb = luma + cb*(1f-blend) + mb*blend;
-                out[x] = Color.rgb(clamp255(nr*255f), clamp255(ng*255f), clamp255(nb*255f));
+                float resultR = luma + cr*(1f-blend) + mr*blend;
+                float resultG = luma + cg*(1f-blend) + mg*blend;
+                float resultB = luma + cb*(1f-blend) + mb*blend;
+                out[x] = Color.rgb(clamp255(resultR*255f), clamp255(resultG*255f), clamp255(resultB*255f));
             }
             bitmap.setPixels(out, 0, w, 0, y, w, 1);
             int[] old = previous; previous = current; current = next; next = old;
