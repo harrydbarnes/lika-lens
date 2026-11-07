@@ -41,6 +41,7 @@ import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.util.Size;
 import android.util.Range;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.Surface;
@@ -78,6 +79,7 @@ import java.util.concurrent.Executors;
 
 /** Lika Lens: Camera2 framing preview plus RAW_SENSOR/DNG capture and app-side development. */
 public class MainActivity extends Activity implements TextureView.SurfaceTextureListener {
+    private static final String TAG = "LikaLens";
     private static final int CAMERA_PERMISSION = 41;
     private static final int VIDEO_PERMISSION = 42;
     private static final int BG = 0xff0b0d0e;
@@ -135,6 +137,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private boolean manualSupported;
     private boolean flashSupported;
     private boolean useRawForThisCamera;
+    private boolean forceJpegForWide;
     private boolean videoMode;
     private volatile boolean videoStarting;
     private volatile boolean videoRecording;
@@ -376,6 +379,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         captureButton.setOnClickListener(v -> onShutterPressed());
         shootRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
         TextView flip = pill("⟳", false);
+        flip.setTextSize(18f);
+        flip.setContentDescription("Switch front and rear camera");
         shootRow.addView(flip, new LinearLayout.LayoutParams(dp(48), dp(48)));
         flip.setOnClickListener(v -> toggleCameraFacing());
         flipButton = flip;
@@ -1047,7 +1052,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             manualSupported = capabilities != null && Arrays.stream(capabilities).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR);
             AppSettings.prefs(this).edit().putBoolean(AppSettings.MANUAL_SUPPORTED, manualSupported).apply();
             updateReadouts();
-            useRawForThisCamera = rawSupported;
+            useRawForThisCamera = rawSupported && !forceJpegForWide;
             AppSettings.prefs(this).edit().putBoolean(AppSettings.RAW_SUPPORTED, rawSupported).apply();
             rawSize = rawSupported ? chooseRawSize(map.getOutputSizes(ImageFormat.RAW_SENSOR)) : null;
             previewSize = choosePreviewSize(map.getOutputSizes(SurfaceTexture.class));
@@ -1106,8 +1111,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (jpegSize == null) jpegSize = new Size(1920, 1080);
             jpegReader = ImageReader.newInstance(jpegSize.getWidth(), jpegSize.getHeight(), ImageFormat.JPEG, 2);
             jpegReader.setOnImageAvailableListener(this::onImageAvailable, cameraHandler);
-            cameraState.setText("RAW NOT AVAILABLE  ·  JPEG LOOK FALLBACK");
-            outputModeText.setText("JPEG FALLBACK  ·  SENSOR RAW NOT AVAILABLE");
+            if (forceJpegForWide && rawSupported) {
+                cameraState.setText("WIDE FOV READY  ·  JPEG INPUT");
+                outputModeText.setText("WIDE SENSOR  ·  LIKA LENS RENDER");
+            } else {
+                cameraState.setText("RAW NOT AVAILABLE  ·  JPEG LOOK FALLBACK");
+                outputModeText.setText("JPEG FALLBACK  ·  SENSOR RAW NOT AVAILABLE");
+            }
         }
         updateVideoModeUi();
     }
@@ -1272,12 +1282,27 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 String prefix = AppSettings.get(this, AppSettings.FILE_PREFIX, "LIKA");
                 if (prefix.startsWith("Custom")) prefix = "LIKA";
                 archiveKey = prefix + "_" + stamp;
-                if (saveDng) writeDng(image, result, capturedCharacteristics, archiveKey + ".dng");
+                boolean dngSaved = false;
+                String dngWarning = null;
+                if (saveDng) {
+                    try {
+                        writeDng(image, result, capturedCharacteristics, archiveKey + ".dng");
+                        dngSaved = true;
+                    } catch (Exception dngError) {
+                        dngWarning = dngError.getClass().getSimpleName();
+                        Log.e(TAG, "DNG export failed; continuing with the Lika Lens render", dngError);
+                    }
+                }
                 Bitmap developed;
                 if (raw) {
                     RawArchive.Frame frame = RawArchive.write(this, archiveKey, image, capturedCharacteristics,
                             result, capturedOrientation, capturedAspect);
-                    developed = RawDeveloper.develop(frame, captureLook, 0);
+                    try {
+                        developed = RawDeveloper.develop(frame, captureLook, 0);
+                    } catch (IllegalArgumentException resolutionError) {
+                        Log.w(TAG, "Full-resolution RAW render failed; retrying at a safe display size", resolutionError);
+                        developed = RawDeveloper.develop(frame, captureLook, 3000);
+                    }
                 } else {
                     ByteBuffer buffer = image.getPlanes()[0].getBuffer();
                     byte[] bytes = new byte[buffer.remaining()];
@@ -1289,20 +1314,29 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     developed = rotateForDisplay(developed);
                     developed = cropToAspect(developed);
                 }
-                if (!raw || !"DNG only".equals(format)) writeJpeg(developed, prefix + "_" + stamp + ".jpg");
+                if (!raw || !"DNG only".equals(format) || !dngSaved) writeJpeg(developed, prefix + "_" + stamp + ".jpg");
                 if (raw && keepEditableSource) PhotoEditStore.save(this, archiveKey, captureLook);
                 developed.recycle();
-                String resultMessage = !raw ? "JPEG fallback captured and rendered"
+                String resultMessage = dngWarning != null ? "Photo rendered; DNG export failed"
+                        : !raw ? "JPEG fallback captured and rendered"
                         : "DNG only".equals(format) ? "DNG original saved"
-                        : saveDng ? "DNG original + Lika Lens render saved" : "Lika Lens RAW render saved";
+                        : dngSaved ? "DNG original + Lika Lens render saved" : "Lika Lens RAW render saved";
                 runOnUiThread(() -> {
                     showMessage(resultMessage);
                     captureButton.setAlpha(1f);
                     updateGalleryButton();
                 });
             } catch (Exception e) {
+                Log.e(TAG, "Photo development failed", e);
+                String detail = e.getMessage();
+                if (detail != null) {
+                    detail = detail.replace('\n', ' ').trim();
+                    if (detail.length() > 72) detail = detail.substring(0, 72);
+                }
+                final String errorDetail = detail;
                 runOnUiThread(() -> {
-                    showMessage("Could not develop frame: " + e.getClass().getSimpleName());
+                    showMessage("Photo render failed: " + e.getClass().getSimpleName()
+                            + (errorDetail == null || errorDetail.isEmpty() ? "" : " · " + errorDetail));
                     captureButton.setAlpha(1f);
                 });
             } finally {
@@ -1410,22 +1444,37 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void writeDng(Image image, TotalCaptureResult result, CameraCharacteristics captureCharacteristics, String name) throws Exception {
         if (result == null || captureCharacteristics == null) throw new IllegalStateException("Missing capture metadata");
         OutputTarget target = createOutput(name, "image/x-adobe-dng", "RAW");
-        try (OutputStream stream = target.open()) {
-            DngCreator creator = new DngCreator(captureCharacteristics, result);
-            creator.writeImage(stream, image);
-            creator.close();
+        boolean published = false;
+        DngCreator creator = null;
+        try {
+            creator = new DngCreator(captureCharacteristics, result);
+            try (OutputStream stream = target.open()) {
+                creator.writeImage(stream, image);
+            }
+            target.publish();
+            published = true;
+        } finally {
+            if (creator != null) creator.close();
+            if (!published) target.discard();
         }
-        target.publish();
     }
 
     private void writeJpeg(Bitmap bitmap, String name) throws Exception {
         OutputTarget target = createOutput(name, "image/jpeg", "");
-        try (OutputStream stream = target.open()) {
-            String qualityChoice = AppSettings.get(this, "jpeg_quality", "Maximum · 96%");
-            int quality = qualityChoice.startsWith("High") ? 92 : qualityChoice.startsWith("Balanced") ? 85 : 96;
-            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream);
+        boolean published = false;
+        try {
+            try (OutputStream stream = target.open()) {
+                String qualityChoice = AppSettings.get(this, "jpeg_quality", "Maximum · 96%");
+                int quality = qualityChoice.startsWith("High") ? 92 : qualityChoice.startsWith("Balanced") ? 85 : 96;
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)) {
+                    throw new IllegalStateException("JPEG encoder could not write the image");
+                }
+            }
+            target.publish();
+            published = true;
+        } finally {
+            if (!published) target.discard();
         }
-        target.publish();
     }
 
     private OutputTarget createOutput(String name, String mime, String subfolder) throws Exception {
@@ -1461,6 +1510,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 ContentValues values = new ContentValues();
                 values.put(MediaStore.MediaColumns.IS_PENDING, 0);
                 getContentResolver().update(uri, values, null, null);
+            }
+        }
+        void discard() {
+            if (uri != null) {
+                try { getContentResolver().delete(uri, null, null); } catch (RuntimeException ignored) { }
+            } else if (file != null) {
+                try { file.delete(); } catch (RuntimeException ignored) { }
             }
         }
     }
@@ -1523,17 +1579,99 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void chooseLens(float factor) {
         if (cameraManager == null || mainCameraId == null) {
-            requestedZoom = Math.max(1f, factor);
+            requestedZoom = Math.max(.5f, factor);
             updateLensButtons(requestedZoom);
             return;
         }
         try {
             Integer facing = characteristics == null ? null : characteristics.get(CameraCharacteristics.LENS_FACING);
             if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
+                float frontWideZoom = factor < 1f ? supportedWideZoom(characteristics, factor) : -1f;
+                if (frontWideZoom > 0f) {
+                    physicalFocalFactor = 1f;
+                    selectCameraForLens(cameraId, frontWideZoom, rawSupported);
+                    return;
+                }
                 physicalFocalFactor = 1f;
                 animateZoomTo(Math.max(1f, factor));
                 return;
             }
+
+            // Prefer a real wider RAW camera when the device exposes one.
+            if (factor < 1f) {
+                String rawWideId = null;
+                float rawWideFactor = 1f;
+                float rawWideScore = Float.MAX_VALUE;
+                for (String id : cameraManager.getCameraIdList()) {
+                    CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
+                    Integer lensFacing = c.get(CameraCharacteristics.LENS_FACING);
+                    if (lensFacing == null || lensFacing != CameraCharacteristics.LENS_FACING_BACK) continue;
+                    float[] focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                    if (focal == null || focal.length == 0) continue;
+                    int[] caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
+                    StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                    Size[] rawOutputs = map == null ? null : map.getOutputSizes(ImageFormat.RAW_SENSOR);
+                    boolean raw = caps != null && Arrays.stream(caps).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
+                            && rawOutputs != null && rawOutputs.length > 0;
+                    float physical = focal[0] / Math.max(.1f, primaryFocalLength);
+                    if (!raw || physical >= .95f) continue;
+                    float candidate = Math.abs((float) Math.log(physical / factor));
+                    if (candidate < rawWideScore) {
+                        rawWideScore = candidate;
+                        rawWideId = id;
+                        rawWideFactor = physical;
+                    }
+                }
+                if (rawWideId != null && rawWideScore < .12f) {
+                    physicalFocalFactor = rawWideFactor;
+                    selectCameraForLens(rawWideId, rawWideFactor, false);
+                    return;
+                }
+
+                // A logical multi-camera can zoom below 1x by switching to its ultra-wide
+                // sensor. RAW streams do not follow logical zoom on many devices, so use
+                // the camera's JPEG stream for this one lens and keep the Lika render.
+                CameraCharacteristics main = cameraManager.getCameraCharacteristics(mainCameraId);
+                float logicalWideZoom = supportedWideZoom(main, factor);
+                if (logicalWideZoom > 0f) {
+                    physicalFocalFactor = 1f;
+                    selectCameraForLens(mainCameraId, logicalWideZoom, true);
+                    return;
+                }
+
+                // Fall back to a separately exposed wider JPEG camera on older camera stacks.
+                String wideId = null;
+                float wideFactor = 1f;
+                float wideScore = Float.MAX_VALUE;
+                for (String id : cameraManager.getCameraIdList()) {
+                    CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
+                    Integer lensFacing = c.get(CameraCharacteristics.LENS_FACING);
+                    if (lensFacing == null || lensFacing != CameraCharacteristics.LENS_FACING_BACK) continue;
+                    float[] focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                    if (focal == null || focal.length == 0) continue;
+                    float physical = focal[0] / Math.max(.1f, primaryFocalLength);
+                    if (physical >= .95f) continue;
+                    float candidate = Math.abs((float) Math.log(physical / factor));
+                    if (candidate < wideScore) {
+                        wideScore = candidate;
+                        wideId = id;
+                        wideFactor = physical;
+                    }
+                }
+                if (wideId != null) {
+                    physicalFocalFactor = wideFactor;
+                    float actualFactor = wideFactor > factor ? wideFactor : factor;
+                    if (actualFactor > factor + .05f) {
+                        showMessage("Using the widest available lens at " + String.format(Locale.US, "%.1fx", actualFactor) + ".");
+                    }
+                    selectCameraForLens(wideId, actualFactor, false);
+                    return;
+                }
+                showMessage("This device does not expose a 0.5× camera view.");
+                updateLensButtons(requestedZoom);
+                return;
+            }
+
             String bestId = mainCameraId;
             float bestPhysical = 1f;
             float score = Float.MAX_VALUE;
@@ -1546,32 +1684,50 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 float physical = focal[0] / Math.max(.1f, primaryFocalLength);
                 int[] caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
                 boolean raw = caps != null && Arrays.stream(caps).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW);
+                StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                Size[] rawOutputs = map == null ? null : map.getOutputSizes(ImageFormat.RAW_SENSOR);
+                raw = raw && rawOutputs != null && rawOutputs.length > 0;
                 if (AppSettings.getBoolean(this, AppSettings.KEEP_RAW, true) && !raw) continue;
                 float candidate = Math.abs((float) Math.log(Math.max(.1f, physical) / Math.max(.1f, factor)));
                 if (candidate < score) { score = candidate; bestId = id; bestPhysical = physical; }
             }
-            float targetZoom = factor;
-            if (factor < bestPhysical - .05f) {
-                targetZoom = bestPhysical;
-                showMessage("This camera has no wider RAW lens. Using its widest supported view.");
-            }
             physicalFocalFactor = bestPhysical;
-            if (!bestId.equals(cameraId)) {
-                requestedZoom = targetZoom;
-                updateLensButtons(targetZoom);
-                if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
-                    captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
-                }
-                if (textureView != null) textureView.setAlpha(.82f);
-                cameraId = bestId;
-                closeCamera();
-                openCameraIfReady();
-            } else {
-                animateZoomTo(targetZoom);
-            }
+            selectCameraForLens(bestId, factor, false);
         } catch (CameraAccessException e) {
             showMessage("Lens selection is unavailable.");
         }
+    }
+
+    private float supportedWideZoom(CameraCharacteristics camera, float factor) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || camera == null) return -1f;
+        Range<Float> range = camera.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+        if (range == null || range.getLower() > factor + .01f || range.getUpper() < 1f) return -1f;
+        return Math.max(factor, range.getLower());
+    }
+
+    private void selectCameraForLens(String id, float factor, boolean jpegWide) {
+        boolean mustRestart = !id.equals(cameraId) || forceJpegForWide != jpegWide;
+        forceJpegForWide = jpegWide;
+        if (mustRestart) {
+            if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
+                captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+            }
+            requestedZoom = factor;
+            updateLensButtons(factor);
+            if (textureView != null) textureView.setAlpha(.82f);
+            cameraId = id;
+            restartCameraForLens(factor);
+        } else {
+            animateZoomTo(factor);
+        }
+    }
+
+    private void restartCameraForLens(float factor) {
+        requestedZoom = factor;
+        updateLensButtons(factor);
+        if (textureView != null) textureView.setAlpha(.82f);
+        closeCamera();
+        openCameraIfReady();
     }
 
     private void animateZoomTo(float targetZoom) {
@@ -1640,6 +1796,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 return;
             }
             cameraId = bestId;
+            forceJpegForWide = false;
             requestedZoom = 1f;
             physicalFocalFactor = 1f;
             if (targetFacing == CameraCharacteristics.LENS_FACING_BACK) {
@@ -1668,6 +1825,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (characteristics == null) return;
         Rect active = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
         if (active == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Range<Float> ratioRange = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+            if (requestedZoom < 1f && ratioRange != null
+                    && requestedZoom >= ratioRange.getLower() && requestedZoom <= ratioRange.getUpper()) {
+                builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, requestedZoom);
+                // Keep the crop shape equal to the sensor array while the logical camera
+                // changes lenses; aspect-ratio framing is applied by the saved render.
+                builder.set(CaptureRequest.SCALER_CROP_REGION, active);
+                return;
+            }
+            builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1f);
+        }
         float digital = Math.max(1f, requestedZoom / Math.max(.1f, physicalFocalFactor));
         int cropW = Math.max(1, Math.round(active.width() / digital));
         int cropH = Math.max(1, Math.round(active.height() / digital));
