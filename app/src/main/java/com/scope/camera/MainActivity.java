@@ -45,9 +45,12 @@ import android.util.Range;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewOutlineProvider;
 import android.view.Window;
 import android.view.WindowManager;
@@ -86,6 +89,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private static final int BG = 0xff0b0d0e;
     private static final int ACCENT = 0xffd7b574;
     private static final int MUTED = 0xffa0aaa4;
+    private static final float MIN_INTERACTIVE_ZOOM = .5f;
+    private static final float MAX_INTERACTIVE_ZOOM = 5f;
 
     private TextureView textureView;
     private TextView cameraState;
@@ -108,8 +113,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private TextView shutterValueText;
     private TextView isoValueText;
     private TextView whiteBalanceValueText;
+    private TextView zoomSliderValue;
     private final List<TextView> lensButtons = new ArrayList<>();
     private View gridOverlay;
+    private LinearLayout zoomSliderPanel;
+    private SeekBar zoomSlider;
+    private ScaleGestureDetector scaleGestureDetector;
     private FrameLayout quickAdjustPanel;
     private LinearLayout quickControlsList;
     private FrameLayout root;
@@ -140,6 +149,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private boolean flashSupported;
     private boolean useRawForThisCamera;
     private boolean forceJpegForWide;
+    private boolean pinchZooming;
+    private boolean zoomRowDragging;
+    private boolean zoomSliderScrubbing;
+    private float zoomRowStartX;
+    private float zoomRowStartY;
+    private float zoomRowStartZoom;
+    private int zoomTouchSlop;
     private boolean videoMode;
     private volatile boolean videoStarting;
     private volatile boolean videoRecording;
@@ -160,6 +176,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private long videoStartedAt;
     private long unlockHoldStartedAt;
     private Size videoSize;
+
+    private final Runnable hideZoomSlider = () -> {
+        if (zoomSliderPanel != null && !pinchZooming && !zoomRowDragging && !zoomSliderScrubbing) {
+            zoomSliderPanel.setVisibility(View.GONE);
+        }
+    };
 
     private final Runnable videoTimerTick = new Runnable() {
         @Override public void run() {
@@ -248,11 +270,28 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
         });
         textureView.setSurfaceTextureListener(this);
+        scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override public boolean onScaleBegin(ScaleGestureDetector detector) {
+                if (videoScreenLocked) return false;
+                pinchZooming = true;
+                showZoomSlider();
+                return true;
+            }
+            @Override public boolean onScale(ScaleGestureDetector detector) {
+                setInteractiveZoom(requestedZoom * detector.getScaleFactor());
+                return true;
+            }
+            @Override public void onScaleEnd(ScaleGestureDetector detector) {
+                pinchZooming = false;
+                finishInteractiveZoom();
+                scheduleZoomSliderHide();
+            }
+        });
         root.addView(textureView, new FrameLayout.LayoutParams(-1, -1));
         gridOverlay = new CompositionGrid(this);
         root.addView(gridOverlay, new FrameLayout.LayoutParams(-1, -1));
 
-        LinearLayout overlay = new LinearLayout(this);
+        GestureOverlay overlay = new GestureOverlay();
         overlay.setOrientation(LinearLayout.VERTICAL);
         overlay.setPadding(dp(12), dp(14), dp(12), dp(14));
         overlay.setBackground(new android.graphics.drawable.GradientDrawable(
@@ -303,8 +342,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         telemetry.addView(readoutView("WB", "5600 K"), new LinearLayout.LayoutParams(0, -2, 1));
         overlay.addView(telemetry);
 
-        LinearLayout lensRow = row();
+        ZoomPresetRow lensRow = new ZoomPresetRow();
         lensRow.setGravity(Gravity.CENTER);
+        lensRow.setContentDescription("Zoom presets. Swipe horizontally to reveal precision zoom.");
         float[] zooms = new float[]{.5f, 1f, 2f, 5f};
         String[] names = new String[]{".5×", "1×", "2×", "5×"};
         for (int i = 0; i < zooms.length; i++) {
@@ -318,6 +358,38 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             lens.setOnClickListener(v -> chooseLens(zoom));
         }
         overlay.addView(lensRow);
+
+        zoomSliderPanel = row();
+        zoomSliderPanel.setGravity(Gravity.CENTER_VERTICAL);
+        zoomSliderPanel.setPadding(dp(10), dp(1), dp(10), 0);
+        zoomSliderPanel.setBackground(round(0xd8191e1e, 13, 0x66454d49, dp(1)));
+        zoomSliderValue = label("1.0×", 8, ACCENT, true);
+        zoomSliderPanel.addView(zoomSliderValue, new LinearLayout.LayoutParams(dp(38), dp(30)));
+        zoomSlider = new SeekBar(this);
+        zoomSlider.setMax(1000);
+        zoomSlider.setProgress(zoomProgressFor(MIN_INTERACTIVE_ZOOM));
+        zoomSlider.setContentDescription("Precision zoom from 0.5× to 5×");
+        zoomSlider.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        zoomSlider.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        zoomSliderPanel.addView(zoomSlider, new LinearLayout.LayoutParams(0, dp(32), 1f));
+        zoomSliderPanel.setVisibility(View.GONE);
+        LinearLayout.LayoutParams zoomSliderLp = new LinearLayout.LayoutParams(-1, -2);
+        zoomSliderLp.topMargin = dp(4);
+        overlay.addView(zoomSliderPanel, zoomSliderLp);
+        zoomSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser) setInteractiveZoom(zoomForProgress(progress));
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {
+                zoomSliderScrubbing = true;
+                showZoomSlider();
+            }
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {
+                zoomSliderScrubbing = false;
+                finishInteractiveZoom();
+                scheduleZoomSliderHide();
+            }
+        });
 
         LinearLayout modeRow = row();
         modeRow.setGravity(Gravity.CENTER);
@@ -1770,6 +1842,94 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         openCameraIfReady();
     }
 
+    private void setInteractiveZoom(float factor) {
+        requestedZoom = Math.max(MIN_INTERACTIVE_ZOOM, Math.min(MAX_INTERACTIVE_ZOOM, factor));
+        updateLensButtons(requestedZoom);
+        if (previewRequest != null && captureSession != null) {
+            try {
+                applyZoom(previewRequest);
+                captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+            } catch (CameraAccessException | IllegalStateException ignored) { }
+        }
+    }
+
+    private void finishInteractiveZoom() {
+        if (videoScreenLocked) return;
+        if (requestedZoom < 1f) chooseLens(requestedZoom);
+        else chooseContinuousLens(requestedZoom);
+    }
+
+    /** Selects the longest physical lens that does not exceed the requested zoom. */
+    private void chooseContinuousLens(float factor) {
+        if (cameraManager == null || mainCameraId == null) {
+            chooseLens(factor);
+            return;
+        }
+        try {
+            Integer facing = characteristics == null ? null : characteristics.get(CameraCharacteristics.LENS_FACING);
+            if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
+                chooseLens(factor);
+                return;
+            }
+            String bestId = mainCameraId;
+            float bestPhysical = 1f;
+            boolean keepRaw = AppSettings.getBoolean(this, AppSettings.KEEP_RAW, true);
+            for (String id : cameraManager.getCameraIdList()) {
+                CameraCharacteristics candidate = cameraManager.getCameraCharacteristics(id);
+                Integer candidateFacing = candidate.get(CameraCharacteristics.LENS_FACING);
+                if (candidateFacing == null || candidateFacing != CameraCharacteristics.LENS_FACING_BACK) continue;
+                float[] focal = candidate.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                if (focal == null || focal.length == 0) continue;
+                float physical = focal[0] / Math.max(.1f, primaryFocalLength);
+                if (physical > factor + .001f || physical < bestPhysical) continue;
+                int[] caps = candidate.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
+                StreamConfigurationMap map = candidate.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                Size[] rawOutputs = map == null ? null : map.getOutputSizes(ImageFormat.RAW_SENSOR);
+                boolean raw = caps != null && Arrays.stream(caps).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
+                        && rawOutputs != null && rawOutputs.length > 0;
+                if (keepRaw && !raw) continue;
+                bestId = id;
+                bestPhysical = physical;
+            }
+            physicalFocalFactor = bestPhysical;
+            selectCameraForLens(bestId, factor, false);
+        } catch (CameraAccessException e) {
+            showMessage("Zoom selection is unavailable.");
+        }
+    }
+
+    private void showZoomSlider() {
+        if (zoomSliderPanel == null) return;
+        zoomSliderPanel.removeCallbacks(hideZoomSlider);
+        zoomSliderPanel.setVisibility(View.VISIBLE);
+        updateZoomSliderUi();
+    }
+
+    private void scheduleZoomSliderHide() {
+        if (zoomSliderPanel == null) return;
+        zoomSliderPanel.removeCallbacks(hideZoomSlider);
+        zoomSliderPanel.postDelayed(hideZoomSlider, 1800L);
+    }
+
+    private void updateZoomSliderUi() {
+        if (zoomSliderValue != null) zoomSliderValue.setText(String.format(Locale.US, "%.1f×", requestedZoom));
+        if (zoomSlider != null) {
+            int progress = zoomProgressFor(requestedZoom);
+            if (zoomSlider.getProgress() != progress) zoomSlider.setProgress(progress);
+        }
+    }
+
+    private int zoomProgressFor(float zoom) {
+        float t = (float) (Math.log(Math.max(MIN_INTERACTIVE_ZOOM, Math.min(MAX_INTERACTIVE_ZOOM, zoom)) / MIN_INTERACTIVE_ZOOM)
+                / Math.log(MAX_INTERACTIVE_ZOOM / MIN_INTERACTIVE_ZOOM));
+        return Math.max(0, Math.min(1000, Math.round(t * 1000f)));
+    }
+
+    private float zoomForProgress(int progress) {
+        float t = Math.max(0, Math.min(1000, progress)) / 1000f;
+        return MIN_INTERACTIVE_ZOOM * (float) Math.pow(MAX_INTERACTIVE_ZOOM / MIN_INTERACTIVE_ZOOM, t);
+    }
+
     private void animateZoomTo(float targetZoom) {
         if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
             captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
@@ -1859,6 +2019,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             button.setTextColor(active ? ACCENT : 0xffe9ede6);
             button.setBackground(round(active ? 0xe21c1d1b : 0xd8191e1e, 22, active ? ACCENT : 0x556e7872, dp(1)));
         }
+        updateZoomSliderUi();
     }
 
     private void applyZoom(CaptureRequest.Builder builder) {
@@ -2018,6 +2179,77 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         float frameScale = Math.min(frame.width() / viewWidth, frame.height() / viewHeight);
         matrix.postScale(frameScale, frameScale, centerX, centerY);
         textureView.setTransform(matrix);
+    }
+
+    private final class GestureOverlay extends LinearLayout {
+        GestureOverlay() {
+            super(MainActivity.this);
+            setOrientation(LinearLayout.VERTICAL);
+        }
+
+        @Override public boolean dispatchTouchEvent(MotionEvent event) {
+            if (!videoScreenLocked && scaleGestureDetector != null) {
+                scaleGestureDetector.onTouchEvent(event);
+            }
+            return super.dispatchTouchEvent(event);
+        }
+    }
+
+    private final class ZoomPresetRow extends LinearLayout {
+        private final int touchSlop = ViewConfiguration.get(MainActivity.this).getScaledTouchSlop();
+
+        ZoomPresetRow() {
+            super(MainActivity.this);
+            setOrientation(LinearLayout.HORIZONTAL);
+        }
+
+        @Override public boolean onInterceptTouchEvent(MotionEvent event) {
+            if (videoScreenLocked || videoRecording || videoStarting) return false;
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    zoomRowStartX = event.getX();
+                    zoomRowStartY = event.getY();
+                    zoomRowStartZoom = requestedZoom;
+                    zoomRowDragging = false;
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    float dx = event.getX() - zoomRowStartX;
+                    float dy = event.getY() - zoomRowStartY;
+                    if (Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(dy)) {
+                        zoomRowDragging = true;
+                        showZoomSlider();
+                        return true;
+                    }
+                    break;
+            }
+            return zoomRowDragging;
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent event) {
+            if (videoScreenLocked || videoRecording || videoStarting) return false;
+            if (!zoomRowDragging) return false;
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_MOVE:
+                    float distanceInDp = (event.getX() - zoomRowStartX) / getResources().getDisplayMetrics().density;
+                    float targetZoom = zoomRowStartZoom * (float) Math.pow(2d, distanceInDp / 110d);
+                    setInteractiveZoom(targetZoom);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    zoomRowDragging = false;
+                    finishInteractiveZoom();
+                    scheduleZoomSliderHide();
+                    performClick();
+                    return true;
+                default:
+                    return true;
+            }
+        }
+
+        @Override public boolean performClick() {
+            super.performClick();
+            return true;
+        }
     }
 
     private void closeReader(ImageReader reader) {
