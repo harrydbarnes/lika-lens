@@ -9,6 +9,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -48,6 +49,12 @@ public class GalleryActivity extends Activity {
         super.onPause();
     }
 
+    private void hapticClick(View v) {
+        if (v != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+    }
+
     private void build() {
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -60,7 +67,7 @@ public class GalleryActivity extends Activity {
         TextView back = text("‹", 29, 0xffedf0e9, false);
         back.setGravity(Gravity.CENTER);
         header.addView(back, new LinearLayout.LayoutParams(dp(34), dp(40)));
-        back.setOnClickListener(v -> finishAfterTransition());
+        back.setOnClickListener(v -> { hapticClick(v); finishAfterTransition(); });
 
         LinearLayout title = new LinearLayout(this);
         title.setOrientation(LinearLayout.VERTICAL);
@@ -72,7 +79,7 @@ public class GalleryActivity extends Activity {
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         TextView importButton = pill("IMPORT", true);
         header.addView(importButton, new LinearLayout.LayoutParams(dp(68), dp(32)));
-        importButton.setOnClickListener(v -> chooseImport());
+        importButton.setOnClickListener(v -> { hapticClick(v); chooseImport(); });
         page.addView(header);
 
         scroll = new ScrollView(this);
@@ -148,7 +155,7 @@ public class GalleryActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
         lp.rightMargin = dp(3);
         row.addView(tile, lp);
-        tile.setOnClickListener(v -> openPhoto(photo, image));
+        tile.setOnClickListener(v -> { hapticClick(v); openPhoto(photo, image); });
     }
 
     private void completeRow(LinearLayout row) {

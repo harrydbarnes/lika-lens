@@ -19,6 +19,7 @@ import android.transition.ChangeImageTransform;
 import android.transition.TransitionSet;
 import android.view.GestureDetector;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
@@ -66,6 +67,12 @@ public class PhotoViewerActivity extends Activity {
     private float downY = 0f;
     private boolean swipingDownToDismiss = false;
 
+    private void hapticClick(View v) {
+        if (v != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+    }
+
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         getWindow().requestFeature(Window.FEATURE_ACTIVITY_TRANSITIONS);
@@ -104,7 +111,7 @@ public class PhotoViewerActivity extends Activity {
         TextView back = text("‹", 28, 0xffedf0e9, true);
         back.setGravity(Gravity.CENTER);
         header.addView(back, new LinearLayout.LayoutParams(dp(36), dp(40)));
-        back.setOnClickListener(v -> finishAfterTransition());
+        back.setOnClickListener(v -> { hapticClick(v); finishAfterTransition(); });
 
         TextView title = text(photoName == null ? "LIKA LENS" : photoName, 10, 0xffe6eae4, true);
         title.setPadding(dp(8), 0, 0, 0);
@@ -114,20 +121,20 @@ public class PhotoViewerActivity extends Activity {
         LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(dp(50), dp(32));
         infoLp.leftMargin = dp(4);
         header.addView(infoButton, infoLp);
-        infoButton.setOnClickListener(v -> toggleInfo());
+        infoButton.setOnClickListener(v -> { hapticClick(v); toggleInfo(); });
 
         TextView shareBtn = pill("SHARE", false);
         LinearLayout.LayoutParams shareLp = new LinearLayout.LayoutParams(dp(54), dp(32));
         shareLp.leftMargin = dp(4);
         header.addView(shareBtn, shareLp);
-        shareBtn.setOnClickListener(v -> sharePhoto());
+        shareBtn.setOnClickListener(v -> { hapticClick(v); sharePhoto(); });
 
         if (archiveKey != null && RawArchive.exists(this, archiveKey)) {
             TextView edit = pill("EDIT", true);
             LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(dp(52), dp(32));
             editLp.leftMargin = dp(4);
             header.addView(edit, editLp);
-            edit.setOnClickListener(v -> openEditor());
+            edit.setOnClickListener(v -> { hapticClick(v); openEditor(); });
         }
 
         if (!getIntent().getBooleanExtra(EXTRA_FROM_LIBRARY, false)) {
@@ -135,7 +142,7 @@ public class PhotoViewerActivity extends Activity {
             LinearLayout.LayoutParams gridLp = new LinearLayout.LayoutParams(dp(50), dp(32));
             gridLp.leftMargin = dp(4);
             header.addView(library, gridLp);
-            library.setOnClickListener(v -> startActivity(new Intent(this, GalleryActivity.class)));
+            library.setOnClickListener(v -> { hapticClick(v); startActivity(new Intent(this, GalleryActivity.class)); });
         }
 
         root.addView(header, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
@@ -168,6 +175,7 @@ public class PhotoViewerActivity extends Activity {
 
         gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDoubleTap(MotionEvent e) {
+                hapticClick(photoView);
                 if (currentScale > 1.2f) {
                     resetZoom();
                 } else {

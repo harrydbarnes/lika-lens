@@ -8,6 +8,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -60,6 +61,12 @@ public class PhotoEditorActivity extends Activity {
         loadSource();
     }
 
+    private void hapticClick(View v) {
+        if (v != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+    }
+
     private LinearLayout tabBar;
     private String activeTab = "TONE";
 
@@ -74,18 +81,18 @@ public class PhotoEditorActivity extends Activity {
         TextView back = text("‹", 28, 0xffedf0e9, true);
         back.setGravity(Gravity.CENTER);
         header.addView(back, new LinearLayout.LayoutParams(dp(38), dp(40)));
-        back.setOnClickListener(v -> finish());
+        back.setOnClickListener(v -> { hapticClick(v); finish(); });
         TextView title = text("DEVELOP", 13, 0xfff1f2ec, true);
         title.setPadding(dp(8), 0, 0, 0);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         TextView reset = pill("RESET", false);
         header.addView(reset, new LinearLayout.LayoutParams(dp(56), dp(32)));
-        reset.setOnClickListener(v -> resetLook());
+        reset.setOnClickListener(v -> { hapticClick(v); resetLook(); });
         saveButton = pill("SAVE", true);
         LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(dp(58), dp(32));
         saveLp.leftMargin = dp(6);
         header.addView(saveButton, saveLp);
-        saveButton.setOnClickListener(v -> saveRender());
+        saveButton.setOnClickListener(v -> { hapticClick(v); saveRender(); });
         page.addView(header);
 
         preview = new ImageView(this);
@@ -124,6 +131,7 @@ public class PhotoEditorActivity extends Activity {
             if (!tab.equals("TONE")) lp.leftMargin = dp(6);
             tabBar.addView(pill, lp);
             pill.setOnClickListener(v -> {
+                hapticClick(v);
                 activeTab = tab;
                 refreshTabs();
                 populateControls();
@@ -186,6 +194,7 @@ public class PhotoEditorActivity extends Activity {
             if (i > 0) lp.leftMargin = dp(4);
             row.addView(pill, lp);
             pill.setOnClickListener(v -> {
+                hapticClick(v);
                 look.grainStructure = s;
                 populateControls();
                 queuePreview();
@@ -225,6 +234,7 @@ public class PhotoEditorActivity extends Activity {
             if (i > 0) lp.leftMargin = dp(4);
             row1.addView(pill, lp);
             pill.setOnClickListener(v -> {
+                hapticClick(v);
                 look.aspectRatio = ratio;
                 populateControls();
                 queuePreview();
@@ -246,6 +256,7 @@ public class PhotoEditorActivity extends Activity {
             if (i > 0) lp.leftMargin = dp(4);
             row2.addView(pill, lp);
             pill.setOnClickListener(v -> {
+                hapticClick(v);
                 look.aspectRatio = ratio;
                 populateControls();
                 queuePreview();
@@ -265,6 +276,7 @@ public class PhotoEditorActivity extends Activity {
         TextView flipPill = pill(look.flipHorizontal ? "MIRRORED" : "NORMAL", look.flipHorizontal);
         mirrorCard.addView(flipPill, new LinearLayout.LayoutParams(dp(88), dp(32)));
         flipPill.setOnClickListener(v -> {
+            hapticClick(v);
             look.flipHorizontal = !look.flipHorizontal;
             populateControls();
             queuePreview();
@@ -296,12 +308,40 @@ public class PhotoEditorActivity extends Activity {
         Control control = new Control(type, seek, value);
         controls.add(control);
         updateControlLabel(control, min + seek.getProgress());
+        final int[] lastHapticVal = {current};
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
                 int selected = min + progress;
                 updateLook(type, selected);
                 updateControlLabel(control, selected);
-                if (fromUser) queuePreview();
+                if (fromUser) {
+                    if (AppSettings.getBoolean(PhotoEditorActivity.this, AppSettings.HAPTICS, true)) {
+                        boolean isLandmark = false;
+                        if (type == 0 && selected == 0) isLandmark = true;
+                        else if (type == 1 && selected == 0) isLandmark = true;
+                        else if (type == 2 && selected == 100) isLandmark = true;
+                        else if (type == 3 && selected == 100) isLandmark = true;
+                        else if (type == 4 && selected == 0) isLandmark = true;
+                        else if (type == 5 && selected == 0) isLandmark = true;
+                        else if (type == 6 && selected == 0) isLandmark = true;
+                        else if (type == 7 && selected == 0) isLandmark = true;
+                        else if (type == 8 && selected == 50) isLandmark = true;
+                        else if (type == 9 && selected == 50) isLandmark = true;
+                        else if (type == 10 && selected == 50) isLandmark = true;
+                        else if (type == 11 && selected == 0) isLandmark = true;
+                        else if (type == 12 && selected == 50) isLandmark = true;
+                        else if (type == 13 && selected == 50) isLandmark = true;
+
+                        if (isLandmark) {
+                            bar.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                            lastHapticVal[0] = selected;
+                        } else if (Math.abs(selected - lastHapticVal[0]) >= 6) {
+                            bar.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                            lastHapticVal[0] = selected;
+                        }
+                    }
+                    queuePreview();
+                }
             }
             @Override public void onStartTrackingTouch(SeekBar bar) { }
             @Override public void onStopTrackingTouch(SeekBar bar) { }

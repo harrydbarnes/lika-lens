@@ -2,6 +2,7 @@ package com.scope.camera;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ContentUris;
 import android.database.Cursor;
 import android.graphics.Canvas;
@@ -13,16 +14,20 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -32,8 +37,10 @@ import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
+import java.util.Locale;
 
 /** Native settings for capture, RAW development and the viewfinder. */
 public class SettingsActivity extends Activity {
@@ -45,6 +52,12 @@ public class SettingsActivity extends Activity {
     private ScrollView scroll;
     private LinearLayout categoryBar;
     private String activeCategory = "PROCESSING";
+    private LinearLayout currentSectionCard;
+    private ImageView heroImageView;
+    private TextView heroCompareBadge;
+    private Bitmap baseHeroBitmap;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private volatile boolean isUpdatingHero = false;
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -110,6 +123,7 @@ public class SettingsActivity extends Activity {
     }
 
     private void rebuildContent() {
+        finishSection();
         content.removeAllViews();
         populateContent();
         scroll.post(() -> scroll.scrollTo(0, 0));
@@ -125,6 +139,9 @@ public class SettingsActivity extends Activity {
             if (!category.equals("GENERAL")) lp.leftMargin = dp(6);
             categoryBar.addView(tab, lp);
             tab.setOnClickListener(v -> {
+                if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+                    tab.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                }
                 activeCategory = category;
                 refreshCategoryBar();
                 rebuildContent();
@@ -144,13 +161,14 @@ public class SettingsActivity extends Activity {
 
     private void populateProcessingSettings() {
         addEditorHero();
-        addSection("PROCESSING BRAIN", "The look is developed from sensor data after capture.");
+        beginSection("PROCESSING BRAIN", "The look is developed from sensor data after capture.");
         addChoice("Rendering brain", "Choose the image-making approach", AppSettings.BRAIN,
                 new String[]{"LIKA / FILM", "NEUTRAL / RAW", "MONO / SILVER"}, "LIKA / FILM");
         addChoice("Capture output", "DNG stays untouched; Lika Lens develops the JPEG", AppSettings.CAPTURE_FORMAT,
                 new String[]{"RAW + rendered JPEG", "DNG only", "Rendered JPEG only"}, "RAW + rendered JPEG");
         addSwitch("Keep sensor original", "Save the untouched RAW file beside the render", AppSettings.KEEP_RAW, true);
-        addSection("RAW DEVELOPMENT", "Tune the render while preserving the original DNG.");
+
+        beginSection("RAW DEVELOPMENT", "Tune the render while preserving the original DNG.");
         addChoice("White balance", "Auto uses this frame's sensor estimate", AppSettings.WHITE_BALANCE_MODE,
                 new String[]{"Auto · as shot", "3200 K · tungsten", "4000 K · warm LED", "5000 K · daylight", "5600 K · daylight", "6500 K · overcast", "7500 K · shade"}, "Auto · as shot");
         addSlider("Exposure trim", "Exposure compensation in 0.1 EV steps", AppSettings.EXPOSURE, -20, 20, AppSettings.DEFAULT_EXPOSURE);
@@ -164,17 +182,18 @@ public class SettingsActivity extends Activity {
         addSlider("Colour noise reduction", "Reduce chroma noise in the developed image", AppSettings.COLOR_NR, 0, 100, AppSettings.DEFAULT_COLOR_NR);
         addSlider("Output sharpening", "Keep fine detail soft, then add only a little edge crispness", AppSettings.SHARPEN, 0, 100, AppSettings.DEFAULT_SHARPEN);
 
-        addSection("IMAGE CHARACTER", "Texture and optical effects are applied in the render.");
+        beginSection("IMAGE CHARACTER", "Texture and optical effects are applied in the render.");
         addSlider("Film grain", "Fine luminance texture", AppSettings.GRAIN, 0, 100, AppSettings.DEFAULT_GRAIN);
         addChoice("Grain structure", "Character of the texture", "grain_structure",
                 new String[]{"Fine · 35 mm", "Soft · 16 mm", "Coarse · 8 mm", "Monochrome"}, "Fine · 35 mm");
         addSlider("Halation", "Warm response around bright highlights", AppSettings.HALATION, 0, 100, AppSettings.DEFAULT_HALATION);
         addSlider("Vignette", "Subtle edge fall-off", AppSettings.VIGNETTE, 0, 100, AppSettings.DEFAULT_VIGNETTE);
         addInfo("Optical correction", "Lens shading and chromatic-aberration correction are not active in this build.", 0xffaab3ad);
+        finishSection();
     }
 
     private void populateCameraSettings() {
-        addSection("CAPTURE", "Sensor, focus behaviour and timing.");
+        beginSection("CAPTURE", "Sensor, focus behaviour and timing.");
         addChoice("Frame shape", "Match the viewfinder guide and rendered JPEG; keep the DNG full-frame", AppSettings.ASPECT_RATIO,
                 AppSettings.ASPECT_RATIOS, "4:3");
         addChoice("Default lens", "Camera lens selected on app launch", AppSettings.DEFAULT_LENS,
@@ -194,8 +213,9 @@ public class SettingsActivity extends Activity {
         addChoice("Focus behaviour", "Camera2 autofocus mode", "focus_mode",
                 new String[]{"Continuous picture autofocus", "Single autofocus"}, "Continuous picture autofocus");
         addSwitch("Haptic shutter", "Short tactile response when a frame is taken", AppSettings.HAPTICS, true);
+        addSwitch("Shutter sound", "Mechanical leaf shutter audio click on capture", AppSettings.SHUTTER_SOUND, true);
 
-        addSection("CINEMATIC VIDEO", "High-bitrate motion recording with film shutter timing.");
+        beginSection("CINEMATIC VIDEO", "High-bitrate motion recording with film shutter timing.");
         addChoice("Video frame rate", "Cinematic motion blur cadence", AppSettings.VIDEO_FPS,
                 new String[]{"24 fps (Cinematic)", "30 fps", "60 fps"}, "24 fps (Cinematic)");
         addChoice("Video framing", "Framing aspect ratio for video recording", AppSettings.VIDEO_ASPECT,
@@ -204,7 +224,7 @@ public class SettingsActivity extends Activity {
                 new String[]{"High · 24 Mbps", "Ultra · 35 Mbps", "Standard · 14 Mbps"}, "High · 24 Mbps");
         addInfo("180° Shutter Rule", "In 24 fps cinematic mode, the app targets a 1/48s exposure interval for authentic motion cadence.", 0xffaab3ad);
 
-        addSection("VIEWFINDER", "Framing and exposure aids.");
+        beginSection("VIEWFINDER", "Framing and exposure aids.");
         addChoice("Composition grid", "Choose a guide overlay inside the viewfinder frame", AppSettings.GRID_STYLE,
                 new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");
         addSwitch("Visual level", "Artificial horizon bar that illuminates gold when level", AppSettings.VISUAL_LEVEL, true);
@@ -216,10 +236,11 @@ public class SettingsActivity extends Activity {
         addInfo("Manual sensor support", hasManual ? "Shutter and ISO controls are available" : "Not confirmed yet · depends on the selected camera", hasManual ? ACCENT : 0xffdfb56f);
         addInfo("Capture pipeline", "Camera2 RAW_SENSOR → DNG original → Lika Lens render", 0xffaab3ad);
         addInfo("Limitations", "If a camera cannot stream RAW with the live preview, Lika Lens falls back to a rendered JPEG and labels that capture.", 0xffaab3ad);
+        finishSection();
     }
 
     private void populateGeneralSettings() {
-        addSection("OUTPUT & FILES", "Shareable renders and a recoverable negative.");
+        beginSection("OUTPUT & FILES", "Shareable renders and a recoverable negative.");
         addChoice("Rendered file", "Current Android build exports JPEG", "render_format",
                 new String[]{"JPEG · maximum quality"}, "JPEG · maximum quality");
         addChoice("JPEG quality", "Compression level for the rendered image", "jpeg_quality",
@@ -230,75 +251,180 @@ public class SettingsActivity extends Activity {
                 new String[]{"LIKA", "STILLS", "Custom later"}, "LIKA");
         addSwitch("Save rendered JPEG to Photos", "Add the developed still to Pictures/Lika Lens", AppSettings.AUTO_EXPORT, true);
         addSwitch("Write location metadata", "Location permission and metadata support are not enabled in this build", AppSettings.LOCATION, false);
-        addSection("APP", "About the current image pipeline.");
+
+        beginSection("APP", "About the current image pipeline.");
         addInfo("Viewfinder", "The device's live feed is only for framing. Lika Lens develops the final look from RAW after capture.", 0xffaab3ad);
+        finishSection();
     }
 
-    private void addSection(String title, String subtitle) {
-        LinearLayout card = card();
-        TextView titleView = text(title, 9, ACCENT, true);
-        titleView.setLetterSpacing(.16f);
-        card.addView(titleView);
-        TextView sub = text(subtitle, 9, 0xff8d9892, false);
-        sub.setPadding(0, dp(5), 0, dp(2));
-        card.addView(sub);
-        addCard(card);
+    private void beginSection(String title, String subtitle) {
+        finishSection();
+        if (title != null && !title.isEmpty()) {
+            LinearLayout header = new LinearLayout(this);
+            header.setOrientation(LinearLayout.VERTICAL);
+            header.setPadding(dp(4), dp(16), dp(4), dp(6));
+            TextView titleView = text(title, 9, ACCENT, true);
+            titleView.setLetterSpacing(.16f);
+            header.addView(titleView);
+            if (subtitle != null && !subtitle.isEmpty()) {
+                TextView sub = text(subtitle, 8, 0xff8d9892, false);
+                sub.setPadding(0, dp(3), 0, 0);
+                header.addView(sub);
+            }
+            content.addView(header);
+        }
+        currentSectionCard = new LinearLayout(this);
+        currentSectionCard.setOrientation(LinearLayout.VERTICAL);
+        currentSectionCard.setBackground(round(CARD, 16, LINE, dp(1)));
+    }
+
+    private void finishSection() {
+        if (currentSectionCard != null) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+            lp.bottomMargin = dp(14);
+            content.addView(currentSectionCard, lp);
+            currentSectionCard = null;
+        }
+    }
+
+    private void addRowToCurrentCard(View row) {
+        if (currentSectionCard == null) beginSection("", null);
+        if (currentSectionCard.getChildCount() > 0) {
+            View divider = new View(this);
+            divider.setBackgroundColor(0xff1f2628);
+            LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(-1, dp(1));
+            divLp.setMargins(dp(14), 0, dp(14), 0);
+            currentSectionCard.addView(divider, divLp);
+        }
+        currentSectionCard.addView(row);
     }
 
     private void addEditorHero() {
-        LinearLayout previewCard = card();
+        LinearLayout previewCard = new LinearLayout(this);
+        previewCard.setOrientation(LinearLayout.VERTICAL);
+        previewCard.setBackground(round(CARD, 16, LINE, dp(1)));
         previewCard.setPadding(dp(8), dp(8), dp(8), dp(9));
+
         FrameLayout frame = new FrameLayout(this);
-        frame.setBackground(round(0xff0b0d0e, 14, LINE, dp(1)));
+        frame.setBackground(round(0xff0b0d0e, 12, LINE, dp(1)));
         frame.setClipToOutline(true);
-        ImageView image = new ImageView(this);
-        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        frame.addView(image, new FrameLayout.LayoutParams(-1, dp(192)));
+
+        heroImageView = new ImageView(this);
+        heroImageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        frame.addView(heroImageView, new FrameLayout.LayoutParams(-1, dp(192)));
+
         Uri latest = latestScopeImage();
-        Bitmap preview = latest == null ? null : decodePreview(latest, dp(640), dp(400));
-        if (preview != null) {
-            image.setImageBitmap(preview);
+        baseHeroBitmap = latest == null ? null : decodePreview(latest, dp(640), dp(400));
+        if (baseHeroBitmap != null) {
+            heroImageView.setImageBitmap(baseHeroBitmap);
+            triggerHeroUpdate();
         } else {
-            image.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+            heroImageView.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
                     new int[]{0xff283237, 0xff131a1c, 0xff090b0c}));
             PlaceholderArtwork art = new PlaceholderArtwork();
             frame.addView(art, new FrameLayout.LayoutParams(-1, dp(192)));
         }
+
         LinearLayout caption = new LinearLayout(this);
         caption.setOrientation(LinearLayout.VERTICAL);
         caption.setPadding(dp(12), dp(22), dp(12), dp(10));
         caption.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
                 new int[]{0x00080b0c, 0xb8080b0c}));
-        TextView shot = text(preview == null ? "READY TO DEVELOP" : "LAST FRAME", 8, ACCENT, true);
+
+        LinearLayout captionTop = new LinearLayout(this);
+        captionTop.setGravity(Gravity.CENTER_VERTICAL);
+        TextView shot = text(baseHeroBitmap == null ? "READY TO DEVELOP" : "LAST FRAME · HOLD TO COMPARE", 8, ACCENT, true);
         shot.setLetterSpacing(.15f);
-        caption.addView(shot);
+        captionTop.addView(shot, new LinearLayout.LayoutParams(0, -2, 1));
+
+        heroCompareBadge = text("ORIGINAL", 8, 0xfff0f2eb, true);
+        heroCompareBadge.setBackground(round(0x88000000, 6, 0xffffffff, dp(1)));
+        heroCompareBadge.setPadding(dp(6), dp(2), dp(6), dp(2));
+        heroCompareBadge.setVisibility(View.GONE);
+        captionTop.addView(heroCompareBadge);
+        caption.addView(captionTop);
+
         TextView look = text(AppSettings.brain(this), 10, 0xfff1f2ec, true);
         LinearLayout.LayoutParams lookLp = new LinearLayout.LayoutParams(-1, -2);
         lookLp.topMargin = dp(3);
         caption.addView(look, lookLp);
+
         FrameLayout.LayoutParams captionLp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
         frame.addView(caption, captionLp);
+
+        // Touch-and-hold to compare on the hero preview
+        frame.setOnTouchListener((v, event) -> {
+            if (baseHeroBitmap == null) return false;
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+                    frame.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                }
+                heroImageView.setImageBitmap(baseHeroBitmap);
+                heroCompareBadge.setVisibility(View.VISIBLE);
+                return true;
+            } else if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                heroCompareBadge.setVisibility(View.GONE);
+                triggerHeroUpdate();
+                return true;
+            }
+            return false;
+        });
+
         previewCard.addView(frame);
+
         LinearLayout.LayoutParams previewLp = new LinearLayout.LayoutParams(-1, -2);
-        previewLp.bottomMargin = dp(8);
+        previewLp.bottomMargin = dp(14);
         content.addView(previewCard, previewLp);
 
-        LinearLayout toneCard = card();
-        TextView toneTitle = text("TONE", 9, ACCENT, true);
+        // Tone quick vertical sliders card
+        LinearLayout toneCard = new LinearLayout(this);
+        toneCard.setOrientation(LinearLayout.VERTICAL);
+        toneCard.setBackground(round(CARD, 16, LINE, dp(1)));
+        toneCard.setPadding(dp(14), dp(12), dp(14), dp(12));
+
+        TextView toneTitle = text("TONE PREVIEW", 9, ACCENT, true);
         toneTitle.setLetterSpacing(.15f);
         toneCard.addView(toneTitle);
-        TextView toneHint = text("Shapes the next capture · hold a slider for fine adjustment", 8, 0xff89948e, false);
+
+        TextView toneHint = text("Drag sliders to preview look response in real time", 8, 0xff89948e, false);
         toneHint.setPadding(0, dp(3), 0, dp(9));
         toneCard.addView(toneHint);
+
         LinearLayout sliders = new LinearLayout(this);
         sliders.setGravity(Gravity.CENTER);
         addVerticalControl(sliders, "PIVOT", AppSettings.PIVOT, AppSettings.DEFAULT_PIVOT);
         addVerticalControl(sliders, "HIGHLIGHTS", AppSettings.HIGHLIGHTS, AppSettings.DEFAULT_HIGHLIGHTS);
         addVerticalControl(sliders, "SHADOW DEPTH", AppSettings.SHADOWS, AppSettings.DEFAULT_SHADOWS);
         toneCard.addView(sliders, new LinearLayout.LayoutParams(-1, -2));
+
         LinearLayout.LayoutParams toneLp = new LinearLayout.LayoutParams(-1, -2);
         toneLp.bottomMargin = dp(14);
         content.addView(toneCard, toneLp);
+    }
+
+    private void triggerHeroUpdate() {
+        if (heroImageView == null || baseHeroBitmap == null) return;
+        if (isUpdatingHero) return;
+        isUpdatingHero = true;
+        new Thread(() -> {
+            try {
+                Bitmap small = Bitmap.createScaledBitmap(baseHeroBitmap, 320, 200, true);
+                ByteArrayOutputStream bytesOut = new ByteArrayOutputStream();
+                small.compress(Bitmap.CompressFormat.JPEG, 85, bytesOut);
+                small.recycle();
+                Bitmap developed = RawDeveloper.developJpeg(bytesOut.toByteArray(), SettingsActivity.this);
+                if (developed != null) {
+                    mainHandler.post(() -> {
+                        if (heroImageView != null && (heroCompareBadge == null || heroCompareBadge.getVisibility() != View.VISIBLE)) {
+                            heroImageView.setImageBitmap(developed);
+                        }
+                    });
+                }
+            } catch (Exception ignored) {
+            } finally {
+                isUpdatingHero = false;
+            }
+        }).start();
     }
 
     private void addVerticalControl(LinearLayout row, String label, String key, int fallback) {
@@ -323,6 +449,7 @@ public class SettingsActivity extends Activity {
         slider.setOnValueChanged(next -> {
             value.setText(next + (fineMode[0] ? " · FINE" : ""));
             AppSettings.prefs(SettingsActivity.this).edit().putInt(key, next).apply();
+            triggerHeroUpdate();
         });
         LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(-1, dp(122));
         column.addView(slider, sliderLp);
@@ -349,7 +476,7 @@ public class SettingsActivity extends Activity {
         File pictures = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
         for (String folderName : new String[]{"Lika Lens", "SCOPE"}) {
             File folder = new File(pictures, folderName);
-            File[] files = folder.listFiles((dir, name) -> name.toLowerCase(java.util.Locale.US).endsWith(".jpg"));
+            File[] files = folder.listFiles((dir, name) -> name.toLowerCase(Locale.US).endsWith(".jpg"));
             if (files != null) java.util.Collections.addAll(candidates, files);
         }
         if (candidates.isEmpty()) return null;
@@ -382,39 +509,108 @@ public class SettingsActivity extends Activity {
     }
 
     private void addChoice(String title, String subtitle, String key, String[] options, String defaultValue) {
-        LinearLayout card = card();
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(14), dp(12), dp(14), dp(12));
         LinearLayout copy = new LinearLayout(this);
         copy.setOrientation(LinearLayout.VERTICAL);
         copy.addView(text(title, 11, 0xffe6eae4, true));
-        TextView detail = text(subtitle, 8, 0xff89948e, false);
-        detail.setPadding(0, dp(4), 0, 0);
-        copy.addView(detail);
+        if (subtitle != null && !subtitle.isEmpty()) {
+            TextView detail = text(subtitle, 8, 0xff89948e, false);
+            detail.setPadding(0, dp(3), 0, 0);
+            copy.addView(detail);
+        }
         row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
         String current = AppSettings.get(this, key, defaultValue);
         TextView value = pill(shortValue(current), false);
         row.addView(value, new LinearLayout.LayoutParams(-2, dp(32)));
-        row.setOnClickListener(v -> {
-            String selected = AppSettings.get(this, key, defaultValue);
-            int checked = 0;
-            for (int i = 0; i < options.length; i++) if (options[i].equals(selected)) checked = i;
-            new AlertDialog.Builder(this).setTitle(title).setSingleChoiceItems(options, checked, (dialog, which) -> {
-                AppSettings.prefs(this).edit().putString(key, options[which]).apply();
+        row.setOnClickListener(v -> showChoiceDialog(title, key, options, defaultValue, value));
+        addRowToCurrentCard(row);
+    }
+
+    private void showChoiceDialog(String title, String key, String[] options, String defaultValue, TextView valueView) {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            dialog.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT);
+        }
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
+        sheet.setPadding(dp(20), dp(16), dp(20), dp(20));
+
+        View handle = new View(this);
+        handle.setBackground(round(0xff404846, 2, 0, 0));
+        LinearLayout.LayoutParams handleLp = new LinearLayout.LayoutParams(dp(36), dp(4));
+        handleLp.gravity = Gravity.CENTER_HORIZONTAL;
+        handleLp.bottomMargin = dp(14);
+        sheet.addView(handle, handleLp);
+
+        TextView titleView = text(title.toUpperCase(Locale.US), 10, ACCENT, true);
+        titleView.setLetterSpacing(.14f);
+        titleView.setGravity(Gravity.CENTER);
+        sheet.addView(titleView);
+
+        View spacer = new View(this);
+        sheet.addView(spacer, new LinearLayout.LayoutParams(-1, dp(12)));
+
+        ScrollView optScroll = new ScrollView(this);
+        optScroll.setVerticalScrollBarEnabled(false);
+        LinearLayout optionsList = new LinearLayout(this);
+        optionsList.setOrientation(LinearLayout.VERTICAL);
+
+        String selected = AppSettings.get(this, key, defaultValue);
+        for (String option : options) {
+            boolean isCurrent = option.equals(selected);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(14), dp(13), dp(14), dp(13));
+            row.setBackground(round(isCurrent ? 0x22d7b574 : 0x00000000, 10, isCurrent ? 0x66d7b574 : 0, isCurrent ? dp(1) : 0));
+
+            TextView label = text(option, 11, isCurrent ? ACCENT : 0xffe6eae4, isCurrent);
+            row.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
+
+            if (isCurrent) {
+                TextView check = text("✓", 12, ACCENT, true);
+                row.addView(check);
+            }
+
+            row.setOnClickListener(v -> {
+                if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+                    row.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                }
+                AppSettings.prefs(this).edit().putString(key, option).apply();
                 if (AppSettings.WHITE_BALANCE_MODE.equals(key)) {
-                    String wbPreset = options[which];
-                    int kelvin = wbPreset.startsWith("Auto") ? 0 : wbPreset.startsWith("3200") ? 3200 : wbPreset.startsWith("4000") ? 4000
-                            : wbPreset.startsWith("5000") ? 5000 : wbPreset.startsWith("6500") ? 6500
-                            : wbPreset.startsWith("7500") ? 7500 : 5600;
+                    int kelvin = option.startsWith("Auto") ? 0 : option.startsWith("3200") ? 3200 : option.startsWith("4000") ? 4000
+                            : option.startsWith("5000") ? 5000 : option.startsWith("6500") ? 6500
+                            : option.startsWith("7500") ? 7500 : 5600;
                     AppSettings.prefs(this).edit().putInt(AppSettings.WHITE_BALANCE, kelvin).apply();
                 }
-                value.setText(shortValue(options[which]));
+                valueView.setText(shortValue(option));
+                triggerHeroUpdate();
                 dialog.dismiss();
-            }).setNegativeButton("Cancel", null).show();
-        });
-        card.addView(row);
-        addCard(card);
+            });
+
+            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, -2);
+            rowLp.bottomMargin = dp(4);
+            optionsList.addView(row, rowLp);
+        }
+        optScroll.addView(optionsList, new FrameLayout.LayoutParams(-1, -2));
+        sheet.addView(optScroll, new LinearLayout.LayoutParams(-1, dp(Math.min(280, options.length * 52 + 10))));
+
+        TextView cancel = pill("CLOSE", false);
+        cancel.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(-1, dp(38));
+        cancelLp.topMargin = dp(12);
+        sheet.addView(cancel, cancelLp);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+
+        dialog.setContentView(sheet);
+        dialog.show();
     }
 
     private String shortValue(String value) {
@@ -423,7 +619,10 @@ public class SettingsActivity extends Activity {
     }
 
     private void addSlider(String title, String subtitle, String key, int min, int max, int defaultValue) {
-        LinearLayout card = card();
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(dp(14), dp(12), dp(14), dp(10));
+
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
         TextView name = text(title, 11, 0xffe6eae4, true);
@@ -431,27 +630,52 @@ public class SettingsActivity extends Activity {
         TextView value = text(sliderValue(key, AppSettings.getInt(this, key, defaultValue)), 9, ACCENT, true);
         value.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         top.addView(value);
-        card.addView(top);
-        TextView detail = text(subtitle, 8, 0xff89948e, false);
-        detail.setPadding(0, dp(3), 0, 0);
-        card.addView(detail);
+        row.addView(top);
+
+        if (subtitle != null && !subtitle.isEmpty()) {
+            TextView detail = text(subtitle, 8, 0xff89948e, false);
+            detail.setPadding(0, dp(2), 0, 0);
+            row.addView(detail);
+        }
+
         SeekBar seek = new SeekBar(this);
         seek.setMax(max - min);
         seek.setProgress(Math.max(0, Math.min(max - min, AppSettings.getInt(this, key, defaultValue) - min)));
         seek.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
         seek.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
-        seek.setPadding(dp(1), 0, dp(1), 0);
-        card.addView(seek, new LinearLayout.LayoutParams(-1, dp(31)));
+        seek.setPadding(dp(1), dp(4), dp(1), 0);
+        row.addView(seek, new LinearLayout.LayoutParams(-1, dp(32)));
+
+        final int[] lastHapticVal = {AppSettings.getInt(this, key, defaultValue)};
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 int selected = min + progress;
                 value.setText(sliderValue(key, selected));
-                if (fromUser) AppSettings.prefs(SettingsActivity.this).edit().putInt(key, selected).apply();
+                if (fromUser) {
+                    AppSettings.prefs(SettingsActivity.this).edit().putInt(key, selected).apply();
+                    triggerHeroUpdate();
+                    if (AppSettings.getBoolean(SettingsActivity.this, AppSettings.HAPTICS, true)) {
+                        boolean isLandmark = false;
+                        if (AppSettings.EXPOSURE.equals(key) && selected == 0) isLandmark = true;
+                        else if (AppSettings.WARMTH.equals(key) && selected == 50) isLandmark = true;
+                        else if (AppSettings.CONTRAST.equals(key) && selected == 100) isLandmark = true;
+                        else if (AppSettings.PIVOT.equals(key) && selected == 50) isLandmark = true;
+                        else if (AppSettings.SATURATION.equals(key) && selected == 100) isLandmark = true;
+
+                        if (isLandmark) {
+                            seekBar.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                            lastHapticVal[0] = selected;
+                        } else if (Math.abs(selected - lastHapticVal[0]) >= 6) {
+                            seekBar.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                            lastHapticVal[0] = selected;
+                        }
+                    }
+                }
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) { }
             @Override public void onStopTrackingTouch(SeekBar seekBar) { }
         });
-        addCard(card);
+        addRowToCurrentCard(row);
     }
 
     private String sliderValue(String key, int value) {
@@ -461,51 +685,42 @@ public class SettingsActivity extends Activity {
     }
 
     private void addSwitch(String title, String subtitle, String key, boolean fallback) {
-        LinearLayout card = card();
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(14), dp(12), dp(14), dp(12));
         LinearLayout copy = new LinearLayout(this);
         copy.setOrientation(LinearLayout.VERTICAL);
         copy.addView(text(title, 11, 0xffe6eae4, true));
-        TextView detail = text(subtitle, 8, 0xff89948e, false);
-        detail.setPadding(0, dp(4), 0, 0);
-        copy.addView(detail);
+        if (subtitle != null && !subtitle.isEmpty()) {
+            TextView detail = text(subtitle, 8, 0xff89948e, false);
+            detail.setPadding(0, dp(3), 0, 0);
+            copy.addView(detail);
+        }
         row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
         Switch toggle = new Switch(this);
         toggle.setButtonTintList(android.content.res.ColorStateList.valueOf(ACCENT));
         toggle.setChecked(AppSettings.getBoolean(this, key, fallback));
         if (AppSettings.LOCATION.equals(key)) toggle.setEnabled(false);
-        toggle.setOnCheckedChangeListener((button, checked) -> AppSettings.prefs(this).edit().putBoolean(key, checked).apply());
+        toggle.setOnCheckedChangeListener((button, checked) -> {
+            if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+                toggle.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+            }
+            AppSettings.prefs(this).edit().putBoolean(key, checked).apply();
+            triggerHeroUpdate();
+        });
         row.addView(toggle);
-        card.addView(row);
-        addCard(card);
+        addRowToCurrentCard(row);
     }
 
     private void addInfo(String title, String detailText, int color) {
-        LinearLayout card = card();
-        card.addView(text(title, 10, 0xffe6eae4, true));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(dp(14), dp(10), dp(14), dp(10));
+        row.addView(text(title, 10, 0xffe6eae4, true));
         TextView detail = text(detailText, 8, color, false);
-        detail.setPadding(0, dp(5), 0, 0);
-        card.addView(detail);
-        addCard(card);
-    }
-
-    private LinearLayout card() {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(13), dp(12), dp(13), dp(12));
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(CARD);
-        background.setCornerRadius(dp(14));
-        background.setStroke(dp(1), LINE);
-        card.setBackground(background);
-        return card;
-    }
-
-    private void addCard(LinearLayout card) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.bottomMargin = dp(8);
-        content.addView(card, lp);
+        detail.setPadding(0, dp(4), 0, 0);
+        row.addView(detail);
+        addRowToCurrentCard(row);
     }
 
     private TextView text(String value, float size, int color, boolean bold) {

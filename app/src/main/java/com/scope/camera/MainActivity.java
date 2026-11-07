@@ -151,6 +151,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         public void onAccuracyChanged(Sensor sensor, int accuracy) {}
     };
 
+    private boolean wasHorizonLevel = false;
+
     private void updateHorizonRoll(float angle) {
         float normalized = ((angle % 360f) + 360f) % 360f;
         float nearestCardinal = Math.round(normalized / 90f) * 90f;
@@ -160,10 +162,63 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         deviceRollAngle = diff;
         smoothRollAngle = smoothRollAngle * 0.82f + deviceRollAngle * 0.18f;
+
+        boolean showLevel = AppSettings.getBoolean(this, AppSettings.VISUAL_LEVEL, true);
+        if (showLevel && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            boolean isLevel = Math.abs(smoothRollAngle) <= 1.0f;
+            if (isLevel && !wasHorizonLevel) {
+                if (captureButton != null) {
+                    captureButton.performHapticFeedback(HapticFeedbackConstants.CONFIRM);
+                }
+                wasHorizonLevel = true;
+            } else if (!isLevel && Math.abs(smoothRollAngle) > 1.4f) {
+                wasHorizonLevel = false;
+            }
+        }
+
         if (gridOverlay != null) {
             gridOverlay.postInvalidate();
         }
     }
+
+    private View shutterWink;
+    private android.media.MediaActionSound mediaActionSound;
+
+    private void hapticClick(View v) {
+        if (v != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+    }
+
+    private void triggerShutterWink() {
+        if (shutterWink == null) return;
+        runOnUiThread(() -> {
+            shutterWink.animate().cancel();
+            shutterWink.setAlpha(0.88f);
+            shutterWink.setVisibility(View.VISIBLE);
+            shutterWink.animate()
+                    .alpha(0f)
+                    .setDuration(120)
+                    .setStartDelay(40)
+                    .setInterpolator(new DecelerateInterpolator())
+                    .withEndAction(() -> shutterWink.setVisibility(View.GONE))
+                    .start();
+        });
+    }
+
+    private void playShutterSound(int soundType) {
+        if (!AppSettings.getBoolean(this, AppSettings.SHUTTER_SOUND, true)) return;
+        try {
+            if (mediaActionSound == null) {
+                mediaActionSound = new android.media.MediaActionSound();
+                mediaActionSound.load(android.media.MediaActionSound.SHUTTER_CLICK);
+                mediaActionSound.load(android.media.MediaActionSound.START_VIDEO_RECORDING);
+                mediaActionSound.load(android.media.MediaActionSound.STOP_VIDEO_RECORDING);
+            }
+            mediaActionSound.play(soundType);
+        } catch (Throwable ignored) {}
+    }
+
     private LinearLayout zoomSliderPanel;
     private SeekBar zoomSlider;
     private ScaleGestureDetector scaleGestureDetector;
@@ -308,6 +363,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             cameraHandler = null;
         }
         processor.shutdown();
+        if (mediaActionSound != null) {
+            try { mediaActionSound.release(); } catch (Throwable ignored) {}
+            mediaActionSound = null;
+        }
         super.onDestroy();
     }
 
@@ -363,44 +422,44 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         LinearLayout header = row();
         flashButton = pill("ϟ  OFF", false);
         header.addView(flashButton, new LinearLayout.LayoutParams(dp(60), dp(38)));
-        flashButton.setOnClickListener(v -> cycleFlash());
+        flashButton.setOnClickListener(v -> { hapticClick(v); cycleFlash(); });
         aspectButton = pill("4:3", false);
         LinearLayout.LayoutParams aspectLp = new LinearLayout.LayoutParams(-2, dp(38));
         aspectLp.leftMargin = dp(6);
         header.addView(aspectButton, aspectLp);
-        aspectButton.setOnClickListener(v -> chooseAspectRatio());
+        aspectButton.setOnClickListener(v -> { hapticClick(v); chooseAspectRatio(); });
 
         videoFpsButton = pill("24 FPS", true);
         LinearLayout.LayoutParams fpsLp = new LinearLayout.LayoutParams(-2, dp(38));
         fpsLp.leftMargin = dp(6);
         videoFpsButton.setVisibility(View.GONE);
         header.addView(videoFpsButton, fpsLp);
-        videoFpsButton.setOnClickListener(v -> cycleVideoFps());
+        videoFpsButton.setOnClickListener(v -> { hapticClick(v); cycleVideoFps(); });
 
         videoAspectButton = pill("16:9", false);
         LinearLayout.LayoutParams vaspectLp = new LinearLayout.LayoutParams(-2, dp(38));
         vaspectLp.leftMargin = dp(6);
         videoAspectButton.setVisibility(View.GONE);
         header.addView(videoAspectButton, vaspectLp);
-        videoAspectButton.setOnClickListener(v -> cycleVideoAspect());
+        videoAspectButton.setOnClickListener(v -> { hapticClick(v); cycleVideoAspect(); });
 
         View topSpacer = new View(this);
         header.addView(topSpacer, new LinearLayout.LayoutParams(0, 1, 1));
         brainButton = pill("FILM  ⌄", true);
         LinearLayout.LayoutParams brainLp = new LinearLayout.LayoutParams(dp(64), dp(38));
         brainLp.leftMargin = dp(6);
-        brainButton.setOnClickListener(v -> chooseBrain());
+        brainButton.setOnClickListener(v -> { hapticClick(v); chooseBrain(); });
         header.addView(brainButton, brainLp);
         timerButton = pill("◷  OFF", false);
         LinearLayout.LayoutParams timerLp = new LinearLayout.LayoutParams(dp(58), dp(38));
         timerLp.leftMargin = dp(6);
         header.addView(timerButton, timerLp);
-        timerButton.setOnClickListener(v -> cycleTimer());
+        timerButton.setOnClickListener(v -> { hapticClick(v); cycleTimer(); });
         settingsButton = pill("⚙", false);
         LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(dp(36), dp(38));
         settingsLp.leftMargin = dp(6);
         header.addView(settingsButton, settingsLp);
-        settingsButton.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
+        settingsButton.setOnClickListener(v -> { hapticClick(v); startActivity(new Intent(this, SettingsActivity.class)); });
         overlay.addView(header);
 
         LinearLayout spacer = new LinearLayout(this);
@@ -452,9 +511,23 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         LinearLayout.LayoutParams zoomSliderLp = new LinearLayout.LayoutParams(-1, -2);
         zoomSliderLp.topMargin = dp(4);
         overlay.addView(zoomSliderPanel, zoomSliderLp);
+        final float[] lastDetentZoom = {1.0f};
         zoomSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (fromUser) setInteractiveZoom(zoomForProgress(progress));
+                if (fromUser) {
+                    float z = zoomForProgress(progress);
+                    setInteractiveZoom(z);
+                    if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true)) {
+                        float[] landmarks = new float[]{0.5f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+                        for (float lm : landmarks) {
+                            if ((lastDetentZoom[0] < lm && z >= lm) || (lastDetentZoom[0] > lm && z <= lm)) {
+                                seekBar.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                                break;
+                            }
+                        }
+                        lastDetentZoom[0] = z;
+                    }
+                }
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {
                 zoomSliderScrubbing = true;
@@ -478,8 +551,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         modeLp.setMargins(dp(3), 0, dp(3), 0);
         modeRow.addView(photoModeButton, modeLp);
         modeRow.addView(videoModeButton, modeLp);
-        photoModeButton.setOnClickListener(v -> setVideoMode(false));
-        videoModeButton.setOnClickListener(v -> setVideoMode(true));
+        photoModeButton.setOnClickListener(v -> { hapticClick(v); setVideoMode(false); });
+        videoModeButton.setOnClickListener(v -> { hapticClick(v); setVideoMode(true); });
         overlay.addView(modeRow);
 
         LinearLayout lookRow = row();
@@ -489,11 +562,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         lookRow.addView(modeNote, noteTextLp);
         adjustButton = pill("ADJUST", false);
         adjustButton.setContentDescription("Open quick look controls");
-        adjustButton.setOnClickListener(v -> toggleQuickAdjustPanel());
+        adjustButton.setOnClickListener(v -> { hapticClick(v); toggleQuickAdjustPanel(); });
         lookRow.addView(adjustButton, new LinearLayout.LayoutParams(dp(72), dp(30)));
         recordingLockButton = pill("LOCK", false);
         recordingLockButton.setContentDescription("Lock video recording controls");
-        recordingLockButton.setOnClickListener(v -> setVideoScreenLocked(true));
+        recordingLockButton.setOnClickListener(v -> { hapticClick(v); setVideoScreenLocked(true); });
         lookRow.addView(recordingLockButton, new LinearLayout.LayoutParams(dp(62), dp(30)));
         recordingLockButton.setVisibility(View.GONE);
         LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
@@ -512,26 +585,82 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         LinearLayout.LayoutParams sideLp = new LinearLayout.LayoutParams(dp(48), dp(48));
         shootRow.addView(galleryButton, sideLp);
         galleryButton.setImageResource(R.drawable.ic_lika_lens);
-        galleryButton.setOnClickListener(v -> openLatestFrame());
-        galleryButton.setOnLongClickListener(v -> { openLibrary(); return true; });
+        galleryButton.setOnClickListener(v -> { hapticClick(v); openLatestFrame(); });
+        galleryButton.setOnLongClickListener(v -> { hapticClick(v); openLibrary(); return true; });
 
         View shootSpacer = new View(this);
         shootRow.addView(shootSpacer, new LinearLayout.LayoutParams(0, 1, 1));
         captureButton = label("", 12, BG, false);
         captureButton.setGravity(Gravity.CENTER);
         captureButton.setBackground(round(0xfffaf9f5, 100, 0xfffaf9f5, dp(2)));
+        captureButton.setClickable(false);
+        captureButton.setFocusable(false);
+
         shutterFrame = new FrameLayout(this);
         shutterFrame.setBackground(round(0x00202020, 100, 0xfffaf9f5, dp(2)));
         shutterFrame.addView(captureButton, new FrameLayout.LayoutParams(dp(54), dp(54), Gravity.CENTER));
         shootRow.addView(shutterFrame, new LinearLayout.LayoutParams(dp(68), dp(68)));
-        shutterFrame.setOnClickListener(v -> onShutterPressed());
-        captureButton.setOnClickListener(v -> onShutterPressed());
+        shutterFrame.setClickable(true);
+        shutterFrame.setFocusable(true);
+        shutterFrame.setOnTouchListener(new View.OnTouchListener() {
+            private boolean isDown = false;
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                if (!shutterFrame.isEnabled() || (captureButton != null && !captureButton.isEnabled())) {
+                    return false;
+                }
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        isDown = true;
+                        hapticClick(v);
+                        shutterFrame.animate().cancel();
+                        captureButton.animate().cancel();
+                        shutterFrame.animate().scaleX(0.88f).scaleY(0.88f).setDuration(70).setInterpolator(new DecelerateInterpolator()).start();
+                        captureButton.animate().scaleX(0.92f).scaleY(0.92f).setDuration(70).setInterpolator(new DecelerateInterpolator()).start();
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        if (isDown) {
+                            isDown = false;
+                            shutterFrame.animate().cancel();
+                            captureButton.animate().cancel();
+                            shutterFrame.animate().scaleX(1.0f).scaleY(1.0f).setDuration(220)
+                                    .setInterpolator(new android.view.animation.OvershootInterpolator(2.0f)).start();
+                            captureButton.animate().scaleX(1.0f).scaleY(1.0f).setDuration(220)
+                                    .setInterpolator(new android.view.animation.OvershootInterpolator(1.8f)).start();
+                            float x = event.getX(), y = event.getY();
+                            int slop = dp(24);
+                            if (x >= -slop && x <= v.getWidth() + slop && y >= -slop && y <= v.getHeight() + slop) {
+                                if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true)) {
+                                    v.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+                                }
+                                onShutterPressed();
+                            }
+                            return true;
+                        }
+                        break;
+                    case MotionEvent.ACTION_CANCEL:
+                        if (isDown) {
+                            isDown = false;
+                            shutterFrame.animate().cancel();
+                            captureButton.animate().cancel();
+                            shutterFrame.animate().scaleX(1.0f).scaleY(1.0f).setDuration(160)
+                                    .setInterpolator(new DecelerateInterpolator()).start();
+                            captureButton.animate().scaleX(1.0f).scaleY(1.0f).setDuration(160)
+                                    .setInterpolator(new DecelerateInterpolator()).start();
+                            return true;
+                        }
+                        break;
+                }
+                return false;
+            }
+        });
+
         shootRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
         TextView flip = pill("⟳", false);
         flip.setTextSize(18f);
         flip.setContentDescription("Switch front and rear camera");
         shootRow.addView(flip, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        flip.setOnClickListener(v -> toggleCameraFacing());
+        flip.setOnClickListener(v -> { hapticClick(v); toggleCameraFacing(); });
         flipButton = flip;
         overlay.addView(shootRow);
 
@@ -553,6 +682,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         messageLp.bottomMargin = dp(24);
         root.addView(messageView, messageLp);
         buildVideoLockOverlay();
+
+        shutterWink = new View(this);
+        shutterWink.setBackgroundColor(0xff060809);
+        shutterWink.setVisibility(View.GONE);
+        shutterWink.setClickable(false);
+        shutterWink.setFocusable(false);
+        root.addView(shutterWink, new FrameLayout.LayoutParams(-1, -1));
+
         updateVideoModeUi();
         setContentView(root);
     }
@@ -680,6 +817,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (adjustButton != null) adjustButton.setEnabled(controlsAvailable);
         if (recordingLockButton != null) recordingLockButton.setEnabled(videoRecording && !videoScreenLocked);
         if (captureButton != null) captureButton.setEnabled(!videoStarting && (videoRecording || cameraDevice != null));
+        if (shutterFrame != null) shutterFrame.setEnabled(!videoStarting && (videoRecording || cameraDevice != null));
 
         if (captureButton != null && shutterFrame != null) {
             int fill = videoMode ? (videoRecording ? 0xfff0443c : 0xffd93632) : 0xfffaf9f5;
@@ -851,6 +989,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         applyZoom(request);
                         session.setRepeatingRequest(request.build(), null, cameraHandler);
                         mediaRecorder.start();
+                        playShutterSound(android.media.MediaActionSound.START_VIDEO_RECORDING);
                         videoStarting = false;
                         videoRecording = true;
                         videoStartedAt = SystemClock.elapsedRealtime();
@@ -926,6 +1065,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             try {
                 mediaRecorder.stop();
                 saved = recordedFile != null && recordedFile.isFile() && recordedFile.length() > 0;
+                if (saved) playShutterSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING);
             } catch (RuntimeException ignored) { }
         }
         videoRecording = false;
@@ -1091,11 +1231,34 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         seek.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
         control.addView(seek, new LinearLayout.LayoutParams(-1, dp(28)));
         updateQuickValue(value, key, selected);
+        final int[] lastHapticVal = {selected};
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
                 int next = min + progress;
                 updateQuickValue(value, key, next);
-                if (fromUser) AppSettings.prefs(MainActivity.this).edit().putInt(key, next).apply();
+                if (fromUser) {
+                    AppSettings.prefs(MainActivity.this).edit().putInt(key, next).apply();
+                    if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true)) {
+                        boolean isLandmark = false;
+                        if (AppSettings.EXPOSURE.equals(key) && next == 0) isLandmark = true;
+                        else if (AppSettings.WARMTH.equals(key) && next == 50) isLandmark = true;
+                        else if (AppSettings.CONTRAST.equals(key) && next == 100) isLandmark = true;
+                        else if (AppSettings.SHADOWS.equals(key) && next == 50) isLandmark = true;
+                        else if (AppSettings.SATURATION.equals(key) && next == 100) isLandmark = true;
+                        else if (AppSettings.HIGHLIGHTS.equals(key) && next == 50) isLandmark = true;
+                        else if (AppSettings.GRAIN.equals(key) && next == 0) isLandmark = true;
+                        else if (AppSettings.HALATION.equals(key) && next == 0) isLandmark = true;
+                        else if (AppSettings.SHARPEN.equals(key) && next == 50) isLandmark = true;
+
+                        if (isLandmark) {
+                            bar.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                            lastHapticVal[0] = next;
+                        } else if (Math.abs(next - lastHapticVal[0]) >= 6) {
+                            bar.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                            lastHapticVal[0] = next;
+                        }
+                    }
+                }
             }
             @Override public void onStartTrackingTouch(SeekBar bar) { }
             @Override public void onStopTrackingTouch(SeekBar bar) { }
@@ -1651,6 +1814,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void performCapture() {
         if (captureSession == null || cameraDevice == null) return;
+        triggerShutterWink();
+        playShutterSound(android.media.MediaActionSound.SHUTTER_CLICK);
+        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
+            captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+        }
         try {
             Surface target = useRawForThisCamera && rawReader != null ? rawReader.getSurface() : jpegReader.getSurface();
             CaptureRequest.Builder still = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
@@ -1899,6 +2067,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void chooseLens(float factor) {
+        hapticClick(captureButton);
         if (cameraManager == null || mainCameraId == null) {
             requestedZoom = Math.max(.5f, factor);
             updateLensButtons(requestedZoom);

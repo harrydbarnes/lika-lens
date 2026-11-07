@@ -48,6 +48,7 @@ final class AppSettings {
     static final String VIDEO_FPS = "video_fps";
     static final String VIDEO_ASPECT = "video_aspect";
     static final String VIDEO_BITRATE = "video_bitrate";
+    static final String SHUTTER_SOUND = "shutter_sound";
 
     static final String[] ASPECT_RATIOS = {
             "2.39:1",
