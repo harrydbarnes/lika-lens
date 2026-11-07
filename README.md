@@ -21,11 +21,11 @@ The image direction is informed by [WIRED's interview with Steve Yedlin](https:/
 
 ## Build in Android Studio
 
-Open this folder as a project. Use JDK 17, Android Gradle Plugin 8.7.3, Gradle 8.14.6 and Android SDK Platform 35. The app has no third-party library dependencies. The build targets API 35 and supports API 26 and newer.
+Open this folder as a project. Use JDK 17, Android Gradle Plugin 9.5.0, Gradle 9.6.0, Android SDK Platform 35 and Build Tools 36.0.0. AGP 9.5 requires Gradle 9.6.0 and uses Build Tools 36.0.0 by default. The Java-only app has no third-party library dependencies. The build targets API 35 and supports API 26 and newer.
 
-The **Build Android APK** GitHub Actions workflow runs on pushes to `main`, pull requests and manual dispatch. It installs the Android 35 SDK, runs `assembleDebug`, and publishes `lika-lens-debug-apk` as a downloadable workflow artifact for 14 days.
+The **Build Android APK** GitHub Actions workflow runs on pushes to `main`, pull requests and manual dispatch. It installs Android SDK Platform 35 and Build Tools 36.0.0, runs `assembleDebug`, and publishes `lika-lens-debug-apk` as a downloadable workflow artifact for 14 days.
 
-This workspace does not include an Android SDK, Gradle installation or emulator, so an APK could not be compiled here. Android Studio can sync and build the project once those components are installed.
+To build locally, install the listed Android SDK components in Android Studio. Alternatively, push to `main` or run the workflow manually to produce a downloadable APK.
 
 ## Current limits
 

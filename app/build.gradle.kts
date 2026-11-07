@@ -5,6 +5,7 @@ plugins {
 android {
     namespace = "com.scope.camera"
     compileSdk = 35
+    enableKotlin = false
 
     defaultConfig {
         applicationId = "com.scope.camera"
