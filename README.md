@@ -7,6 +7,7 @@ The default **Lika / Film** rendering is intentionally opinionated. It is design
 ## Camera and controls
 
 - Clean point-and-shoot camera screen with one-tap RAW, Mono or Lika / Film mode switching.
+- Layered adaptive launcher icon with device-shaped masking, Android themed monochrome artwork and a legacy vector fallback.
 - **Adjust** opens a quick control panel for exposure, warmth, shadow depth, contrast, colour intensity, saturated colour roll-off, highlight roll-off, grain, halation and sharpening. The panel is hidden until requested; changes apply to the next capture.
 - Full settings page includes white balance, noise reduction, vignette, grain structure, RAW size, manual shutter and ISO, focus behaviour, frame shape, JPEG quality, file naming, export, haptics and composition grid.
 - Camera2 live preview, rear lens switching, digital zoom, flash, timer and composition grid.
