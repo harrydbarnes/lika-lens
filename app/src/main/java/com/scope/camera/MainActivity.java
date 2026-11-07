@@ -2034,8 +2034,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             super(activity);
             maskPaint.setColor(0x99080b0c);
             gridPaint.setColor(0xb8f2f3ec);
+            gridPaint.setStyle(Paint.Style.STROKE);
             gridPaint.setStrokeWidth(activity.getResources().getDisplayMetrics().density);
             framePaint.setColor(0x99d7b574);
+            framePaint.setStyle(Paint.Style.STROKE);
             framePaint.setStrokeWidth(activity.getResources().getDisplayMetrics().density * 1.25f);
         }
         @Override protected void onDraw(Canvas canvas) {
