@@ -1978,44 +1978,45 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         int relativeRotation = (sensorOrientation - surfaceRotationDegrees * sign + 360) % 360;
         boolean rotationRequired = relativeRotation % 180 != 0;
         RectF frame = framingRect(viewWidth, viewHeight);
-        float frameWidth = Math.max(1f, frame.width());
-        float frameHeight = Math.max(1f, frame.height());
 
-        // Match the camera image to the selected crop frame. The overlay masks
-        // everything outside this rectangle, so the live composition matches JPEG.
+        // First compensate for TextureView's non-uniform full-screen fill, then
+        // scale the corrected image into the selected frame. The overlay masks
+        // everything outside that frame so it matches the rendered JPEG crop.
         float scaleX;
         float scaleY;
         if (sensorOrientation == 0) {
             scaleX = rotationRequired
-                    ? frameWidth / (float) previewSize.getWidth()
-                    : frameWidth / (float) previewSize.getHeight();
+                    ? viewWidth / (float) previewSize.getWidth()
+                    : viewWidth / (float) previewSize.getHeight();
             scaleY = rotationRequired
-                    ? frameHeight / (float) previewSize.getHeight()
-                    : frameHeight / (float) previewSize.getWidth();
+                    ? viewHeight / (float) previewSize.getHeight()
+                    : viewHeight / (float) previewSize.getWidth();
         } else {
             scaleX = rotationRequired
-                    ? frameWidth / (float) previewSize.getHeight()
-                    : frameWidth / (float) previewSize.getWidth();
+                    ? viewWidth / (float) previewSize.getHeight()
+                    : viewWidth / (float) previewSize.getWidth();
             scaleY = rotationRequired
-                    ? frameHeight / (float) previewSize.getWidth()
-                    : frameHeight / (float) previewSize.getHeight();
+                    ? viewHeight / (float) previewSize.getWidth()
+                    : viewHeight / (float) previewSize.getHeight();
         }
         float finalScale = Math.max(scaleX, scaleY);
-        float centerX = frame.centerX();
-        float centerY = frame.centerY();
+        float centerX = viewWidth / 2f;
+        float centerY = viewHeight / 2f;
         Matrix matrix = new Matrix();
         if (rotationRequired) {
             matrix.setScale(1f / scaleX * finalScale, 1f / scaleY * finalScale, centerX, centerY);
         } else {
             matrix.setScale(
-                    frameHeight / frameWidth / scaleY * finalScale,
-                    frameWidth / frameHeight / scaleX * finalScale,
+                    viewHeight / (float) viewWidth / scaleY * finalScale,
+                    viewWidth / (float) viewHeight / scaleX * finalScale,
                     centerX,
                     centerY);
         }
         // Only compensate for actual display rotation. In portrait, the old
         // hard-coded 90° rotation turned the preview sideways and into a band.
         matrix.postRotate(-surfaceRotationDegrees, centerX, centerY);
+        float frameScale = Math.min(frame.width() / viewWidth, frame.height() / viewHeight);
+        matrix.postScale(frameScale, frameScale, centerX, centerY);
         textureView.setTransform(matrix);
     }
 
