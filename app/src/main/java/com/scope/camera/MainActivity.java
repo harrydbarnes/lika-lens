@@ -14,6 +14,7 @@ import android.graphics.Matrix;
 import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.camera2.CameraAccessException;
@@ -118,6 +119,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
     private CaptureRequest.Builder previewRequest;
+    private Surface previewSurface;
     private ImageReader rawReader;
     private ImageReader jpegReader;
     private MediaRecorder mediaRecorder;
@@ -205,7 +207,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         updateQuickButtons();
         updateReadouts();
         updateGalleryButton();
-        if (gridOverlay != null) gridOverlay.setVisibility(AppSettings.getBoolean(this, AppSettings.GRID, false) ? View.VISIBLE : View.GONE);
+        if (gridOverlay != null) gridOverlay.invalidate();
         if (textureView != null && textureView.isAvailable()) openCameraIfReady();
     }
 
@@ -248,7 +250,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         textureView.setSurfaceTextureListener(this);
         root.addView(textureView, new FrameLayout.LayoutParams(-1, -1));
         gridOverlay = new CompositionGrid(this);
-        gridOverlay.setVisibility(AppSettings.getBoolean(this, AppSettings.GRID, false) ? View.VISIBLE : View.GONE);
         root.addView(gridOverlay, new FrameLayout.LayoutParams(-1, -1));
 
         LinearLayout overlay = new LinearLayout(this);
@@ -1018,6 +1019,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 .setSingleChoiceItems(ratios, selected, (dialog, which) -> {
                     AppSettings.prefs(this).edit().putString(AppSettings.ASPECT_RATIO, ratios[which]).apply();
                     updateQuickButtons();
+                    if (gridOverlay != null) gridOverlay.invalidate();
+                    if (cameraDevice != null && characteristics != null) {
+                        StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                        if (map != null) {
+                            Size selectedPreview = choosePreviewSize(map.getOutputSizes(SurfaceTexture.class));
+                            if (selectedPreview != null) previewSize = selectedPreview;
+                            closeSessionOnly();
+                            createPreviewSession();
+                        }
+                    }
                     dialog.dismiss();
                 }).setNegativeButton("Cancel", null).show();
     }
@@ -1144,11 +1155,37 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private Size choosePreviewSize(Size[] sizes) {
         if (sizes == null || sizes.length == 0) return null;
+        float targetRatio = aspectRatioSetting();
         return Arrays.stream(sizes)
-                .filter(s -> s.getWidth() <= 1920 && s.getHeight() <= 1080)
-                .min(Comparator.comparingDouble(s -> Math.abs((s.getWidth() / (double) s.getHeight()) - 16.0 / 9.0)
+                .filter(s -> s.getWidth() >= s.getHeight())
+                .min(Comparator.comparingDouble(s -> Math.abs((s.getWidth() / (double) s.getHeight()) - targetRatio) * 4.0
                         + Math.abs(s.getWidth() - 1280) / 4000.0))
                 .orElse(sizes[0]);
+    }
+
+    private float aspectRatioSetting() {
+        String[] parts = AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3").split(":");
+        if (parts.length == 2) {
+            try {
+                float ratio = Float.parseFloat(parts[0]) / Float.parseFloat(parts[1]);
+                if (Float.isFinite(ratio) && ratio > 0f) return ratio;
+            } catch (NumberFormatException ignored) { }
+        }
+        return 4f / 3f;
+    }
+
+    private RectF framingRect(float width, float height) {
+        float ratio = aspectRatioSetting();
+        if (width < height) ratio = 1f / ratio;
+        float frameWidth = width;
+        float frameHeight = frameWidth / ratio;
+        if (frameHeight > height) {
+            frameHeight = height;
+            frameWidth = frameHeight * ratio;
+        }
+        float left = (width - frameWidth) * .5f;
+        float top = (height - frameHeight) * .5f;
+        return new RectF(left, top, left + frameWidth, top + frameHeight);
     }
 
     private final CameraDevice.StateCallback cameraStateCallback = new CameraDevice.StateCallback() {
@@ -1188,9 +1225,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         try {
             SurfaceTexture texture = textureView.getSurfaceTexture();
             texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
-            Surface previewSurface = new Surface(texture);
+            previewSurface = new Surface(texture);
+            Surface sessionPreviewSurface = previewSurface;
             List<Surface> outputs = new ArrayList<>();
-            outputs.add(previewSurface);
+            outputs.add(sessionPreviewSurface);
             if (useRawForThisCamera && rawReader != null) outputs.add(rawReader.getSurface());
             else if (jpegReader != null) outputs.add(jpegReader.getSurface());
             cameraDevice.createCaptureSession(outputs, new CameraCaptureSession.StateCallback() {
@@ -1199,7 +1237,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     captureSession = session;
                     try {
                         previewRequest = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-                        previewRequest.addTarget(previewSurface);
+                        previewRequest.addTarget(sessionPreviewSurface);
                         previewRequest.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
                         setExposure(previewRequest);
                         setFlash(previewRequest, true);
@@ -1244,6 +1282,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void closeSessionOnly() {
         if (captureSession != null) { captureSession.close(); captureSession = null; }
+        if (previewSurface != null) { previewSurface.release(); previewSurface = null; }
+        previewRequest = null;
     }
 
     private void onImageAvailable(ImageReader reader) {
@@ -1312,7 +1352,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (developed == null) throw new IllegalStateException("Renderer returned no image");
                 if (!raw) {
                     developed = rotateForDisplay(developed);
-                    developed = cropToAspect(developed);
+                    developed = cropToAspect(developed, capturedAspect);
                 }
                 if (!raw || !"DNG only".equals(format) || !dngSaved) writeJpeg(developed, prefix + "_" + stamp + ".jpg");
                 if (raw && keepEditableSource) PhotoEditStore.save(this, archiveKey, captureLook);
@@ -1420,8 +1460,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     /** Applies the selected composition to the render. The DNG remains full-frame. */
-    private Bitmap cropToAspect(Bitmap bitmap) {
-        String value = AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3");
+    private Bitmap cropToAspect(Bitmap bitmap, String value) {
+        if (value == null) value = AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3");
         String[] parts = value.split(":");
         if (parts.length != 2) return bitmap;
         float ratio;
@@ -1937,36 +1977,39 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         int sign = facing == CameraCharacteristics.LENS_FACING_FRONT ? 1 : -1;
         int relativeRotation = (sensorOrientation - surfaceRotationDegrees * sign + 360) % 360;
         boolean rotationRequired = relativeRotation % 180 != 0;
+        RectF frame = framingRect(viewWidth, viewHeight);
+        float frameWidth = Math.max(1f, frame.width());
+        float frameHeight = Math.max(1f, frame.height());
 
-        // TextureView already accounts for the sensor's mounting angle. Undo its
-        // default non-uniform fill, then centre-crop with equal X/Y scaling.
+        // Match the camera image to the selected crop frame. The overlay masks
+        // everything outside this rectangle, so the live composition matches JPEG.
         float scaleX;
         float scaleY;
         if (sensorOrientation == 0) {
             scaleX = rotationRequired
-                    ? viewWidth / (float) previewSize.getWidth()
-                    : viewWidth / (float) previewSize.getHeight();
+                    ? frameWidth / (float) previewSize.getWidth()
+                    : frameWidth / (float) previewSize.getHeight();
             scaleY = rotationRequired
-                    ? viewHeight / (float) previewSize.getHeight()
-                    : viewHeight / (float) previewSize.getWidth();
+                    ? frameHeight / (float) previewSize.getHeight()
+                    : frameHeight / (float) previewSize.getWidth();
         } else {
             scaleX = rotationRequired
-                    ? viewWidth / (float) previewSize.getHeight()
-                    : viewWidth / (float) previewSize.getWidth();
+                    ? frameWidth / (float) previewSize.getHeight()
+                    : frameWidth / (float) previewSize.getWidth();
             scaleY = rotationRequired
-                    ? viewHeight / (float) previewSize.getWidth()
-                    : viewHeight / (float) previewSize.getHeight();
+                    ? frameHeight / (float) previewSize.getWidth()
+                    : frameHeight / (float) previewSize.getHeight();
         }
         float finalScale = Math.max(scaleX, scaleY);
-        float centerX = viewWidth / 2f;
-        float centerY = viewHeight / 2f;
+        float centerX = frame.centerX();
+        float centerY = frame.centerY();
         Matrix matrix = new Matrix();
         if (rotationRequired) {
             matrix.setScale(1f / scaleX * finalScale, 1f / scaleY * finalScale, centerX, centerY);
         } else {
             matrix.setScale(
-                    viewHeight / (float) viewWidth / scaleY * finalScale,
-                    viewWidth / (float) viewHeight / scaleX * finalScale,
+                    frameHeight / frameWidth / scaleY * finalScale,
+                    frameWidth / frameHeight / scaleX * finalScale,
                     centerX,
                     centerY);
         }
@@ -1983,20 +2026,40 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
-    private static final class CompositionGrid extends View {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final class CompositionGrid extends View {
+        private final Paint maskPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint gridPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint framePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         CompositionGrid(Activity activity) {
             super(activity);
-            paint.setColor(0x99f2f3ec);
-            paint.setStrokeWidth(activity.getResources().getDisplayMetrics().density);
+            maskPaint.setColor(0x99080b0c);
+            gridPaint.setColor(0xb8f2f3ec);
+            gridPaint.setStrokeWidth(activity.getResources().getDisplayMetrics().density);
+            framePaint.setColor(0x99d7b574);
+            framePaint.setStrokeWidth(activity.getResources().getDisplayMetrics().density * 1.25f);
         }
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             float w = getWidth(), h = getHeight();
-            canvas.drawLine(w / 3f, 0, w / 3f, h, paint);
-            canvas.drawLine(w * 2f / 3f, 0, w * 2f / 3f, h, paint);
-            canvas.drawLine(0, h / 3f, w, h / 3f, paint);
-            canvas.drawLine(0, h * 2f / 3f, w, h * 2f / 3f, paint);
+            RectF frame = framingRect(w, h);
+            canvas.drawRect(0, 0, w, frame.top, maskPaint);
+            canvas.drawRect(0, frame.bottom, w, h, maskPaint);
+            canvas.drawRect(0, frame.top, frame.left, frame.bottom, maskPaint);
+            canvas.drawRect(frame.right, frame.top, w, frame.bottom, maskPaint);
+
+            String style = AppSettings.get(MainActivity.this, AppSettings.GRID_STYLE, "None");
+            float[] divisions = "2×2".equals(style) ? new float[]{.5f}
+                    : "3×3".equals(style) ? new float[]{1f / 3f, 2f / 3f}
+                    : "4×4".equals(style) ? new float[]{.25f, .5f, .75f}
+                    : "Golden ratio".equals(style) ? new float[]{.382f, .618f}
+                    : new float[0];
+            for (float division : divisions) {
+                float x = frame.left + frame.width() * division;
+                float y = frame.top + frame.height() * division;
+                canvas.drawLine(x, frame.top, x, frame.bottom, gridPaint);
+                canvas.drawLine(frame.left, y, frame.right, y, gridPaint);
+            }
+            canvas.drawRect(frame, framePaint);
         }
     }
 

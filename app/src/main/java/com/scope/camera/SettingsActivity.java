@@ -175,7 +175,7 @@ public class SettingsActivity extends Activity {
 
     private void populateCameraSettings() {
         addSection("CAPTURE", "Sensor, focus behaviour and timing.");
-        addChoice("Frame shape", "Crop the rendered JPEG; keep the DNG full-frame", AppSettings.ASPECT_RATIO,
+        addChoice("Frame shape", "Match the viewfinder guide and rendered JPEG; keep the DNG full-frame", AppSettings.ASPECT_RATIO,
                 new String[]{"4:3", "3:2", "16:9", "1:1"}, "4:3");
         addChoice("Flash mode", "Flash hardware and RAW capture compatibility vary by camera", AppSettings.FLASH,
                 new String[]{"Off", "Torch", "Auto"}, "Off");
@@ -193,8 +193,10 @@ public class SettingsActivity extends Activity {
                 new String[]{"Continuous picture autofocus", "Single autofocus"}, "Continuous picture autofocus");
         addSwitch("Haptic shutter", "Short tactile response when a frame is taken", AppSettings.HAPTICS, true);
         addSection("VIEWFINDER", "Framing and exposure aids.");
-        addSwitch("Composition grid", "Rule-of-thirds overlay", AppSettings.GRID, false);
-        addInfo("Exposure aids", "Histogram, zebra and focus-peaking overlays are planned. The thirds grid is active.", 0xffaab3ad);
+        addChoice("Composition grid", "Choose a guide overlay inside the viewfinder frame", AppSettings.GRID_STYLE,
+                new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");
+        addInfo("Grid guides", "The frame outline and grid help compose the shot. They are not saved into the photo.", 0xffaab3ad);
+        addInfo("Exposure aids", "Histogram, zebra and focus-peaking overlays are planned.", 0xffaab3ad);
         boolean hasRaw = AppSettings.getBoolean(this, AppSettings.RAW_SUPPORTED, false);
         addInfo("RAW sensor support", hasRaw ? "Available on the last opened camera" : "Not confirmed yet · open the camera to detect support", hasRaw ? ACCENT : 0xffdfb56f);
         boolean hasManual = AppSettings.getBoolean(this, AppSettings.MANUAL_SUPPORTED, false);

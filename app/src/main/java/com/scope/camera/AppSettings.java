@@ -30,6 +30,7 @@ final class AppSettings {
     static final String COLOR_NR = "color_nr";
     static final String VIGNETTE = "vignette";
     static final String GRID = "grid";
+    static final String GRID_STYLE = "grid_style";
     static final String HAPTICS = "haptics";
     static final String HISTOGRAM = "histogram";
     static final String FOCUS_PEAKING = "focus_peaking";
@@ -87,6 +88,10 @@ final class AppSettings {
         boolean changed = false;
         if ("SCOPE / CORE".equals(oldBrain)) { editor.putString(BRAIN, "LIKA / FILM"); changed = true; }
         if ("SCOPE".equals(oldPrefix)) { editor.putString(FILE_PREFIX, "LIKA"); changed = true; }
+        if (!prefs.contains(GRID_STYLE) && prefs.getBoolean(GRID, false)) {
+            editor.putString(GRID_STYLE, "3×3");
+            changed = true;
+        }
         if (changed) editor.apply();
     }
 }
