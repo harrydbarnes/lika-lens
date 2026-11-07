@@ -21,7 +21,7 @@ The image direction is informed by [WIRED's interview with Steve Yedlin](https:/
 
 ## Build in Android Studio
 
-Open this folder as a project. Use JDK 17, Android Gradle Plugin 8.7.3, Gradle 8.9 and Android SDK Platform 35. The app has no third-party library dependencies. The build targets API 35 and supports API 26 and newer.
+Open this folder as a project. Use JDK 17, Android Gradle Plugin 8.7.3, Gradle 8.14.6 and Android SDK Platform 35. The app has no third-party library dependencies. The build targets API 35 and supports API 26 and newer.
 
 The **Build Android APK** GitHub Actions workflow runs on pushes to `main`, pull requests and manual dispatch. It installs the Android 35 SDK, runs `assembleDebug`, and publishes `lika-lens-debug-apk` as a downloadable workflow artifact for 14 days.
 
