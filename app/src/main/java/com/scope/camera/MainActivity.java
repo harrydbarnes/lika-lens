@@ -272,7 +272,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         textureView.setSurfaceTextureListener(this);
         scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override public boolean onScaleBegin(ScaleGestureDetector detector) {
-                if (videoScreenLocked) return false;
+                if (videoScreenLocked || videoRecording || videoStarting) return false;
                 pinchZooming = true;
                 showZoomSlider();
                 return true;
@@ -565,6 +565,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (settingsButton != null) settingsButton.setEnabled(controlsAvailable);
         if (galleryButton != null) galleryButton.setEnabled(controlsAvailable);
         for (TextView lens : lensButtons) lens.setEnabled(controlsAvailable);
+        boolean zoomAvailable = !videoRecording && !videoStarting && !videoScreenLocked;
+        if (zoomSlider != null) zoomSlider.setEnabled(zoomAvailable);
+        if (!zoomAvailable && zoomSliderPanel != null) {
+            zoomSliderPanel.removeCallbacks(hideZoomSlider);
+            zoomSliderPanel.setVisibility(View.GONE);
+        }
         if (adjustButton != null) adjustButton.setEnabled(controlsAvailable);
         if (recordingLockButton != null) recordingLockButton.setEnabled(videoRecording && !videoScreenLocked);
         if (captureButton != null) captureButton.setEnabled(!videoStarting && (videoRecording || cameraDevice != null));
@@ -1843,6 +1849,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void setInteractiveZoom(float factor) {
+        if (videoScreenLocked || videoRecording || videoStarting) return;
         requestedZoom = Math.max(MIN_INTERACTIVE_ZOOM, Math.min(MAX_INTERACTIVE_ZOOM, factor));
         updateLensButtons(requestedZoom);
         if (previewRequest != null && captureSession != null) {
@@ -1854,7 +1861,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void finishInteractiveZoom() {
-        if (videoScreenLocked) return;
+        if (videoScreenLocked || videoRecording || videoStarting) return;
         if (requestedZoom < 1f) chooseLens(requestedZoom);
         else chooseContinuousLens(requestedZoom);
     }
