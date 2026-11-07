@@ -29,12 +29,15 @@ import android.hardware.camera2.DngCreator;
 import android.media.Image;
 import android.graphics.ImageFormat;
 import android.media.ImageReader;
+import android.media.MediaRecorder;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.util.Size;
 import android.util.Range;
@@ -57,6 +60,7 @@ import android.widget.Toast;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -75,6 +79,7 @@ import java.util.concurrent.Executors;
 /** Lika Lens: Camera2 framing preview plus RAW_SENSOR/DNG capture and app-side development. */
 public class MainActivity extends Activity implements TextureView.SurfaceTextureListener {
     private static final int CAMERA_PERMISSION = 41;
+    private static final int VIDEO_PERMISSION = 42;
     private static final int BG = 0xff0b0d0e;
     private static final int ACCENT = 0xffd7b574;
     private static final int MUTED = 0xffa0aaa4;
@@ -87,6 +92,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private TextView timerButton;
     private TextView adjustButton;
     private TextView captureButton;
+    private TextView photoModeButton;
+    private TextView videoModeButton;
+    private TextView recordingLockButton;
+    private TextView videoLockButton;
+    private TextView flipButton;
+    private TextView settingsButton;
+    private TextView modeNote;
     private TextView messageView;
     private TextView outputModeText;
     private ImageView galleryButton;
@@ -98,12 +110,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private FrameLayout quickAdjustPanel;
     private LinearLayout quickControlsList;
     private FrameLayout root;
+    private FrameLayout shutterFrame;
+    private FrameLayout videoLockOverlay;
     private CameraManager cameraManager;
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
     private CaptureRequest.Builder previewRequest;
     private ImageReader rawReader;
     private ImageReader jpegReader;
+    private MediaRecorder mediaRecorder;
+    private Surface recordingPreviewSurface;
+    private File videoTempFile;
     private HandlerThread cameraThread;
     private Handler cameraHandler;
     private final ExecutorService processor = Executors.newSingleThreadExecutor();
@@ -118,6 +135,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private boolean manualSupported;
     private boolean flashSupported;
     private boolean useRawForThisCamera;
+    private boolean videoMode;
+    private volatile boolean videoStarting;
+    private volatile boolean videoRecording;
+    private boolean videoScreenLocked;
+    private boolean unlockHolding;
+    private volatile boolean pendingVideoStart;
     private boolean started;
     private String cameraId;
     private String mainCameraId;
@@ -129,6 +152,34 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private float requestedZoom = 1f;
     private int displayRotation;
     private long toastUntil;
+    private long videoStartedAt;
+    private long unlockHoldStartedAt;
+    private Size videoSize;
+
+    private final Runnable videoTimerTick = new Runnable() {
+        @Override public void run() {
+            if (!videoRecording || outputModeText == null) return;
+            long seconds = Math.max(0L, (SystemClock.elapsedRealtime() - videoStartedAt) / 1000L);
+            String time = String.format(Locale.US, "%02d:%02d", seconds / 60L, seconds % 60L);
+            outputModeText.setText("● REC  " + time + "  ·  " + videoProfileLabel());
+            cameraState.setText("VIDEO RECORDING  ·  " + time);
+            outputModeText.postDelayed(this, 250);
+        }
+    };
+
+    private final Runnable unlockHoldTick = new Runnable() {
+        @Override public void run() {
+            if (!videoScreenLocked || !unlockHolding || videoLockButton == null) return;
+            long remaining = 3000L - (SystemClock.elapsedRealtime() - unlockHoldStartedAt);
+            if (remaining <= 0L) {
+                unlockHolding = false;
+                setVideoScreenLocked(false);
+                return;
+            }
+            videoLockButton.setText(String.format(Locale.US, "HOLD %.1f SEC", remaining / 1000f));
+            videoLockButton.postDelayed(this, 90L);
+        }
+    };
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -170,6 +221,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         processor.shutdown();
         super.onDestroy();
+    }
+
+    @Override public void onBackPressed() {
+        if (videoScreenLocked) {
+            if (videoLockButton != null) videoLockButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+            return;
+        }
+        super.onBackPressed();
     }
 
     private void buildCameraUi() {
@@ -218,11 +277,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         timerLp.leftMargin = dp(6);
         header.addView(timerButton, timerLp);
         timerButton.setOnClickListener(v -> cycleTimer());
-        TextView settings = pill("⚙", false);
+        settingsButton = pill("⚙", false);
         LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(dp(36), dp(38));
         settingsLp.leftMargin = dp(6);
-        header.addView(settings, settingsLp);
-        settings.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
+        header.addView(settingsButton, settingsLp);
+        settingsButton.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
         overlay.addView(header);
 
         LinearLayout spacer = new LinearLayout(this);
@@ -256,15 +315,35 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         overlay.addView(lensRow);
 
+        LinearLayout modeRow = row();
+        modeRow.setGravity(Gravity.CENTER);
+        modeRow.setPadding(0, dp(6), 0, 0);
+        photoModeButton = pill("PHOTO", true);
+        videoModeButton = pill("VIDEO", false);
+        photoModeButton.setContentDescription("Photo mode");
+        videoModeButton.setContentDescription("Video mode");
+        LinearLayout.LayoutParams modeLp = new LinearLayout.LayoutParams(dp(68), dp(30));
+        modeLp.setMargins(dp(3), 0, dp(3), 0);
+        modeRow.addView(photoModeButton, modeLp);
+        modeRow.addView(videoModeButton, modeLp);
+        photoModeButton.setOnClickListener(v -> setVideoMode(false));
+        videoModeButton.setOnClickListener(v -> setVideoMode(true));
+        overlay.addView(modeRow);
+
         LinearLayout lookRow = row();
-        TextView viewfinderNote = label("RAW DEVELOPED AFTER CAPTURE", 7, 0xffc9d0c8, false);
-        viewfinderNote.setLetterSpacing(.055f);
+        modeNote = label("RAW DEVELOPED AFTER CAPTURE", 7, 0xffc9d0c8, false);
+        modeNote.setLetterSpacing(.055f);
         LinearLayout.LayoutParams noteTextLp = new LinearLayout.LayoutParams(0, -2, 1f);
-        lookRow.addView(viewfinderNote, noteTextLp);
+        lookRow.addView(modeNote, noteTextLp);
         adjustButton = pill("ADJUST", false);
         adjustButton.setContentDescription("Open quick look controls");
         adjustButton.setOnClickListener(v -> toggleQuickAdjustPanel());
         lookRow.addView(adjustButton, new LinearLayout.LayoutParams(dp(72), dp(30)));
+        recordingLockButton = pill("LOCK", false);
+        recordingLockButton.setContentDescription("Lock video recording controls");
+        recordingLockButton.setOnClickListener(v -> setVideoScreenLocked(true));
+        lookRow.addView(recordingLockButton, new LinearLayout.LayoutParams(dp(62), dp(30)));
+        recordingLockButton.setVisibility(View.GONE);
         LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
         noteLp.topMargin = dp(13);
         lookRow.setPadding(0, 0, 0, dp(3));
@@ -289,16 +368,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         captureButton = label("", 12, BG, false);
         captureButton.setGravity(Gravity.CENTER);
         captureButton.setBackground(round(0xfffaf9f5, 100, 0xfffaf9f5, dp(2)));
-        FrameLayout shutterFrame = new FrameLayout(this);
+        shutterFrame = new FrameLayout(this);
         shutterFrame.setBackground(round(0x00202020, 100, 0xfffaf9f5, dp(2)));
         shutterFrame.addView(captureButton, new FrameLayout.LayoutParams(dp(54), dp(54), Gravity.CENTER));
         shootRow.addView(shutterFrame, new LinearLayout.LayoutParams(dp(68), dp(68)));
-        shutterFrame.setOnClickListener(v -> capturePhoto());
-        captureButton.setOnClickListener(v -> capturePhoto());
+        shutterFrame.setOnClickListener(v -> onShutterPressed());
+        captureButton.setOnClickListener(v -> onShutterPressed());
         shootRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
         TextView flip = pill("⟳", false);
         shootRow.addView(flip, new LinearLayout.LayoutParams(dp(48), dp(48)));
         flip.setOnClickListener(v -> toggleCameraFacing());
+        flipButton = flip;
         overlay.addView(shootRow);
 
         outputModeText = label("WAITING FOR CAMERA SUPPORT", 7, 0xffd9dfd6, true);
@@ -318,7 +398,387 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         FrameLayout.LayoutParams messageLp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         messageLp.bottomMargin = dp(24);
         root.addView(messageView, messageLp);
+        buildVideoLockOverlay();
+        updateVideoModeUi();
         setContentView(root);
+    }
+
+    private void buildVideoLockOverlay() {
+        videoLockOverlay = new FrameLayout(this);
+        videoLockOverlay.setClickable(true);
+        videoLockOverlay.setFocusable(true);
+        videoLockOverlay.setBackgroundColor(0xb90a0d0d);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setGravity(Gravity.CENTER);
+        content.setPadding(dp(28), dp(24), dp(28), dp(24));
+
+        TextView status = label("●  RECORDING LOCKED", 10, 0xffff6b63, true);
+        status.setGravity(Gravity.CENTER);
+        status.setLetterSpacing(.12f);
+        content.addView(status, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView instruction = label("Hold to unlock controls", 15, 0xfff3f2ec, true);
+        instruction.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams instructionLp = new LinearLayout.LayoutParams(-1, -2);
+        instructionLp.topMargin = dp(14);
+        content.addView(instruction, instructionLp);
+
+        videoLockButton = pill("HOLD 3 SECONDS", true);
+        videoLockButton.setTextSize(10);
+        videoLockButton.setMinimumHeight(dp(48));
+        videoLockButton.setContentDescription("Hold for three seconds to unlock recording controls");
+        LinearLayout.LayoutParams unlockLp = new LinearLayout.LayoutParams(-1, dp(52));
+        unlockLp.topMargin = dp(22);
+        content.addView(videoLockButton, unlockLp);
+        videoLockButton.setOnTouchListener((view, event) -> {
+            if (!videoScreenLocked) return false;
+            if (event.getAction() == android.view.MotionEvent.ACTION_DOWN) {
+                unlockHolding = true;
+                unlockHoldStartedAt = SystemClock.elapsedRealtime();
+                videoLockButton.setText("HOLD 3.0 SEC");
+                videoLockButton.removeCallbacks(unlockHoldTick);
+                videoLockButton.post(unlockHoldTick);
+                return true;
+            }
+            if (event.getAction() == android.view.MotionEvent.ACTION_UP
+                    || event.getAction() == android.view.MotionEvent.ACTION_CANCEL) {
+                unlockHolding = false;
+                videoLockButton.removeCallbacks(unlockHoldTick);
+                if (videoScreenLocked) videoLockButton.setText("HOLD 3 SECONDS");
+                return true;
+            }
+            return true;
+        });
+
+        videoLockOverlay.addView(content, new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER));
+        root.addView(videoLockOverlay, new FrameLayout.LayoutParams(-1, -1));
+        videoLockOverlay.setVisibility(View.GONE);
+    }
+
+    private void setVideoMode(boolean enabled) {
+        if (videoRecording || videoStarting) return;
+        videoMode = enabled;
+        if (quickAdjustPanel != null) quickAdjustPanel.setVisibility(View.GONE);
+        updateVideoModeUi();
+    }
+
+    private void updateVideoModeUi() {
+        if (photoModeButton == null) return;
+        styleModeButton(photoModeButton, !videoMode);
+        styleModeButton(videoModeButton, videoMode);
+        if (brainButton != null) brainButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
+        if (aspectButton != null) aspectButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
+        if (timerButton != null) timerButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
+        if (adjustButton != null) adjustButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
+        if (modeNote != null) modeNote.setText(videoMode ? "VIDEO · PHONE CAMERA PIPELINE" : "RAW DEVELOPED AFTER CAPTURE");
+        if (recordingLockButton != null) recordingLockButton.setVisibility(videoRecording && !videoScreenLocked ? View.VISIBLE : View.GONE);
+        if (videoLockOverlay != null) videoLockOverlay.setVisibility(videoRecording && videoScreenLocked ? View.VISIBLE : View.GONE);
+
+        boolean controlsAvailable = !videoRecording && !videoStarting;
+        photoModeButton.setEnabled(controlsAvailable);
+        videoModeButton.setEnabled(controlsAvailable);
+        if (flashButton != null) flashButton.setEnabled(controlsAvailable);
+        if (aspectButton != null) aspectButton.setEnabled(controlsAvailable);
+        if (timerButton != null) timerButton.setEnabled(controlsAvailable);
+        if (brainButton != null) brainButton.setEnabled(controlsAvailable);
+        if (flipButton != null) flipButton.setEnabled(controlsAvailable);
+        if (settingsButton != null) settingsButton.setEnabled(controlsAvailable);
+        if (galleryButton != null) galleryButton.setEnabled(controlsAvailable);
+        for (TextView lens : lensButtons) lens.setEnabled(controlsAvailable);
+        if (adjustButton != null) adjustButton.setEnabled(controlsAvailable);
+        if (recordingLockButton != null) recordingLockButton.setEnabled(videoRecording && !videoScreenLocked);
+        if (captureButton != null) captureButton.setEnabled(!videoStarting && (videoRecording || cameraDevice != null));
+
+        if (captureButton != null && shutterFrame != null) {
+            int fill = videoMode ? (videoRecording ? 0xfff0443c : 0xffd93632) : 0xfffaf9f5;
+            int stroke = videoMode ? 0xffff827a : 0xfffaf9f5;
+            captureButton.setBackground(round(fill, 100, fill, dp(2)));
+            captureButton.setText(videoMode && videoRecording ? "■" : "");
+            captureButton.setTextColor(videoMode ? 0xffffffff : BG);
+            captureButton.setTextSize(videoRecording ? 18 : 12);
+            captureButton.setContentDescription(videoMode
+                    ? videoRecording ? "Stop video recording" : "Start video recording"
+                    : "Take photo");
+            shutterFrame.setBackground(round(0x00202020, 100, stroke, dp(2)));
+        }
+
+        if (cameraState != null && outputModeText != null) {
+            if (videoRecording) {
+                cameraState.setText("VIDEO RECORDING");
+                outputModeText.setText("● REC  00:00  ·  " + videoProfileLabel());
+            } else if (videoStarting) {
+                cameraState.setText("STARTING VIDEO");
+                outputModeText.setText("PREPARING VIDEO RECORDING");
+            } else if (videoMode) {
+                cameraState.setText(cameraDevice == null ? "WAITING FOR CAMERA" : "VIDEO READY");
+                outputModeText.setText("H.264 VIDEO  ·  " + videoProfileLabel());
+            } else if (rawSupported && rawSize != null) {
+                cameraState.setText("RAW SENSOR READY  ·  " + Math.round(rawSize.getWidth() * rawSize.getHeight() / 1000000f) + " MP");
+                outputModeText.setText("RAW SENSOR  ·  DNG ORIGINAL + LIKA LENS JPEG");
+            } else if (jpegReader != null) {
+                cameraState.setText("RAW NOT AVAILABLE  ·  JPEG LOOK FALLBACK");
+                outputModeText.setText("JPEG FALLBACK  ·  SENSOR RAW NOT AVAILABLE");
+            }
+        }
+    }
+
+    private void styleModeButton(TextView button, boolean active) {
+        button.setTextColor(active ? ACCENT : 0xffe9ede6);
+        button.setBackground(round(active ? 0xe21c1d1b : 0xd8191e1e, 22,
+                active ? ACCENT : 0x556e7872, dp(1)));
+    }
+
+    private void onShutterPressed() {
+        if (videoMode) {
+            if (videoRecording) stopVideoRecording(true);
+            else startVideoRecording();
+        } else capturePhoto();
+    }
+
+    private void setVideoScreenLocked(boolean locked) {
+        videoScreenLocked = locked && videoRecording;
+        unlockHolding = false;
+        if (videoLockButton != null) {
+            videoLockButton.removeCallbacks(unlockHoldTick);
+            videoLockButton.setText("HOLD 3 SECONDS");
+        }
+        updateVideoModeUi();
+    }
+
+    private void startVideoRecording() {
+        if (!videoMode || videoRecording || videoStarting) return;
+        if (cameraDevice == null || !started) {
+            showMessage("Camera is warming up.");
+            return;
+        }
+        List<String> requestedPermissions = new ArrayList<>();
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestedPermissions.add(Manifest.permission.RECORD_AUDIO);
+        }
+        if (Build.VERSION.SDK_INT < 29
+                && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            requestedPermissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        }
+        if (!requestedPermissions.isEmpty()) {
+            pendingVideoStart = true;
+            requestPermissions(requestedPermissions.toArray(new String[0]), VIDEO_PERMISSION);
+            return;
+        }
+        beginVideoRecording(checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED);
+    }
+
+    private void beginVideoRecording(boolean withAudio) {
+        if (!videoMode || videoRecording || videoStarting || cameraDevice == null) return;
+        pendingVideoStart = false;
+        videoStarting = true;
+        runOnUiThread(this::updateVideoModeUi);
+        if (cameraHandler == null) {
+            failVideoStart("Camera is not ready for video.");
+            return;
+        }
+        cameraHandler.post(() -> prepareVideoRecording(withAudio));
+    }
+
+    private void prepareVideoRecording(boolean withAudio) {
+        if (!videoMode || !videoStarting || cameraDevice == null) {
+            failVideoStart("Video recording could not start.");
+            return;
+        }
+        try {
+            StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            videoSize = map == null ? null : chooseVideoSize(map.getOutputSizes(MediaRecorder.class));
+            if (videoSize == null) throw new IllegalStateException("No video size is supported");
+
+            String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
+            videoTempFile = File.createTempFile("LIKA_VIDEO_" + stamp + "_", ".mp4", getCacheDir());
+            mediaRecorder = new MediaRecorder();
+            if (withAudio) mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+            mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+            mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+            if (withAudio) mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+            mediaRecorder.setVideoSize(videoSize.getWidth(), videoSize.getHeight());
+            mediaRecorder.setVideoFrameRate(30);
+            mediaRecorder.setVideoEncodingBitRate(12_000_000);
+            if (withAudio) mediaRecorder.setAudioEncodingBitRate(128_000);
+            mediaRecorder.setOrientationHint(jpegOrientation());
+            mediaRecorder.setOutputFile(videoTempFile.getAbsolutePath());
+            mediaRecorder.prepare();
+
+            closeSessionOnly();
+            SurfaceTexture texture = textureView.getSurfaceTexture();
+            texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
+            recordingPreviewSurface = new Surface(texture);
+            List<Surface> outputs = Arrays.asList(recordingPreviewSurface, mediaRecorder.getSurface());
+            cameraDevice.createCaptureSession(outputs, new CameraCaptureSession.StateCallback() {
+                @Override public void onConfigured(CameraCaptureSession session) {
+                    if (cameraDevice == null || mediaRecorder == null) {
+                        session.close();
+                        failVideoStart("Video recording could not start.");
+                        return;
+                    }
+                    captureSession = session;
+                    try {
+                        CaptureRequest.Builder request = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                        request.addTarget(recordingPreviewSurface);
+                        request.addTarget(mediaRecorder.getSurface());
+                        request.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+                        setExposure(request);
+                        setFocusMode(request);
+                        setFlash(request, true);
+                        applyZoom(request);
+                        session.setRepeatingRequest(request.build(), null, cameraHandler);
+                        mediaRecorder.start();
+                        videoStarting = false;
+                        videoRecording = true;
+                        videoStartedAt = SystemClock.elapsedRealtime();
+                        runOnUiThread(() -> {
+                            updateVideoModeUi();
+                            setVideoScreenLocked(true);
+                            outputModeText.removeCallbacks(videoTimerTick);
+                            outputModeText.post(videoTimerTick);
+                        });
+                    } catch (CameraAccessException | RuntimeException e) {
+                        failVideoStart("Video recording could not start.");
+                    }
+                }
+
+                @Override public void onConfigureFailed(CameraCaptureSession session) {
+                    session.close();
+                    failVideoStart("This camera could not configure video recording.");
+                }
+            }, cameraHandler);
+        } catch (Exception e) {
+            failVideoStart("Video recording could not start.");
+        }
+    }
+
+    private Size chooseVideoSize(Size[] sizes) {
+        if (sizes == null || sizes.length == 0) return null;
+        return Arrays.stream(sizes)
+                .filter(s -> s.getWidth() >= s.getHeight() && s.getWidth() <= 1920 && s.getHeight() <= 1080)
+                .max(Comparator.comparingLong(s -> (long) s.getWidth() * s.getHeight()))
+                .orElseGet(() -> Arrays.stream(sizes)
+                        .filter(s -> s.getWidth() >= s.getHeight())
+                        .min(Comparator.comparingLong(s -> Math.abs((long) s.getWidth() * s.getHeight() - 1920L * 1080L)))
+                        .orElse(sizes[0]));
+    }
+
+    private String videoProfileLabel() {
+        if (videoSize == null) return "1080P / 30 FPS";
+        int vertical = Math.min(videoSize.getWidth(), videoSize.getHeight());
+        return vertical + "P / 30 FPS";
+    }
+
+    private void failVideoStart(String message) {
+        videoStarting = false;
+        videoRecording = false;
+        videoScreenLocked = false;
+        releaseMediaRecorder();
+        closeSessionOnly();
+        releaseRecordingPreviewSurface();
+        if (videoTempFile != null) videoTempFile.delete();
+        videoTempFile = null;
+        runOnUiThread(() -> {
+            updateVideoModeUi();
+            showMessage(message);
+            if (cameraDevice != null && textureView != null && textureView.isAvailable()) createPreviewSession();
+        });
+    }
+
+    private void stopVideoRecording(boolean resumePreview) {
+        if (videoStarting) {
+            pendingVideoStart = false;
+            failVideoStart("Video start cancelled.");
+            return;
+        }
+        if (!videoRecording && mediaRecorder == null) return;
+        if (outputModeText != null) outputModeText.removeCallbacks(videoTimerTick);
+        boolean saved = false;
+        File recordedFile = videoTempFile;
+        if (mediaRecorder != null && videoRecording) {
+            try {
+                mediaRecorder.stop();
+                saved = recordedFile != null && recordedFile.isFile() && recordedFile.length() > 0;
+            } catch (RuntimeException ignored) { }
+        }
+        videoRecording = false;
+        videoStarting = false;
+        videoScreenLocked = false;
+        unlockHolding = false;
+        releaseMediaRecorder();
+        closeSessionOnly();
+        releaseRecordingPreviewSurface();
+        videoTempFile = null;
+        if (saved) publishVideo(recordedFile);
+        else if (recordedFile != null) recordedFile.delete();
+        updateVideoModeUi();
+        if (saved) showMessage("Saving video to Movies / Lika Lens…");
+        else showMessage("Video was too short to save.");
+        if (resumePreview && cameraDevice != null && textureView != null && textureView.isAvailable()) createPreviewSession();
+    }
+
+    private void releaseMediaRecorder() {
+        if (mediaRecorder == null) return;
+        try { mediaRecorder.reset(); } catch (RuntimeException ignored) { }
+        try { mediaRecorder.release(); } catch (RuntimeException ignored) { }
+        mediaRecorder = null;
+    }
+
+    private void releaseRecordingPreviewSurface() {
+        if (recordingPreviewSurface == null) return;
+        try { recordingPreviewSurface.release(); } catch (RuntimeException ignored) { }
+        recordingPreviewSurface = null;
+    }
+
+    private void publishVideo(File source) {
+        processor.execute(() -> {
+            Uri destination = null;
+            File legacyFile = null;
+            try {
+                String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+                String name = "LIKA_VIDEO_" + stamp + ".mp4";
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Video.Media.DISPLAY_NAME, name);
+                values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+                if (Build.VERSION.SDK_INT >= 29) {
+                    values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/Lika Lens");
+                    values.put(MediaStore.Video.Media.IS_PENDING, 1);
+                } else {
+                    File folder = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "Lika Lens");
+                    if (!folder.exists() && !folder.mkdirs()) throw new IllegalStateException("Could not create Movies folder");
+                    legacyFile = new File(folder, name);
+                    values.put(MediaStore.Video.Media.DATA, legacyFile.getAbsolutePath());
+                }
+                destination = getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+                if (destination == null) throw new IllegalStateException("Could not create video entry");
+                try (InputStream input = new FileInputStream(source);
+                     OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
+                    if (output == null) throw new IllegalStateException("Could not open video destination");
+                    byte[] buffer = new byte[64 * 1024];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+                }
+                if (Build.VERSION.SDK_INT >= 29) {
+                    ContentValues publish = new ContentValues();
+                    publish.put(MediaStore.Video.Media.IS_PENDING, 0);
+                    getContentResolver().update(destination, publish, null, null);
+                } else if (legacyFile != null) {
+                    MediaScannerConnection.scanFile(this, new String[]{legacyFile.getAbsolutePath()}, new String[]{"video/mp4"}, null);
+                }
+                runOnUiThread(() -> showMessage("Video saved to Movies / Lika Lens."));
+            } catch (Exception e) {
+                if (destination != null) {
+                    try { getContentResolver().delete(destination, null, null); } catch (RuntimeException ignored) { }
+                }
+                if (legacyFile != null && legacyFile.exists()) legacyFile.delete();
+                runOnUiThread(() -> showMessage("Could not save the video."));
+            } finally {
+                source.delete();
+            }
+        });
     }
 
     private void buildQuickAdjustPanel() {
@@ -579,6 +1039,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             updateQuickButtons();
             StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (map == null) throw new CameraAccessException(CameraAccessException.CAMERA_ERROR);
+            videoSize = chooseVideoSize(map.getOutputSizes(MediaRecorder.class));
             int[] capabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
             Size[] rawOutputs = map.getOutputSizes(ImageFormat.RAW_SENSOR);
             rawSupported = capabilities != null && Arrays.stream(capabilities).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
@@ -648,6 +1109,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             cameraState.setText("RAW NOT AVAILABLE  ·  JPEG LOOK FALLBACK");
             outputModeText.setText("JPEG FALLBACK  ·  SENSOR RAW NOT AVAILABLE");
         }
+        updateVideoModeUi();
     }
 
     private Size chooseRawSize(Size[] sizes) {
@@ -684,20 +1146,30 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             openingCamera = false;
             cameraDevice = camera;
             started = true;
-            createPreviewSession();
+            if (pendingVideoStart) {
+                pendingVideoStart = false;
+                beginVideoRecording(checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED);
+            } else createPreviewSession();
+            runOnUiThread(MainActivity.this::updateVideoModeUi);
         }
         @Override public void onDisconnected(CameraDevice camera) {
             openingCamera = false;
+            if (videoRecording || videoStarting || mediaRecorder != null) stopVideoRecording(false);
             camera.close();
             if (cameraDevice == camera) cameraDevice = null;
             started = false;
+            runOnUiThread(MainActivity.this::updateVideoModeUi);
         }
         @Override public void onError(CameraDevice camera, int error) {
             openingCamera = false;
+            if (videoRecording || videoStarting || mediaRecorder != null) stopVideoRecording(false);
             camera.close();
             if (cameraDevice == camera) cameraDevice = null;
             started = false;
-            runOnUiThread(() -> cameraState.setText("CAMERA ERROR · " + error));
+            runOnUiThread(() -> {
+                cameraState.setText("CAMERA ERROR · " + error);
+                updateVideoModeUi();
+            });
         }
     };
 
@@ -1321,6 +1793,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void closeCamera() {
+        if (videoRecording || videoStarting || mediaRecorder != null) stopVideoRecording(false);
         if (zoomAnimator != null) { zoomAnimator.cancel(); zoomAnimator = null; }
         if (textureView != null) textureView.animate().cancel();
         started = false;
@@ -1356,6 +1829,21 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == VIDEO_PERMISSION) {
+            pendingVideoStart = false;
+            boolean storageAllowed = Build.VERSION.SDK_INT >= 29
+                    || checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+            if (!storageAllowed) {
+                showMessage("Storage access is needed to save video on this Android version.");
+                updateVideoModeUi();
+                return;
+            }
+            boolean audioAllowed = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+            if (!audioAllowed) showMessage("Microphone access denied. Recording silent video.");
+            if (cameraDevice != null && started) beginVideoRecording(audioAllowed);
+            else pendingVideoStart = true;
+            return;
+        }
         if (requestCode == CAMERA_PERMISSION && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) openCameraIfReady();
         else if (requestCode == CAMERA_PERMISSION) {
             cameraState.setText("CAMERA PERMISSION REQUIRED");

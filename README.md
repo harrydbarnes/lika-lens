@@ -10,6 +10,8 @@ The default **Lika / Film** rendering is intentionally opinionated. It is design
 - **Adjust** opens a quick control panel for exposure, warmth, shadow depth, contrast, colour intensity, saturated colour roll-off, highlight roll-off, grain, halation and sharpening. The panel is hidden until requested; changes apply to the next capture.
 - Full settings page includes white balance, noise reduction, vignette, grain structure, RAW size, manual shutter and ISO, focus behaviour, frame shape, JPEG quality, file naming, export, haptics and composition grid.
 - Camera2 live preview, rear lens switching, digital zoom, flash, timer and composition grid.
+- Video mode records H.264 MP4 at up to 1080p / 30 fps, with microphone audio when allowed. Recording starts with touch controls locked; hold the unlock control for three seconds to unlock, then use the on-screen lock control to lock again. Leaving the app stops and saves the clip to Movies / Lika Lens.
+- Video uses the phone's Camera2 video pipeline and does not yet receive the RAW photo colour rendering.
 - RAW development uses sensor black and white levels, camera colour matrices and capture white-balance metadata before the Lika Lens display rendering.
 - Output is cropped and rotated during rendering, with a memory-aware resolution up to 50 megapixels.
 - A compressed private sensor archive supports per-photo re-development. The editor can adjust exposure, white balance, warmth, contrast, colour, colour roll-off, highlights, shadows, pivot, grain, halation, sharpening, colour noise reduction and vignette. Saving replaces the JPEG render and leaves the DNG and sensor archive intact.
@@ -27,4 +29,4 @@ This workspace does not include an Android SDK, Gradle installation or emulator,
 
 ## Current limits
 
-RAW support varies by device, camera and stream combination. Lika Lens tries the selected RAW size with the live preview and falls back to a phone-rendered JPEG if the combination is unsupported. Histogram, zebra and focus-peaking overlays, location metadata, optical corrections and video capture remain inactive.
+RAW support varies by device, camera and stream combination. Lika Lens tries the selected RAW size with the live preview and falls back to a phone-rendered JPEG if the combination is unsupported. Histogram, zebra and focus-peaking overlays, location metadata and optical corrections remain inactive.
