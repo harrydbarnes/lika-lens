@@ -32,6 +32,8 @@ final class RawDeveloper {
         float sharpening = .06f;
         float chromaNr = .15f;
         float vignette = .10f;
+        String aspectRatio;
+        boolean flipHorizontal;
 
         static Look fromPreferences(Context context) {
             Look look = new Look();
@@ -51,6 +53,7 @@ final class RawDeveloper {
             look.chromaNr = AppSettings.getInt(context, AppSettings.COLOR_NR, AppSettings.DEFAULT_COLOR_NR) / 100f;
             look.vignette = AppSettings.getInt(context, AppSettings.VIGNETTE, AppSettings.DEFAULT_VIGNETTE) / 100f;
             look.grainStructure = AppSettings.get(context, "grain_structure", "Fine · 35 mm");
+            look.aspectRatio = AppSettings.get(context, AppSettings.ASPECT_RATIO, "4:3");
             return look;
         }
 
@@ -62,6 +65,8 @@ final class RawDeveloper {
             c.highlights = highlights; c.shadows = shadows; c.grain = grain;
             c.halation = halation; c.sharpening = sharpening; c.chromaNr = chromaNr;
             c.vignette = vignette;
+            c.aspectRatio = aspectRatio;
+            c.flipHorizontal = flipHorizontal;
             return c;
         }
     }
@@ -73,7 +78,8 @@ final class RawDeveloper {
         int orientation = normalizeOrientation(frame.orientation);
         int displayWidth = orientation == 90 || orientation == 270 ? height : width;
         int displayHeight = orientation == 90 || orientation == 270 ? width : height;
-        float[] crop = cropRect(displayWidth, displayHeight, frame.aspectRatio);
+        String aspect = look.aspectRatio != null ? look.aspectRatio : frame.aspectRatio;
+        float[] crop = cropRect(displayWidth, displayHeight, aspect);
         float cropWidth = crop[2], cropHeight = crop[3];
         long cropPixels = Math.max(1L, (long) (cropWidth * cropHeight));
         int step = maxDimension > 0
@@ -88,15 +94,17 @@ final class RawDeveloper {
         float[] gains = whiteBalanceGains(frame, look.whiteBalanceKelvin);
         float exposureScale = (float) Math.pow(2.0, look.exposureEv);
         Bitmap bitmap = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
-        int[] row = new int[outW];
+        int[] allPixels = new int[outW * outH];
         int seed = frame.key == null ? width * 31 + height : frame.key.hashCode();
 
-        for (int oy = 0; oy < outH; oy++) {
+        java.util.stream.IntStream.range(0, outH).parallel().forEach(oy -> {
             float dy = Math.min(crop[1] + cropHeight - .5f,
                     crop[1] + (oy + .5f) * cropHeight / outH);
+            int rowOffset = oy * outW;
             for (int ox = 0; ox < outW; ox++) {
+                float effectiveOx = look.flipHorizontal ? (outW - 1 - ox) : ox;
                 float dx = Math.min(crop[0] + cropWidth - .5f,
-                        crop[0] + (ox + .5f) * cropWidth / outW);
+                        crop[0] + (effectiveOx + .5f) * cropWidth / outW);
                 int sx, sy;
                 switch (orientation) {
                     case 90: sx = Math.min(width - 1, (int) dy); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dx)); break;
@@ -119,20 +127,20 @@ final class RawDeveloper {
                 float lr = 3.1339f * x - 1.6169f * y - .4906f * z;
                 float lg = -.9785f * x + 1.9160f * y + .0333f * z;
                 float lb = .0720f * x - .2290f * y + 1.4057f * z;
-                int color = renderLook(lr, lg, lb, look, ox, oy, seed);
+                int color = renderLook(lr, lg, lb, look, ox, oy, seed, frame);
                 if (look.vignette > 0f) {
                     float nx = outW <= 1 ? 0f : ox / (float) (outW - 1) * 2f - 1f;
                     float ny = outH <= 1 ? 0f : oy / (float) (outH - 1) * 2f - 1f;
                     float falloff = Math.max(.72f, 1f - look.vignette * .18f * (nx * nx + ny * ny));
                     color = scaleColor(color, falloff);
                 }
-                row[ox] = color;
+                allPixels[rowOffset + ox] = color;
             }
-            bitmap.setPixels(row, 0, outW, 0, oy, outW, 1);
-        }
+        });
+        bitmap.setPixels(allPixels, 0, outW, 0, 0, outW, outH);
 
         if (look.chromaNr > 0f) applyChromaDenoise(bitmap, look.chromaNr);
-        if (look.halation > 0f) applyHalation(bitmap, look.halation);
+        if (look.halation > 0f) applyHalation(bitmap, look.halation, aspect);
         if (look.sharpening > 0f) applySharpen(bitmap, Math.min(.14f, look.sharpening * .14f));
         return bitmap;
     }
@@ -153,25 +161,27 @@ final class RawDeveloper {
         int w = bitmap.getWidth(), h = bitmap.getHeight();
         int[] pixels = new int[w * h];
         bitmap.getPixels(pixels, 0, w, 0, 0, w, h);
-        for (int i = 0; i < pixels.length; i++) {
-            int c = pixels[i];
-            float r = srgbToLinear(Color.red(c) / 255f) * exposureScale * wbShift;
-            float g = srgbToLinear(Color.green(c) / 255f) * exposureScale;
-            float b = srgbToLinear(Color.blue(c) / 255f) * exposureScale / wbShift;
-            int x = i % w, y = i / w;
-            int rendered = renderLook(r, g, b, look, x, y, 0x53434f50);
-            if (look.vignette > 0f) {
-                float nx = w <= 1 ? 0f : x / (float) (w - 1) * 2f - 1f;
-                float ny = h <= 1 ? 0f : y / (float) (h - 1) * 2f - 1f;
-                float falloff = Math.max(.72f, 1f - look.vignette * .18f * (nx * nx + ny * ny));
-                rendered = scaleColor(rendered, falloff);
+        java.util.stream.IntStream.range(0, h).parallel().forEach(y -> {
+            int rowOffset = y * w;
+            for (int x = 0; x < w; x++) {
+                int c = pixels[rowOffset + x];
+                float r = srgbToLinear(Color.red(c) / 255f) * exposureScale * wbShift;
+                float g = srgbToLinear(Color.green(c) / 255f) * exposureScale;
+                float b = srgbToLinear(Color.blue(c) / 255f) * exposureScale / wbShift;
+                int rendered = renderLook(r, g, b, look, x, y, 0x53434f50, null);
+                if (look.vignette > 0f) {
+                    float nx = w <= 1 ? 0f : x / (float) (w - 1) * 2f - 1f;
+                    float ny = h <= 1 ? 0f : y / (float) (h - 1) * 2f - 1f;
+                    float falloff = Math.max(.72f, 1f - look.vignette * .18f * (nx * nx + ny * ny));
+                    rendered = scaleColor(rendered, falloff);
+                }
+                pixels[rowOffset + x] = rendered;
             }
-            pixels[i] = rendered;
-        }
+        });
         Bitmap result = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888);
         bitmap.recycle();
         if (look.chromaNr > 0f) applyChromaDenoise(result, look.chromaNr);
-        if (look.halation > 0f) applyHalation(result, look.halation);
+        if (look.halation > 0f) applyHalation(result, look.halation, look.aspectRatio);
         if (look.sharpening > 0f) applySharpen(result, Math.min(.14f, look.sharpening * .14f));
         return result;
     }
@@ -324,6 +334,10 @@ final class RawDeveloper {
 
     /** A coupled display transform: tonal response, hue, chroma and gamut are shaped together. */
     private static int renderLook(float r, float g, float b, Look look, int x, int y, int seed) {
+        return renderLook(r, g, b, look, x, y, seed, null);
+    }
+
+    private static int renderLook(float r, float g, float b, Look look, int x, int y, int seed, RawArchive.Frame frame) {
         if (look.brain.startsWith("MONO")) {
             float luma = Math.max(0f, .2126f * r + .7152f * g + .0722f * b);
             r = g = b = luma;
@@ -349,7 +363,10 @@ final class RawDeveloper {
         float bb = .02590404f*lRoot + .78277177f*mRoot - .80867577f*sRoot;
         float highlightWeight = smoothstep(.62f, 1f, lightness);
         shadowWeight = 1f - smoothstep(.12f, .50f, lightness);
-        float chromaScale = clamp(look.saturation, 0f, 1.6f) * (1f - .13f * highlightWeight);
+
+        // Subtractive highlight roll-off: desaturate towards highlight source as lightness approaches 1.0
+        float highlightDesat = 1f - .35f * smoothstep(.70f, 1.0f, lightness);
+        float chromaScale = clamp(look.saturation, 0f, 1.6f) * (1f - .13f * highlightWeight) * highlightDesat;
         a *= chromaScale;
         bb *= chromaScale;
         float chroma = (float) Math.sqrt(a * a + bb * bb);
@@ -362,8 +379,19 @@ final class RawDeveloper {
             bb *= scale;
         }
         if (!look.brain.startsWith("MONO")) {
-            // The Lika base grade is warm; the user control shifts warmer or cooler from that starting point.
-            float warmth = clamp(look.warmth + (look.brain.startsWith("NEUTRAL") ? 0f : .42f), -1f, 1f);
+            // Adapt base warmth push to ambient illumination to avoid fluorescent/indoor green-yellow tint
+            float ambientWarmthFactor = 1.0f;
+            if (look.whiteBalanceKelvin > 0 && look.whiteBalanceKelvin < 4000) {
+                ambientWarmthFactor = clamp(0.5f + 0.5f * (look.whiteBalanceKelvin - 2800f) / 1200f, 0.35f, 1.0f);
+            } else if (frame != null && frame.wbGains != null && frame.wbGains.length >= 4) {
+                float greenGain = (frame.wbGains[1] + frame.wbGains[2]) * .5f;
+                float redBlueGain = (frame.wbGains[0] + frame.wbGains[3]) * .5f;
+                if (redBlueGain > 0.01f && (greenGain / redBlueGain) > 1.12f) {
+                    ambientWarmthFactor = 0.65f;
+                }
+            }
+            float baseWarmth = look.brain.startsWith("NEUTRAL") ? 0f : (.42f * ambientWarmthFactor);
+            float warmth = clamp(look.warmth + baseWarmth, -1f, 1f);
             a += warmth * (.006f + .004f * shadowWeight + .002f * highlightWeight);
             bb += warmth * (.014f + .006f * shadowWeight + .008f * highlightWeight);
         }
@@ -400,6 +428,10 @@ final class RawDeveloper {
     }
 
     private static void applyHalation(Bitmap bitmap, float amount) {
+        applyHalation(bitmap, amount, null);
+    }
+
+    private static void applyHalation(Bitmap bitmap, float amount, String aspect) {
         int w = bitmap.getWidth(), h = bitmap.getHeight();
         int scale = 8, sw = Math.max(1, (w + scale - 1) / scale), sh = Math.max(1, (h + scale - 1) / scale);
         float[] glow = new float[sw * sh];
@@ -409,10 +441,15 @@ final class RawDeveloper {
             glow[y * sw + x] = Math.max(0f, luma - .72f);
         }
         float[] temp = new float[glow.length];
+        boolean isAnamorphic = aspect != null && AppSettings.parseAspectRatio(aspect) > 2.0f;
         blur(glow, temp, sw, sh, true);
         blur(temp, glow, sw, sh, false);
         blur(glow, temp, sw, sh, true);
         blur(temp, glow, sw, sh, false);
+        if (isAnamorphic) {
+            blur(glow, temp, sw, sh, true);
+            System.arraycopy(temp, 0, glow, 0, glow.length);
+        }
         int[] row = new int[w];
         float strength = clamp(amount, 0f, 1f) * 1.6f;
         for (int y = 0; y < h; y++) {
@@ -506,13 +543,8 @@ final class RawDeveloper {
         }
     }
 
-    private static float[] cropRect(int width, int height, String aspect) {
-        float ratio = 0f;
-        String[] parts = (aspect == null ? "4:3" : aspect).split(":");
-        if (parts.length == 2) {
-            try { ratio = Float.parseFloat(parts[0]) / Float.parseFloat(parts[1]); }
-            catch (NumberFormatException ignored) { ratio = 0f; }
-        }
+    static float[] cropRect(int width, int height, String aspect) {
+        float ratio = AppSettings.parseAspectRatio(aspect);
         if (ratio <= 0f) return new float[]{0f, 0f, width, height};
         if (width < height) ratio = 1f / ratio;
         float current = width / (float) height;

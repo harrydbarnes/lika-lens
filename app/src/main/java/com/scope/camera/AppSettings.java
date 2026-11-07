@@ -42,6 +42,46 @@ final class AppSettings {
     static final String FILE_PREFIX = "file_prefix";
     static final String RAW_SUPPORTED = "raw_supported";
     static final String MANUAL_SUPPORTED = "manual_supported";
+    static final String VISUAL_LEVEL = "visual_level";
+    static final String DEFAULT_LENS = "default_lens";
+    static final String LAST_CAMERA_ID = "last_camera_id";
+    static final String VIDEO_FPS = "video_fps";
+    static final String VIDEO_ASPECT = "video_aspect";
+    static final String VIDEO_BITRATE = "video_bitrate";
+
+    static final String[] ASPECT_RATIOS = {
+            "2.39:1",
+            "1.85:1",
+            "1.66:1",
+            "16:9",
+            "3:2",
+            "4:3",
+            "1:1"
+    };
+
+    static final String[] ASPECT_RATIO_LABELS = {
+            "2.39:1 · Cinemascope",
+            "1.85:1 · Flat Widescreen",
+            "1.66:1 · European Scope",
+            "16:9 · 16:9 Widescreen",
+            "3:2 · 35mm Classic",
+            "4:3 · Academy Sensor",
+            "1:1 · Square Format"
+    };
+
+    static float parseAspectRatio(String aspect) {
+        if (aspect == null || aspect.isEmpty()) return 4f / 3f;
+        String clean = aspect.split("·")[0].trim();
+        String[] parts = clean.split(":");
+        if (parts.length == 2) {
+            try {
+                float w = Float.parseFloat(parts[0].trim());
+                float h = Float.parseFloat(parts[1].trim());
+                if (w > 0f && h > 0f) return w / h;
+            } catch (NumberFormatException ignored) { }
+        }
+        return 4f / 3f;
+    }
 
     static final int DEFAULT_EXPOSURE = -2;
     static final int DEFAULT_WARMTH = 50;

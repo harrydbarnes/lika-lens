@@ -28,12 +28,14 @@ final class PhotoEditStore {
         look.chromaNr = prefs.getFloat(prefix + "chroma_nr", look.chromaNr);
         look.vignette = prefs.getFloat(prefix + "vignette", look.vignette);
         look.whiteBalanceKelvin = prefs.getInt(prefix + "white_balance", look.whiteBalanceKelvin);
+        look.aspectRatio = prefs.getString(prefix + "aspect_ratio", null);
+        look.flipHorizontal = prefs.getBoolean(prefix + "flip_h", false);
         return look;
     }
 
     static void save(Context context, String key, RawDeveloper.Look look) {
         String p = prefix(key);
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        SharedPreferences.Editor editor = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString(p + "brain", look.brain)
                 .putString(p + "grain_structure", look.grainStructure)
                 .putFloat(p + "exposure", look.exposureEv)
@@ -49,8 +51,11 @@ final class PhotoEditStore {
                 .putFloat(p + "sharpening", look.sharpening)
                 .putFloat(p + "chroma_nr", look.chromaNr)
                 .putFloat(p + "vignette", look.vignette)
-                .putInt(p + "white_balance", look.whiteBalanceKelvin)
-                .apply();
+                .putInt(p + "white_balance", look.whiteBalanceKelvin);
+        if (look.aspectRatio != null) editor.putString(p + "aspect_ratio", look.aspectRatio);
+        else editor.remove(p + "aspect_ratio");
+        editor.putBoolean(p + "flip_h", look.flipHorizontal);
+        editor.apply();
     }
 
     static void reset(Context context, String key) {
@@ -61,7 +66,8 @@ final class PhotoEditStore {
                 .remove(p + "color_rolloff")
                 .remove(p + "highlights").remove(p + "shadows").remove(p + "grain")
                 .remove(p + "halation").remove(p + "sharpening").remove(p + "chroma_nr")
-                .remove(p + "vignette").remove(p + "white_balance").apply();
+                .remove(p + "vignette").remove(p + "white_balance")
+                .remove(p + "aspect_ratio").remove(p + "flip_h").apply();
     }
 
     private static String prefix(String key) {

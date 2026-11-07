@@ -17,6 +17,10 @@ import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -24,9 +28,11 @@ import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureFailure;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.hardware.camera2.DngCreator;
+import android.media.ExifInterface;
 import android.media.Image;
 import android.graphics.ImageFormat;
 import android.media.ImageReader;
@@ -102,6 +108,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private TextView captureButton;
     private TextView photoModeButton;
     private TextView videoModeButton;
+    private TextView videoFpsButton;
+    private TextView videoAspectButton;
     private TextView recordingLockButton;
     private TextView videoLockButton;
     private TextView flipButton;
@@ -116,6 +124,46 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private TextView zoomSliderValue;
     private final List<TextView> lensButtons = new ArrayList<>();
     private View gridOverlay;
+    private SensorManager sensorManager;
+    private Sensor orientationSensor;
+    private float deviceRollAngle = 0f;
+    private float smoothRollAngle = 0f;
+
+    private final SensorEventListener sensorEventListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            if (event.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+                float[] rotationMatrix = new float[9];
+                SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
+                float[] orientation = new float[3];
+                SensorManager.getOrientation(rotationMatrix, orientation);
+                float rollDegrees = (float) Math.toDegrees(orientation[2]);
+                updateHorizonRoll(rollDegrees);
+            } else if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+                float ax = event.values[0];
+                float ay = event.values[1];
+                float angle = (float) Math.toDegrees(Math.atan2(ax, ay));
+                updateHorizonRoll(angle);
+            }
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+    };
+
+    private void updateHorizonRoll(float angle) {
+        float normalized = ((angle % 360f) + 360f) % 360f;
+        float nearestCardinal = Math.round(normalized / 90f) * 90f;
+        float diff = normalized - nearestCardinal;
+        if (diff > 180f) diff -= 360f;
+        if (diff < -180f) diff += 360f;
+
+        deviceRollAngle = diff;
+        smoothRollAngle = smoothRollAngle * 0.82f + deviceRollAngle * 0.18f;
+        if (gridOverlay != null) {
+            gridOverlay.postInvalidate();
+        }
+    }
     private LinearLayout zoomSliderPanel;
     private SeekBar zoomSlider;
     private ScaleGestureDetector scaleGestureDetector;
@@ -217,6 +265,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         buildCameraUi();
         cameraManager = (CameraManager) getSystemService(CAMERA_SERVICE);
+        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+        if (sensorManager != null) {
+            orientationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+            if (orientationSensor == null) {
+                orientationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            }
+        }
         startBackgroundThread();
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
@@ -225,6 +280,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     @Override protected void onResume() {
         super.onResume();
+        if (sensorManager != null && orientationSensor != null) {
+            sensorManager.registerListener(sensorEventListener, orientationSensor, SensorManager.SENSOR_DELAY_UI);
+        }
         updateBrainButton();
         updateQuickButtons();
         updateReadouts();
@@ -234,6 +292,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     @Override protected void onPause() {
+        if (sensorManager != null) {
+            sensorManager.unregisterListener(sensorEventListener);
+        }
         closeCamera();
         super.onPause();
     }
@@ -304,10 +365,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         header.addView(flashButton, new LinearLayout.LayoutParams(dp(60), dp(38)));
         flashButton.setOnClickListener(v -> cycleFlash());
         aspectButton = pill("4:3", false);
-        LinearLayout.LayoutParams aspectLp = new LinearLayout.LayoutParams(dp(50), dp(38));
+        LinearLayout.LayoutParams aspectLp = new LinearLayout.LayoutParams(-2, dp(38));
         aspectLp.leftMargin = dp(6);
         header.addView(aspectButton, aspectLp);
         aspectButton.setOnClickListener(v -> chooseAspectRatio());
+
+        videoFpsButton = pill("24 FPS", true);
+        LinearLayout.LayoutParams fpsLp = new LinearLayout.LayoutParams(-2, dp(38));
+        fpsLp.leftMargin = dp(6);
+        videoFpsButton.setVisibility(View.GONE);
+        header.addView(videoFpsButton, fpsLp);
+        videoFpsButton.setOnClickListener(v -> cycleVideoFps());
+
+        videoAspectButton = pill("16:9", false);
+        LinearLayout.LayoutParams vaspectLp = new LinearLayout.LayoutParams(-2, dp(38));
+        vaspectLp.leftMargin = dp(6);
+        videoAspectButton.setVisibility(View.GONE);
+        header.addView(videoAspectButton, vaspectLp);
+        videoAspectButton.setOnClickListener(v -> cycleVideoAspect());
+
         View topSpacer = new View(this);
         header.addView(topSpacer, new LinearLayout.LayoutParams(0, 1, 1));
         brainButton = pill("FILM  ⌄", true);
@@ -536,10 +612,32 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void setVideoMode(boolean enabled) {
-        if (videoRecording || videoStarting) return;
+        if (videoRecording || videoStarting || videoMode == enabled) return;
         videoMode = enabled;
         if (quickAdjustPanel != null) quickAdjustPanel.setVisibility(View.GONE);
         updateVideoModeUi();
+        updateQuickButtons();
+        updateReadouts();
+        if (gridOverlay != null) gridOverlay.invalidate();
+        if (textureView != null) configureTransform(textureView.getWidth(), textureView.getHeight());
+    }
+
+    private void cycleVideoFps() {
+        String current = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
+        String next = current.startsWith("24") ? "30 fps" : current.startsWith("30") ? "60 fps" : "24 fps (Cinematic)";
+        AppSettings.prefs(this).edit().putString(AppSettings.VIDEO_FPS, next).apply();
+        updateQuickButtons();
+        updateReadouts();
+        updateVideoModeUi();
+    }
+
+    private void cycleVideoAspect() {
+        String current = AppSettings.get(this, AppSettings.VIDEO_ASPECT, "16:9 Widescreen");
+        String next = current.contains("2.39") ? "16:9 Widescreen" : "2.39:1 Cinemascope";
+        AppSettings.prefs(this).edit().putString(AppSettings.VIDEO_ASPECT, next).apply();
+        updateQuickButtons();
+        if (gridOverlay != null) gridOverlay.invalidate();
+        if (textureView != null) configureTransform(textureView.getWidth(), textureView.getHeight());
     }
 
     private void updateVideoModeUi() {
@@ -550,7 +648,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (aspectButton != null) aspectButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (timerButton != null) timerButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (adjustButton != null) adjustButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
-        if (modeNote != null) modeNote.setText(videoMode ? "VIDEO · PHONE CAMERA PIPELINE" : "RAW DEVELOPED AFTER CAPTURE");
+        if (videoFpsButton != null) videoFpsButton.setVisibility(videoMode ? View.VISIBLE : View.GONE);
+        if (videoAspectButton != null) videoAspectButton.setVisibility(videoMode ? View.VISIBLE : View.GONE);
+        if (modeNote != null) {
+            String fps = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
+            String fpsTag = fps.startsWith("24") ? "24 FPS CINEMATIC" : fps.startsWith("30") ? "30 FPS" : "60 FPS";
+            modeNote.setText(videoMode ? "CINEMATIC VIDEO · " + fpsTag : "RAW DEVELOPED AFTER CAPTURE");
+        }
         if (recordingLockButton != null) recordingLockButton.setVisibility(videoRecording && !videoScreenLocked ? View.VISIBLE : View.GONE);
         if (videoLockOverlay != null) videoLockOverlay.setVisibility(videoRecording && videoScreenLocked ? View.VISIBLE : View.GONE);
 
@@ -564,6 +668,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (flipButton != null) flipButton.setEnabled(controlsAvailable);
         if (settingsButton != null) settingsButton.setEnabled(controlsAvailable);
         if (galleryButton != null) galleryButton.setEnabled(controlsAvailable);
+        if (videoFpsButton != null) videoFpsButton.setEnabled(controlsAvailable);
+        if (videoAspectButton != null) videoAspectButton.setEnabled(controlsAvailable);
         for (TextView lens : lensButtons) lens.setEnabled(controlsAvailable);
         boolean zoomAvailable = !videoRecording && !videoStarting && !videoScreenLocked;
         if (zoomSlider != null) zoomSlider.setEnabled(zoomAvailable);
@@ -683,9 +789,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
             mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
             if (withAudio) mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-            mediaRecorder.setVideoSize(videoSize.getWidth(), videoSize.getHeight());
-            mediaRecorder.setVideoFrameRate(30);
-            mediaRecorder.setVideoEncodingBitRate(12_000_000);
+            String fpsChoice = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
+            int targetFps = fpsChoice.startsWith("60") ? 60 : fpsChoice.startsWith("30") ? 30 : 24;
+            mediaRecorder.setVideoFrameRate(targetFps);
+
+            String bitrateChoice = AppSettings.get(this, AppSettings.VIDEO_BITRATE, "High · 24 Mbps");
+            int bitrate = bitrateChoice.startsWith("Ultra") ? 35_000_000
+                    : bitrateChoice.startsWith("Standard") ? 14_000_000
+                    : 24_000_000;
+            mediaRecorder.setVideoEncodingBitRate(bitrate);
             if (withAudio) mediaRecorder.setAudioEncodingBitRate(128_000);
             mediaRecorder.setOrientationHint(jpegOrientation());
             mediaRecorder.setOutputFile(videoTempFile.getAbsolutePath());
@@ -709,6 +821,30 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         request.addTarget(recordingPreviewSurface);
                         request.addTarget(mediaRecorder.getSurface());
                         request.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+                        if (characteristics != null) {
+                            Range<Integer>[] fpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+                            Range<Integer> targetRange = null;
+                            if (fpsRanges != null) {
+                                for (Range<Integer> r : fpsRanges) {
+                                    if (r.getUpper() == targetFps) {
+                                        if (targetRange == null || r.getLower() == targetFps) {
+                                            targetRange = r;
+                                            if (r.getLower() == targetFps) break;
+                                        }
+                                    }
+                                }
+                                if (targetRange == null) {
+                                    for (Range<Integer> r : fpsRanges) {
+                                        if (targetRange == null || Math.abs(r.getUpper() - targetFps) < Math.abs(targetRange.getUpper() - targetFps)) {
+                                            targetRange = r;
+                                        }
+                                    }
+                                }
+                            }
+                            if (targetRange != null) {
+                                request.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, targetRange);
+                            }
+                        }
                         setExposure(request);
                         setFocusMode(request);
                         setFlash(request, true);
@@ -751,9 +887,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private String videoProfileLabel() {
-        if (videoSize == null) return "1080P / 30 FPS";
+        String fpsSetting = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
+        String fpsLabel = fpsSetting.startsWith("60") ? "60 FPS" : fpsSetting.startsWith("30") ? "30 FPS" : "24 FPS CINEMATIC";
+        String vAspect = AppSettings.get(this, AppSettings.VIDEO_ASPECT, "16:9 Widescreen");
+        String aspectLabel = vAspect.contains("2.39") ? " · 2.39:1 SCOPE" : "";
+        if (videoSize == null) return "1080P / " + fpsLabel + aspectLabel;
         int vertical = Math.min(videoSize.getWidth(), videoSize.getHeight());
-        return vertical + "P / 30 FPS";
+        return vertical + "P / " + fpsLabel + aspectLabel;
     }
 
     private void failVideoStart(String message) {
@@ -1058,6 +1198,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void updateQuickButtons() {
         if (aspectButton != null) aspectButton.setText(AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3"));
+        if (videoFpsButton != null) {
+            String fps = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
+            videoFpsButton.setText(fps.startsWith("24") ? "24 FPS" : fps.startsWith("30") ? "30 FPS" : "60 FPS");
+        }
+        if (videoAspectButton != null) {
+            String vAsp = AppSettings.get(this, AppSettings.VIDEO_ASPECT, "16:9 Widescreen");
+            videoAspectButton.setText(vAsp.contains("2.39") ? "2.39:1" : "16:9");
+        }
         if (timerButton != null) {
             String timer = AppSettings.get(this, AppSettings.TIMER, "Off");
             timerButton.setText("◷  " + (timer.startsWith("3") ? "3S" : timer.startsWith("10") ? "10S" : "OFF"));
@@ -1090,12 +1238,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void chooseAspectRatio() {
-        String[] ratios = {"4:3", "3:2", "16:9", "1:1"};
         String current = AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3");
-        int selected = Math.max(0, Arrays.asList(ratios).indexOf(current));
+        int selected = Math.max(0, Arrays.asList(AppSettings.ASPECT_RATIOS).indexOf(current));
         new AlertDialog.Builder(this).setTitle("Frame shape")
-                .setSingleChoiceItems(ratios, selected, (dialog, which) -> {
-                    AppSettings.prefs(this).edit().putString(AppSettings.ASPECT_RATIO, ratios[which]).apply();
+                .setSingleChoiceItems(AppSettings.ASPECT_RATIO_LABELS, selected, (dialog, which) -> {
+                    AppSettings.prefs(this).edit().putString(AppSettings.ASPECT_RATIO, AppSettings.ASPECT_RATIOS[which]).apply();
                     updateQuickButtons();
                     if (gridOverlay != null) gridOverlay.invalidate();
                     if (cameraDevice != null && characteristics != null) {
@@ -1157,28 +1304,46 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void chooseMainCamera() throws CameraAccessException {
+        String defaultLens = AppSettings.get(this, AppSettings.DEFAULT_LENS, "Auto / Wide 1×");
+        String lastId = AppSettings.get(this, AppSettings.LAST_CAMERA_ID, null);
+
         String best = null;
         long bestArea = -1;
         boolean foundRaw = false;
         float focal = 1f;
-        for (String id : cameraManager.getCameraIdList()) {
-            CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
-            Integer facing = c.get(CameraCharacteristics.LENS_FACING);
-            if (facing == null || facing != CameraCharacteristics.LENS_FACING_BACK) continue;
-            StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-            if (map == null) continue;
-            int[] caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
-            Size[] rawSizes = map.getOutputSizes(ImageFormat.RAW_SENSOR);
-            boolean raw = caps != null && Arrays.stream(caps).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
-                    && rawSizes != null && rawSizes.length > 0;
-            Size[] sizes = raw ? map.getOutputSizes(ImageFormat.RAW_SENSOR) : map.getOutputSizes(ImageFormat.JPEG);
-            long area = sizes == null ? 0 : Arrays.stream(sizes).mapToLong(s -> (long) s.getWidth() * s.getHeight()).max().orElse(0);
-            if ((raw && !foundRaw) || (raw == foundRaw && area > bestArea)) {
-                best = id;
-                bestArea = area;
-                foundRaw = raw;
-                float[] lenses = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
-                if (lenses != null && lenses.length > 0) focal = lenses[0];
+
+        if ("Last used".equals(defaultLens) && lastId != null) {
+            for (String id : cameraManager.getCameraIdList()) {
+                if (id.equals(lastId)) {
+                    CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
+                    float[] lenses = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                    best = id;
+                    focal = lenses != null && lenses.length > 0 ? lenses[0] : 1f;
+                    break;
+                }
+            }
+        }
+
+        if (best == null) {
+            for (String id : cameraManager.getCameraIdList()) {
+                CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
+                Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+                if (facing == null || facing != CameraCharacteristics.LENS_FACING_BACK) continue;
+                StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                if (map == null) continue;
+                int[] caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
+                Size[] rawSizes = map.getOutputSizes(ImageFormat.RAW_SENSOR);
+                boolean raw = caps != null && Arrays.stream(caps).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
+                        && rawSizes != null && rawSizes.length > 0;
+                Size[] sizes = raw ? map.getOutputSizes(ImageFormat.RAW_SENSOR) : map.getOutputSizes(ImageFormat.JPEG);
+                long area = sizes == null ? 0 : Arrays.stream(sizes).mapToLong(s -> (long) s.getWidth() * s.getHeight()).max().orElse(0);
+                if ((raw && !foundRaw) || (raw == foundRaw && area > bestArea)) {
+                    best = id;
+                    bestArea = area;
+                    foundRaw = raw;
+                    float[] lenses = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                    if (lenses != null && lenses.length > 0) focal = lenses[0];
+                }
             }
         }
         cameraId = best;
@@ -1242,14 +1407,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private float aspectRatioSetting() {
-        String[] parts = AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3").split(":");
-        if (parts.length == 2) {
-            try {
-                float ratio = Float.parseFloat(parts[0]) / Float.parseFloat(parts[1]);
-                if (Float.isFinite(ratio) && ratio > 0f) return ratio;
-            } catch (NumberFormatException ignored) { }
+        if (videoMode) {
+            String vAspect = AppSettings.get(this, AppSettings.VIDEO_ASPECT, "16:9 Widescreen");
+            if (vAspect.contains("2.39")) return 2.39f;
+            return 16f / 9f;
         }
-        return 4f / 3f;
+        return AppSettings.parseAspectRatio(AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3"));
     }
 
     private RectF framingRect(float width, float height) {
@@ -1432,7 +1595,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     developed = rotateForDisplay(developed);
                     developed = cropToAspect(developed, capturedAspect);
                 }
-                if (!raw || !"DNG only".equals(format) || !dngSaved) writeJpeg(developed, prefix + "_" + stamp + ".jpg");
+                if (!raw || !"DNG only".equals(format) || !dngSaved) writeJpeg(developed, prefix + "_" + stamp + ".jpg", result);
                 if (raw && keepEditableSource) PhotoEditStore.save(this, archiveKey, captureLook);
                 developed.recycle();
                 String resultMessage = dngWarning != null ? "Photo rendered; DNG export failed"
@@ -1577,20 +1740,60 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
-    private void writeJpeg(Bitmap bitmap, String name) throws Exception {
+    private void writeJpeg(Bitmap bitmap, String name, TotalCaptureResult result) throws Exception {
         OutputTarget target = createOutput(name, "image/jpeg", "");
         boolean published = false;
+        File temp = File.createTempFile("lika_export_", ".jpg", getCacheDir());
         try {
-            try (OutputStream stream = target.open()) {
-                String qualityChoice = AppSettings.get(this, "jpeg_quality", "Maximum · 96%");
-                int quality = qualityChoice.startsWith("High") ? 92 : qualityChoice.startsWith("Balanced") ? 85 : 96;
-                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)) {
+            String qualityChoice = AppSettings.get(this, "jpeg_quality", "Maximum · 96%");
+            int quality = qualityChoice.startsWith("High") ? 92 : qualityChoice.startsWith("Balanced") ? 85 : 96;
+            try (FileOutputStream tempOut = new FileOutputStream(temp)) {
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, tempOut)) {
                     throw new IllegalStateException("JPEG encoder could not write the image");
+                }
+            }
+
+            try {
+                ExifInterface exif = new ExifInterface(temp.getAbsolutePath());
+                exif.setAttribute(ExifInterface.TAG_MAKE, Build.MANUFACTURER);
+                exif.setAttribute(ExifInterface.TAG_MODEL, Build.MODEL);
+                exif.setAttribute(ExifInterface.TAG_SOFTWARE, "Lika Lens (Cinematic Raw)");
+                String timeStamp = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(new Date());
+                exif.setAttribute(ExifInterface.TAG_DATETIME, timeStamp);
+                if (result != null) {
+                    Long exp = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+                    if (exp != null && exp > 0) {
+                        exif.setAttribute(ExifInterface.TAG_EXPOSURE_TIME, String.valueOf(exp / 1_000_000_000.0));
+                    }
+                    Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
+                    if (iso != null && iso > 0) {
+                        exif.setAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, String.valueOf(iso));
+                    }
+                    Float focal = result.get(CaptureResult.LENS_FOCAL_LENGTH);
+                    if (focal != null && focal > 0) {
+                        exif.setAttribute(ExifInterface.TAG_FOCAL_LENGTH, String.valueOf(focal));
+                    }
+                    Float aperture = result.get(CaptureResult.LENS_APERTURE);
+                    if (aperture != null && aperture > 0) {
+                        exif.setAttribute(ExifInterface.TAG_F_NUMBER, String.valueOf(aperture));
+                    }
+                }
+                exif.saveAttributes();
+            } catch (Exception exifError) {
+                Log.w(TAG, "Could not write EXIF attributes to JPEG", exifError);
+            }
+
+            try (InputStream in = new FileInputStream(temp); OutputStream out = target.open()) {
+                byte[] buf = new byte[32768];
+                int len;
+                while ((len = in.read(buf)) != -1) {
+                    out.write(buf, 0, len);
                 }
             }
             target.publish();
             published = true;
         } finally {
+            if (temp.exists()) temp.delete();
             if (!published) target.discard();
         }
     }
@@ -1824,6 +2027,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void selectCameraForLens(String id, float factor, boolean jpegWide) {
+        AppSettings.prefs(this).edit().putString(AppSettings.LAST_CAMERA_ID, id).apply();
         boolean mustRestart = !id.equals(cameraId) || forceJpegForWide != jpegWide;
         forceJpegForWide = jpegWide;
         if (mustRestart) {
@@ -2128,7 +2332,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void updateReadouts() {
         boolean manual = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual") && manualSupported;
-        if (shutterValueText != null) shutterValueText.setText(manual ? AppSettings.get(this, AppSettings.MANUAL_SHUTTER, "1/120 sec").replace(" sec", "") : "AUTO");
+        if (shutterValueText != null) {
+            if (manual) {
+                shutterValueText.setText(AppSettings.get(this, AppSettings.MANUAL_SHUTTER, "1/120 sec").replace(" sec", ""));
+            } else if (videoMode) {
+                String fps = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
+                shutterValueText.setText(fps.startsWith("24") ? "1/48 (180°)" : fps.startsWith("30") ? "1/60 (180°)" : "1/120 (180°)");
+            } else {
+                shutterValueText.setText("AUTO");
+            }
+        }
         if (isoValueText != null) isoValueText.setText(manual ? AppSettings.get(this, AppSettings.MANUAL_ISO, "ISO 100") : "AUTO");
         int wb = AppSettings.getInt(this, AppSettings.WHITE_BALANCE, 0);
         if (whiteBalanceValueText != null) whiteBalanceValueText.setText(wb <= 0 ? "AUTO" : wb + " K");
@@ -2302,6 +2515,37 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 canvas.drawLine(frame.left, y, frame.right, y, gridPaint);
             }
             canvas.drawRect(frame, framePaint);
+
+            boolean showLevel = AppSettings.getBoolean(MainActivity.this, AppSettings.VISUAL_LEVEL, true);
+            if (showLevel) {
+                float cx = frame.centerX();
+                float cy = frame.centerY();
+                float density = getResources().getDisplayMetrics().density;
+                boolean isLevel = Math.abs(smoothRollAngle) <= 1.0f;
+
+                Paint levelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                levelPaint.setStyle(Paint.Style.STROKE);
+                levelPaint.setStrokeWidth(density * 1.5f);
+
+                // Fixed center reference reticle
+                levelPaint.setColor(0x55ffffff);
+                canvas.drawLine(cx - density * 44, cy, cx - density * 14, cy, levelPaint);
+                canvas.drawLine(cx + density * 14, cy, cx + density * 44, cy, levelPaint);
+                canvas.drawCircle(cx, cy, density * 2.5f, levelPaint);
+
+                // Rotating horizon bar
+                canvas.save();
+                canvas.rotate(-smoothRollAngle, cx, cy);
+                levelPaint.setColor(isLevel ? ACCENT : 0x99ffffff);
+                levelPaint.setStrokeWidth(isLevel ? density * 2.2f : density * 1.5f);
+                canvas.drawLine(cx - density * 56, cy, cx - density * 20, cy, levelPaint);
+                canvas.drawLine(cx + density * 20, cy, cx + density * 56, cy, levelPaint);
+                if (isLevel) {
+                    levelPaint.setStyle(Paint.Style.FILL);
+                    canvas.drawCircle(cx, cy, density * 3.5f, levelPaint);
+                }
+                canvas.restore();
+            }
         }
     }
 

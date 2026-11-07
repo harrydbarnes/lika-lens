@@ -176,7 +176,9 @@ public class SettingsActivity extends Activity {
     private void populateCameraSettings() {
         addSection("CAPTURE", "Sensor, focus behaviour and timing.");
         addChoice("Frame shape", "Match the viewfinder guide and rendered JPEG; keep the DNG full-frame", AppSettings.ASPECT_RATIO,
-                new String[]{"4:3", "3:2", "16:9", "1:1"}, "4:3");
+                AppSettings.ASPECT_RATIOS, "4:3");
+        addChoice("Default lens", "Camera lens selected on app launch", AppSettings.DEFAULT_LENS,
+                new String[]{"Auto / Wide 1×", "Ultra-wide .5×", "Telephoto 2×/5×", "Last used"}, "Auto / Wide 1×");
         addChoice("Flash mode", "Flash hardware and RAW capture compatibility vary by camera", AppSettings.FLASH,
                 new String[]{"Off", "Torch", "Auto"}, "Off");
         addChoice("RAW capture size", "Uses the largest RAW stream the camera supports", AppSettings.RAW_SIZE,
@@ -192,9 +194,20 @@ public class SettingsActivity extends Activity {
         addChoice("Focus behaviour", "Camera2 autofocus mode", "focus_mode",
                 new String[]{"Continuous picture autofocus", "Single autofocus"}, "Continuous picture autofocus");
         addSwitch("Haptic shutter", "Short tactile response when a frame is taken", AppSettings.HAPTICS, true);
+
+        addSection("CINEMATIC VIDEO", "High-bitrate motion recording with film shutter timing.");
+        addChoice("Video frame rate", "Cinematic motion blur cadence", AppSettings.VIDEO_FPS,
+                new String[]{"24 fps (Cinematic)", "30 fps", "60 fps"}, "24 fps (Cinematic)");
+        addChoice("Video framing", "Framing aspect ratio for video recording", AppSettings.VIDEO_ASPECT,
+                new String[]{"16:9 Widescreen", "2.39:1 Cinemascope"}, "16:9 Widescreen");
+        addChoice("Video bitrate", "Encoding target bitrate for motion detail", AppSettings.VIDEO_BITRATE,
+                new String[]{"High · 24 Mbps", "Ultra · 35 Mbps", "Standard · 14 Mbps"}, "High · 24 Mbps");
+        addInfo("180° Shutter Rule", "In 24 fps cinematic mode, the app targets a 1/48s exposure interval for authentic motion cadence.", 0xffaab3ad);
+
         addSection("VIEWFINDER", "Framing and exposure aids.");
         addChoice("Composition grid", "Choose a guide overlay inside the viewfinder frame", AppSettings.GRID_STYLE,
                 new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");
+        addSwitch("Visual level", "Artificial horizon bar that illuminates gold when level", AppSettings.VISUAL_LEVEL, true);
         addInfo("Grid guides", "The frame outline and grid help compose the shot. They are not saved into the photo.", 0xffaab3ad);
         addInfo("Exposure aids", "Histogram, zebra and focus-peaking overlays are planned.", 0xffaab3ad);
         boolean hasRaw = AppSettings.getBoolean(this, AppSettings.RAW_SUPPORTED, false);

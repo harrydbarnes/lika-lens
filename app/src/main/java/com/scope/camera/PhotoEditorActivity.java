@@ -60,6 +60,9 @@ public class PhotoEditorActivity extends Activity {
         loadSource();
     }
 
+    private LinearLayout tabBar;
+    private String activeTab = "TONE";
+
     private void build() {
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -93,34 +96,179 @@ public class PhotoEditorActivity extends Activity {
         status.setGravity(Gravity.CENTER);
         status.setPadding(dp(8), dp(8), dp(8), dp(3));
         page.addView(status);
+
+        tabBar = new LinearLayout(this);
+        tabBar.setGravity(Gravity.CENTER_VERTICAL);
+        tabBar.setPadding(dp(14), dp(2), dp(14), dp(6));
+        page.addView(tabBar);
+        refreshTabs();
+
         ScrollView scroll = new ScrollView(this);
         scroll.setVerticalScrollBarEnabled(false);
         controlsList = new LinearLayout(this);
         controlsList.setOrientation(LinearLayout.VERTICAL);
-        controlsList.setPadding(dp(14), dp(4), dp(14), dp(12));
+        controlsList.setPadding(dp(14), dp(2), dp(14), dp(12));
         scroll.addView(controlsList);
-        page.addView(scroll, new LinearLayout.LayoutParams(-1, dp(300)));
+        page.addView(scroll, new LinearLayout.LayoutParams(-1, dp(310)));
         populateControls();
         setContentView(page);
+    }
+
+    private void refreshTabs() {
+        if (tabBar == null) return;
+        tabBar.removeAllViews();
+        String[] tabs = {"TONE", "COLOR", "TEXTURE", "CROP"};
+        for (String tab : tabs) {
+            TextView pill = pill(tab, tab.equals(activeTab));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(32), 1f);
+            if (!tab.equals("TONE")) lp.leftMargin = dp(6);
+            tabBar.addView(pill, lp);
+            pill.setOnClickListener(v -> {
+                activeTab = tab;
+                refreshTabs();
+                populateControls();
+            });
+        }
     }
 
     private void populateControls() {
         controls.clear();
         controlsList.removeAllViews();
-        addControl("Exposure", "EV", 0, -20, 20, Math.round(look.exposureEv * 10f));
-        addControl("White balance", "K", 1, 0, 44, look.whiteBalanceKelvin <= 0 ? 0 : 1 + (look.whiteBalanceKelvin - 3200) / 100);
-        addControl("Warmth shift", "", 12, 0, 100, Math.round(look.warmth * 50f + 50f));
-        addControl("Contrast", "", 2, 50, 150, Math.round(look.contrast * 100));
-        addControl("Colour", "", 3, 50, 160, Math.round(look.saturation * 100));
-        addControl("Saturated colour roll-off", "", 13, 0, 100, Math.round(look.colorRollOff * 100));
-        addControl("Highlights", "", 4, 0, 100, Math.round(look.highlights * 100));
-        addControl("Shadows", "", 5, 0, 100, Math.round(look.shadows * 100));
-        addControl("Pivot", "", 8, 0, 100, Math.round(look.pivot * 100));
-        addControl("Grain", "", 6, 0, 100, Math.round(look.grain * 100));
-        addControl("Halation", "", 7, 0, 100, Math.round(look.halation * 100));
-        addControl("Sharpening", "", 9, 0, 100, Math.round(look.sharpening * 100));
-        addControl("Colour noise reduction", "", 10, 0, 100, Math.round(look.chromaNr * 100));
-        addControl("Vignette", "", 11, 0, 100, Math.round(look.vignette * 100));
+        if ("TONE".equals(activeTab)) {
+            addControl("Exposure", "EV", 0, -20, 20, Math.round(look.exposureEv * 10f));
+            addControl("Contrast", "", 2, 50, 150, Math.round(look.contrast * 100));
+            addControl("Highlights", "", 4, 0, 100, Math.round(look.highlights * 100));
+            addControl("Shadows", "", 5, 0, 100, Math.round(look.shadows * 100));
+            addControl("Pivot", "", 8, 0, 100, Math.round(look.pivot * 100));
+        } else if ("COLOR".equals(activeTab)) {
+            addControl("White balance", "K", 1, 0, 44, look.whiteBalanceKelvin <= 0 ? 0 : 1 + (look.whiteBalanceKelvin - 3200) / 100);
+            addControl("Warmth shift", "", 12, 0, 100, Math.round(look.warmth * 50f + 50f));
+            addControl("Colour intensity", "", 3, 50, 160, Math.round(look.saturation * 100));
+            addControl("Saturated colour roll-off", "", 13, 0, 100, Math.round(look.colorRollOff * 100));
+        } else if ("TEXTURE".equals(activeTab)) {
+            addControl("Film grain", "", 6, 0, 100, Math.round(look.grain * 100));
+            addGrainStructureChoice();
+            addControl("Halation", "", 7, 0, 100, Math.round(look.halation * 100));
+            addControl("Sharpening", "", 9, 0, 100, Math.round(look.sharpening * 100));
+            addControl("Colour noise reduction", "", 10, 0, 100, Math.round(look.chromaNr * 100));
+            addControl("Vignette", "", 11, 0, 100, Math.round(look.vignette * 100));
+        } else if ("CROP".equals(activeTab)) {
+            addCropControls();
+        }
+    }
+
+    private void addGrainStructureChoice() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(8), dp(12), dp(8));
+        card.setBackground(round(0xff121617, 12, 0xff293031, dp(1)));
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(-1, -2);
+        cardLp.bottomMargin = dp(6);
+        controlsList.addView(card, cardLp);
+
+        TextView label = text("Grain Structure", 10, 0xffe6eae4, true);
+        card.addView(label);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, dp(32));
+        rowLp.topMargin = dp(6);
+        card.addView(row, rowLp);
+
+        String[] structures = {"Fine · 35 mm", "Soft · 16 mm", "Coarse · 8 mm"};
+        String current = look.grainStructure == null ? "Fine · 35 mm" : look.grainStructure;
+        for (int i = 0; i < structures.length; i++) {
+            String s = structures[i];
+            String labelShort = s.split("·")[1].trim();
+            boolean active = current.startsWith(s.substring(0, 4));
+            TextView pill = pill(labelShort, active);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
+            if (i > 0) lp.leftMargin = dp(4);
+            row.addView(pill, lp);
+            pill.setOnClickListener(v -> {
+                look.grainStructure = s;
+                populateControls();
+                queuePreview();
+            });
+        }
+    }
+
+    private void addCropControls() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        card.setBackground(round(0xff121617, 12, 0xff293031, dp(1)));
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(-1, -2);
+        cardLp.bottomMargin = dp(8);
+        controlsList.addView(card, cardLp);
+
+        TextView title = text("FRAME SHAPE & ASPECT RATIO", 9, ACCENT, true);
+        title.setLetterSpacing(.12f);
+        card.addView(title);
+        TextView sub = text("Non-destructive crop redeveloped from full sensor RAW", 8, 0xff89948e, false);
+        sub.setPadding(0, dp(2), 0, dp(8));
+        card.addView(sub);
+
+        String currentAspect = look.aspectRatio != null ? look.aspectRatio : (frame != null ? frame.aspectRatio : "4:3");
+        LinearLayout row1 = new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams row1Lp = new LinearLayout.LayoutParams(-1, dp(34));
+        row1Lp.bottomMargin = dp(6);
+        card.addView(row1, row1Lp);
+
+        String[] primaryRatios = {"2.39:1", "1.85:1", "1.66:1", "16:9"};
+        for (int i = 0; i < primaryRatios.length; i++) {
+            String ratio = primaryRatios[i];
+            boolean selected = ratio.equals(currentAspect) || (currentAspect != null && currentAspect.startsWith(ratio));
+            TextView pill = pill(ratio, selected);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
+            if (i > 0) lp.leftMargin = dp(4);
+            row1.addView(pill, lp);
+            pill.setOnClickListener(v -> {
+                look.aspectRatio = ratio;
+                populateControls();
+                queuePreview();
+            });
+        }
+
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams row2Lp = new LinearLayout.LayoutParams(-1, dp(34));
+        row2Lp.bottomMargin = dp(6);
+        card.addView(row2, row2Lp);
+
+        String[] secondaryRatios = {"3:2", "4:3", "1:1"};
+        for (int i = 0; i < secondaryRatios.length; i++) {
+            String ratio = secondaryRatios[i];
+            boolean selected = ratio.equals(currentAspect) || (currentAspect != null && currentAspect.startsWith(ratio));
+            TextView pill = pill(ratio, selected);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
+            if (i > 0) lp.leftMargin = dp(4);
+            row2.addView(pill, lp);
+            pill.setOnClickListener(v -> {
+                look.aspectRatio = ratio;
+                populateControls();
+                queuePreview();
+            });
+        }
+
+        LinearLayout mirrorCard = new LinearLayout(this);
+        mirrorCard.setOrientation(LinearLayout.HORIZONTAL);
+        mirrorCard.setGravity(Gravity.CENTER_VERTICAL);
+        mirrorCard.setPadding(dp(12), dp(10), dp(12), dp(10));
+        mirrorCard.setBackground(round(0xff121617, 12, 0xff293031, dp(1)));
+        controlsList.addView(mirrorCard, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView mirrorLabel = text("Flip / Mirror Horizontal", 10, 0xffe6eae4, true);
+        mirrorCard.addView(mirrorLabel, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView flipPill = pill(look.flipHorizontal ? "MIRRORED" : "NORMAL", look.flipHorizontal);
+        mirrorCard.addView(flipPill, new LinearLayout.LayoutParams(dp(88), dp(32)));
+        flipPill.setOnClickListener(v -> {
+            look.flipHorizontal = !look.flipHorizontal;
+            populateControls();
+            queuePreview();
+        });
     }
 
     private void addControl(String label, String unit, int type, int min, int max, int current) {
@@ -266,6 +414,21 @@ public class PhotoEditorActivity extends Activity {
                         throw new IllegalStateException("Could not write JPEG render");
                     }
                 }
+                try (android.os.ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(photoUri, "rw")) {
+                    if (pfd != null) {
+                        android.media.ExifInterface exif = new android.media.ExifInterface(pfd.getFileDescriptor());
+                        exif.setAttribute(android.media.ExifInterface.TAG_MAKE, android.os.Build.MANUFACTURER);
+                        exif.setAttribute(android.media.ExifInterface.TAG_MODEL, android.os.Build.MODEL);
+                        exif.setAttribute(android.media.ExifInterface.TAG_SOFTWARE, "Lika Lens · Chromagraph Pipeline");
+                        if (source.exposureTimeNs > 0) {
+                            exif.setAttribute(android.media.ExifInterface.TAG_EXPOSURE_TIME, String.valueOf(source.exposureTimeNs / 1_000_000_000.0));
+                        }
+                        if (source.sensitivityIso > 0) {
+                            exif.setAttribute(android.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, String.valueOf(source.sensitivityIso));
+                        }
+                        exif.saveAttributes();
+                    }
+                } catch (Throwable ignored) { }
                 PhotoEditStore.save(this, archiveKey, snapshot);
             } catch (Exception e) {
                 failure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
