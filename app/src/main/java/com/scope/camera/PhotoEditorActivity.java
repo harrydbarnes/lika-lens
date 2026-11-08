@@ -731,9 +731,10 @@ public class PhotoEditorActivity extends Activity {
                         neutralBmp = scaled;
                     }
                 }
+                final Bitmap finalNeutralBmp = neutralBmp;
                 mainHandler.post(() -> {
                     frame = loaded;
-                    rawOriginalBitmap = neutralBmp;
+                    rawOriginalBitmap = finalNeutralBmp;
                     setPreview(bitmap);
                     status.setText("RAW ORIGINAL  ·  LOOK PREVIEW");
                 });
