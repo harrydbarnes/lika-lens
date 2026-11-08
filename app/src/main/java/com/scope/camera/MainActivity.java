@@ -2968,15 +2968,21 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void showCustomBottomSheet(String title, String[] items, String[] subtitles, int selectedIndex, BottomSheetCallback callback) {
-        Dialog dialog = new Dialog(this);
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-            dialog.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT);
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
         }
+
+        FrameLayout scrim = new FrameLayout(this);
+        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setBackgroundColor(0x77000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setClickable(true);
         sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
         sheet.setPadding(dp(20), dp(16), dp(20), dp(20));
 
@@ -3018,7 +3024,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 sub.setPadding(0, dp(2), 0, 0);
                 copy.addView(sub);
             }
-            row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+            LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(0, -2, 1f);
+            copyLp.rightMargin = dp(8);
+            row.addView(copy, copyLp);
 
             if (isCurrent) {
                 TextView check = label("✓", 12, ACCENT, true);
@@ -3045,13 +3053,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(-1, dp(38));
         cancelLp.topMargin = dp(12);
         sheet.addView(cancel, cancelLp);
-        sheet.setMinimumWidth(getResources().getDisplayMetrics().widthPixels);
-        dialog.setContentView(sheet, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        cancel.setOnClickListener(v -> dialog.dismiss());
+
+        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM
+        );
+        scrim.addView(sheet, sheetLp);
+        dialog.setContentView(scrim);
         dialog.show();
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT);
-            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        }
     }
 
     private interface BottomSheetCallback {

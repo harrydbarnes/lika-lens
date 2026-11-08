@@ -428,15 +428,21 @@ public class PhotoViewerActivity extends Activity {
 
     private void confirmDeleteCurrentPhoto() {
         if (photoUri == null) return;
-        android.app.Dialog dialog = new android.app.Dialog(this);
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
-            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-            dialog.getWindow().setLayout(android.view.WindowManager.LayoutParams.MATCH_PARENT, android.view.WindowManager.LayoutParams.WRAP_CONTENT);
+        android.app.Dialog dialog = new android.app.Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        android.view.Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+            window.setLayout(android.view.WindowManager.LayoutParams.MATCH_PARENT, android.view.WindowManager.LayoutParams.MATCH_PARENT);
         }
+
+        FrameLayout scrim = new FrameLayout(this);
+        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setBackgroundColor(0x77000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setClickable(true);
         sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
         sheet.setPadding(dp(20), dp(18), dp(20), dp(20));
 
@@ -490,13 +496,15 @@ public class PhotoViewerActivity extends Activity {
         });
 
         sheet.addView(actions, new LinearLayout.LayoutParams(-1, -2));
-        sheet.setMinimumWidth(getResources().getDisplayMetrics().widthPixels);
-        dialog.setContentView(sheet, new android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM
+        );
+        scrim.addView(sheet, sheetLp);
+        dialog.setContentView(scrim);
         dialog.show();
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setLayout(android.view.WindowManager.LayoutParams.MATCH_PARENT, android.view.WindowManager.LayoutParams.WRAP_CONTENT);
-            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        }
     }
 
     private void clampMatrix() {

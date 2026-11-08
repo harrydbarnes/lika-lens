@@ -582,15 +582,21 @@ public class SettingsActivity extends Activity {
     }
 
     private void showCustomPrefixDialog(TextView valueView) {
-        Dialog dialog = new Dialog(this);
-        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            dialog.getWindow().setGravity(Gravity.CENTER);
-            dialog.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT);
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
         }
+
+        FrameLayout scrim = new FrameLayout(this);
+        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setBackgroundColor(0x77000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
+        box.setClickable(true);
         box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
         box.setPadding(dp(20), dp(18), dp(20), dp(18));
 
@@ -636,25 +642,34 @@ public class SettingsActivity extends Activity {
             dialog.dismiss();
         });
         box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
-        box.setMinimumWidth(Math.round(getResources().getDisplayMetrics().widthPixels * 0.86f));
-        dialog.setContentView(box, new android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        int dialogWidth = Math.min(dp(400), Math.round(getResources().getDisplayMetrics().widthPixels * 0.88f));
+        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
+                dialogWidth,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+        );
+        scrim.addView(box, boxLp);
+        dialog.setContentView(scrim);
         dialog.show();
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setLayout(Math.round(getResources().getDisplayMetrics().widthPixels * 0.88f), WindowManager.LayoutParams.WRAP_CONTENT);
-            dialog.getWindow().setGravity(Gravity.CENTER);
-        }
     }
 
     private void showChoiceDialog(String title, String key, String[] options, String defaultValue, TextView valueView) {
-        Dialog dialog = new Dialog(this);
-        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-            dialog.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT);
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
         }
+
+        FrameLayout scrim = new FrameLayout(this);
+        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setBackgroundColor(0x77000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setClickable(true);
         sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
         sheet.setPadding(dp(20), dp(16), dp(20), dp(20));
 
@@ -688,7 +703,9 @@ public class SettingsActivity extends Activity {
             row.setBackground(round(isCurrent ? 0x22d7b574 : 0x00000000, 10, isCurrent ? 0x66d7b574 : 0, isCurrent ? dp(1) : 0));
 
             TextView label = text(option, 11, isCurrent ? ACCENT : 0xffe6eae4, isCurrent);
-            row.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
+            LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(0, -2, 1f);
+            labelLp.rightMargin = dp(8);
+            row.addView(label, labelLp);
 
             if (isCurrent) {
                 TextView check = text("✓", 12, ACCENT, true);
@@ -730,13 +747,14 @@ public class SettingsActivity extends Activity {
         sheet.addView(cancel, cancelLp);
         cancel.setOnClickListener(v -> dialog.dismiss());
 
-        sheet.setMinimumWidth(getResources().getDisplayMetrics().widthPixels);
-        dialog.setContentView(sheet, new android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM
+        );
+        scrim.addView(sheet, sheetLp);
+        dialog.setContentView(scrim);
         dialog.show();
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT);
-            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        }
     }
 
     private String shortValue(String value) {
