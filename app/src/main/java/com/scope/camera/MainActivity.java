@@ -15,6 +15,7 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Outline;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
@@ -141,6 +142,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private TextView zoomSliderValue;
     private final List<TextView> lensButtons = new ArrayList<>();
     private View gridOverlay;
+    private View viewfinderSpacer;
     private SensorManager sensorManager;
     private Sensor orientationSensor;
     private float deviceRollAngle = 0f;
@@ -556,7 +558,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         textureView.setClipToOutline(true);
         textureView.setOutlineProvider(new ViewOutlineProvider() {
             @Override public void getOutline(View view, Outline outline) {
-                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), dp(14));
+                if (view.getWidth() == 0 || view.getHeight() == 0) return;
+                RectF frame = framingRect(view.getWidth(), view.getHeight());
+                outline.setRoundRect((int) frame.left, (int) frame.top, (int) frame.right, (int) frame.bottom, dp(24));
             }
         });
         textureView.setSurfaceTextureListener(this);
@@ -638,13 +642,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         settingsButton.setOnClickListener(v -> { hapticClick(v); startActivity(new Intent(this, SettingsActivity.class)); });
         overlay.addView(header);
 
-        LinearLayout spacer = new LinearLayout(this);
-        overlay.addView(spacer, new LinearLayout.LayoutParams(-1, 0, 1));
+        viewfinderSpacer = new LinearLayout(this);
+        overlay.addView(viewfinderSpacer, new LinearLayout.LayoutParams(-1, dp(380)));
 
         GestureDetector tapDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onSingleTapConfirmed(MotionEvent e) {
                 if (videoScreenLocked) return false;
-                handleViewfinderTap(e.getX(), e.getY());
+                if (viewfinderSpacer != null) {
+                    int[] loc = new int[2];
+                    viewfinderSpacer.getLocationInWindow(loc);
+                    handleViewfinderTap(loc[0] + e.getX(), loc[1] + e.getY());
+                } else {
+                    handleViewfinderTap(e.getX(), e.getY());
+                }
                 return true;
             }
             @Override public boolean onDoubleTap(MotionEvent e) {
@@ -654,26 +664,36 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             @Override public void onLongPress(MotionEvent e) {
                 if (videoScreenLocked || isDraggingEv || isDraggingShadows) return;
-                handleViewfinderLongPress(e.getX(), e.getY());
+                if (viewfinderSpacer != null) {
+                    int[] loc = new int[2];
+                    viewfinderSpacer.getLocationInWindow(loc);
+                    handleViewfinderLongPress(loc[0] + e.getX(), loc[1] + e.getY());
+                } else {
+                    handleViewfinderLongPress(e.getX(), e.getY());
+                }
             }
         });
 
-        spacer.setOnTouchListener((v, event) -> {
+        viewfinderSpacer.setOnTouchListener((v, event) -> {
             tapDetector.onTouchEvent(event);
             if (focusReticle != null && focusReticle.isVisible && event.getPointerCount() == 1) {
+                int[] loc = new int[2];
+                v.getLocationInWindow(loc);
+                float curWinY = loc[1] + event.getY();
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
-                        dragStartY = event.getY();
+                        dragStartY = curWinY;
                         dragStartEv = currentEvOffset;
                         dragStartShadows = AppSettings.getInt(MainActivity.this, AppSettings.SHADOWS, AppSettings.DEFAULT_SHADOWS);
                         float rx = focusReticle.reticleX;
-                        isDraggingShadows = (event.getX() < rx - dp(12) && event.getX() > rx - dp(78));
-                        isDraggingEv = !isDraggingShadows && (Math.abs(event.getX() - (rx + dp(28))) < dp(55)
-                                || Math.abs(event.getX() - rx) < dp(55));
+                        float curWinX = loc[0] + event.getX();
+                        isDraggingShadows = (curWinX < rx - dp(12) && curWinX > rx - dp(78));
+                        isDraggingEv = !isDraggingShadows && (Math.abs(curWinX - (rx + dp(28))) < dp(55)
+                                || Math.abs(curWinX - rx) < dp(55));
                         break;
                     case MotionEvent.ACTION_MOVE:
                         if (isDraggingShadows) {
-                            float dy = dragStartY - event.getY();
+                            float dy = dragStartY - curWinY;
                             int deltaSh = Math.round((dy / dp(80)) * 50f);
                             int targetSh = Math.max(0, Math.min(100, dragStartShadows + deltaSh));
                             AppSettings.prefs(MainActivity.this).edit().putInt(AppSettings.SHADOWS, targetSh).apply();
@@ -681,7 +701,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                             scheduleFocusReticleHide();
                             return true;
                         } else if (isDraggingEv) {
-                            float dy = dragStartY - event.getY();
+                            float dy = dragStartY - curWinY;
                             float deltaEv = (dy / dp(80)) * 1.5f;
                             float targetEv = Math.max(-2f, Math.min(2f, dragStartEv + deltaEv));
                             setExposureCompensationEv(targetEv);
@@ -707,7 +727,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         overlay.addView(cameraState);
 
         LinearLayout telemetry = row();
-        telemetry.setPadding(dp(3), dp(9), dp(3), dp(11));
+        telemetry.setPadding(dp(3), dp(6), dp(3), dp(8));
         telemetry.addView(readoutView("SHUTTER", "AUTO"), new LinearLayout.LayoutParams(0, -2, 1));
         telemetry.addView(readoutView("ISO", "AUTO"), new LinearLayout.LayoutParams(0, -2, 1));
         telemetry.addView(readoutView("WB", "5600 K"), new LinearLayout.LayoutParams(0, -2, 1));
@@ -718,22 +738,37 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         ZoomPresetRow lensRow = new ZoomPresetRow();
         lensRow.setGravity(Gravity.CENTER);
+        lensRow.setPadding(dp(4), dp(3), dp(4), dp(3));
+        lensRow.setBackground(round(0xd016191a, 21, 0, 0));
         lensRow.setContentDescription("Zoom presets. Swipe horizontally to reveal precision zoom.");
         float[] zooms = new float[]{.5f, 1f, 2f, 5f};
-        String[] names = new String[]{".5×", "1×", "2×", "5×"};
-        String[] mmEquivs = new String[]{"14mm", "28mm", "50mm", "135mm"};
+        String[] unselectedLabels = new String[]{".5", "1", "2", "5"};
         for (int i = 0; i < zooms.length; i++) {
             final float zoom = zooms[i];
             boolean active = Math.abs(zoom - 1f) < .01f;
-            TextView lens = lensPill(names[i], mmEquivs[i], active);
+            TextView lens = new TextView(this);
+            lens.setGravity(Gravity.CENTER);
+            lens.setTextSize(13f);
+            lens.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
             lens.setTag(zoom);
+            if (active) {
+                lens.setText(zoom == 0.5f ? ".5x" : ((int) zoom) + "x");
+                lens.setTextColor(BG);
+                lens.setBackground(round(0xfffed36a, 100, 0, 0));
+            } else {
+                lens.setText(unselectedLabels[i]);
+                lens.setTextColor(0xffffffff);
+                lens.setBackground(null);
+            }
             lensButtons.add(lens);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(54), dp(36));
-            lp.setMargins(dp(3), 0, dp(3), 0);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(44), dp(36));
+            lp.setMargins(dp(1), 0, dp(1), 0);
             lensRow.addView(lens, lp);
             lens.setOnClickListener(v -> chooseLens(zoom));
         }
-        overlay.addView(lensRow);
+        LinearLayout.LayoutParams lensRowLp = new LinearLayout.LayoutParams(-2, dp(42));
+        lensRowLp.gravity = Gravity.CENTER_HORIZONTAL;
+        overlay.addView(lensRow, lensRowLp);
 
         zoomSliderPanel = row();
         zoomSliderPanel.setGravity(Gravity.CENTER_VERTICAL);
@@ -780,6 +815,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 scheduleZoomSliderHide();
             }
         });
+
+        View deckSpacer = new View(this);
+        overlay.addView(deckSpacer, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         LinearLayout modeRow = row();
         modeRow.setGravity(Gravity.CENTER);
@@ -2391,13 +2429,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (width < height) ratio = 1f / ratio;
         float frameWidth = width;
         float frameHeight = frameWidth / ratio;
-        if (frameHeight > height) {
-            frameHeight = height;
-            frameWidth = frameHeight * ratio;
+        if (width < height) {
+            float topOffset = dp(56);
+            float maxFrameHeight = height - topOffset - dp(175);
+            if (frameHeight > maxFrameHeight) {
+                frameHeight = maxFrameHeight;
+                frameWidth = frameHeight * ratio;
+            }
+            float left = (width - frameWidth) * .5f;
+            float top = topOffset;
+            return new RectF(left, top, left + frameWidth, top + frameHeight);
+        } else {
+            if (frameHeight > height) {
+                frameHeight = height;
+                frameWidth = frameHeight * ratio;
+            }
+            float left = (width - frameWidth) * .5f;
+            float top = (height - frameHeight) * .5f;
+            return new RectF(left, top, left + frameWidth, top + frameHeight);
         }
-        float left = (width - frameWidth) * .5f;
-        float top = (height - frameHeight) * .5f;
-        return new RectF(left, top, left + frameWidth, top + frameHeight);
     }
 
     private final CameraDevice.StateCallback cameraStateCallback = new CameraDevice.StateCallback() {
@@ -3426,17 +3476,35 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void updateLensButtons(float factor) {
         float[] zooms = new float[]{.5f, 1f, 2f, 5f};
-        String[] names = new String[]{".5×", "1×", "2×", "5×"};
-        String[] mmEquivs = new String[]{"14mm", "28mm", "50mm", "135mm"};
+        String[] unselectedLabels = new String[]{".5", "1", "2", "5"};
+        int closestIndex = 0;
+        float minDiff = Float.MAX_VALUE;
+        for (int i = 0; i < zooms.length; i++) {
+            float diff = Math.abs(zooms[i] - factor);
+            if (diff < minDiff) {
+                minDiff = diff;
+                closestIndex = i;
+            }
+        }
         for (int i = 0; i < lensButtons.size(); i++) {
             TextView button = lensButtons.get(i);
-            Object tag = button.getTag();
-            if (!(tag instanceof Float)) continue;
-            boolean active = Math.abs((Float) tag - factor) < .08f;
-            if (i < names.length) {
-                button.setText(formatLensSpannable(names[i], mmEquivs[i], active));
+            boolean active = (i == closestIndex);
+            if (active) {
+                button.setBackground(round(0xfffed36a, 100, 0, 0));
+                button.setTextColor(BG);
+                if (minDiff < 0.08f) {
+                    float z = zooms[i];
+                    button.setText(z == 0.5f ? ".5x" : ((int) z) + "x");
+                } else {
+                    button.setText(String.format(Locale.US, "%.1fx", factor));
+                }
+            } else {
+                button.setBackground(null);
+                button.setTextColor(0xffffffff);
+                if (i < unselectedLabels.length) {
+                    button.setText(unselectedLabels[i]);
+                }
             }
-            button.setBackground(round(active ? 0xe21c1d1b : 0xd8191e1e, 22, active ? ACCENT : 0x556e7872, dp(1)));
         }
         updateZoomSliderUi();
     }
@@ -3671,7 +3739,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         matrix.postRotate(-surfaceRotationDegrees, centerX, centerY);
         float frameScale = Math.min(frame.width() / viewWidth, frame.height() / viewHeight);
         matrix.postScale(frameScale, frameScale, centerX, centerY);
+        matrix.postTranslate(frame.centerX() - centerX, frame.centerY() - centerY);
         textureView.setTransform(matrix);
+        textureView.invalidateOutline();
+
+        if (viewfinderSpacer != null) {
+            int desiredH = Math.max(dp(80), (int) (frame.height() - dp(120)));
+            ViewGroup.LayoutParams lp = viewfinderSpacer.getLayoutParams();
+            if (lp != null && lp.height != desiredH) {
+                lp.height = desiredH;
+                viewfinderSpacer.setLayoutParams(lp);
+            }
+        }
     }
 
     private final class FocusReticleOverlay extends View {
@@ -3917,12 +3996,23 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             super.onDraw(canvas);
             float w = getWidth(), h = getHeight();
             RectF frame = framingRect(w, h);
-            canvas.drawRect(0, 0, w, frame.top, maskPaint);
-            canvas.drawRect(0, frame.bottom, w, h, maskPaint);
-            canvas.drawRect(0, frame.top, frame.left, frame.bottom, maskPaint);
-            canvas.drawRect(frame.right, frame.top, w, frame.bottom, maskPaint);
-
             float density = getResources().getDisplayMetrics().density;
+            float cornerRadius = density * 24f;
+
+            // Mask everything outside the curved viewfinder card
+            Path maskPath = new Path();
+            maskPath.setFillType(Path.FillType.EVEN_ODD);
+            maskPath.addRect(0, 0, w, h, Path.Direction.CW);
+            maskPath.addRoundRect(frame, cornerRadius, cornerRadius, Path.Direction.CW);
+            maskPaint.setColor(BG);
+            maskPaint.setStyle(Paint.Style.FILL);
+            canvas.drawPath(maskPath, maskPaint);
+
+            // Clip inner aids to the curved viewfinder
+            Path clipPath = new Path();
+            clipPath.addRoundRect(frame, cornerRadius, cornerRadius, Path.Direction.CW);
+            canvas.save();
+            canvas.clipPath(clipPath);
 
             // Live Zebra Stripes & Focus Peaking Overlays
             boolean showZebra = AppSettings.getBoolean(MainActivity.this, AppSettings.ZEBRA, false);
@@ -3963,7 +4053,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 canvas.drawLine(x, frame.top, x, frame.bottom, gridPaint);
                 canvas.drawLine(frame.left, y, frame.right, y, gridPaint);
             }
-            canvas.drawRect(frame, framePaint);
 
             // Live Luminance Histogram Overlay
             if (AppSettings.getBoolean(MainActivity.this, AppSettings.HISTOGRAM, false)) {
@@ -4065,6 +4154,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     }
                 }
             }
+
+            canvas.restore();
+
+            framePaint.setColor(0x44d7b574);
+            framePaint.setStyle(Paint.Style.STROKE);
+            framePaint.setStrokeWidth(density * 1.0f);
+            canvas.drawRoundRect(frame, cornerRadius, cornerRadius, framePaint);
         }
     }
 
