@@ -38,7 +38,7 @@ public class PhotoEditorActivity extends Activity {
     private static final int ACCENT = 0xffd7b574;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
-    private final List<Control> controls = new ArrayList<>();
+    private final List<LookRecipeControl> controls = new ArrayList<>();
     private RawArchive.Frame frame;
     private RawDeveloper.Look look;
     private String archiveKey;
@@ -58,13 +58,6 @@ public class PhotoEditorActivity extends Activity {
     private boolean isLoupe1to1 = false;
     private boolean isScrubbing = false;
     private LinearLayout brainBar;
-
-    private static final class Control {
-        final int type;
-        final SeekBar seek;
-        final TextView value;
-        Control(int type, SeekBar seek, TextView value) { this.type = type; this.seek = seek; this.value = value; }
-    }
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -768,161 +761,47 @@ public class PhotoEditorActivity extends Activity {
         }
     }
 
-    private void resetControlToDefault(int type, SeekBar seek) {
-        int defaultVal;
-        switch (type) {
-            case 0: defaultVal = 0; break;
-            case 1: defaultVal = 0; break;
-            case 2: defaultVal = 100; break;
-            case 3: defaultVal = 100; break;
-            case 4: defaultVal = 50; break;
-            case 5: defaultVal = 50; break;
-            case 6: defaultVal = 0; break;
-            case 7: defaultVal = 0; break;
-            case 8: defaultVal = 50; break;
-            case 9: defaultVal = 50; break;
-            case 10: defaultVal = 50; break;
-            case 11: defaultVal = 0; break;
-            case 12: defaultVal = 50; break;
-            case 13: defaultVal = 50; break;
-            case 14: defaultVal = 100; break;
-            default: defaultVal = 0; break;
-        }
-        updateLook(type, defaultVal);
-        seek.setProgress(defaultVal - getControlMin(type));
-        for (Control c : controls) {
+    private void resetControlToDefault(int type) {
+        int defaultVal = LookRecipeControl.getDefaultValue(type);
+        LookRecipeControl.applyToLook(look, type, defaultVal);
+        for (LookRecipeControl c : controls) {
             if (c.type == type) {
-                updateControlLabel(c, defaultVal);
+                c.seek.setProgress(defaultVal - LookRecipeControl.getControlMin(type));
+                c.updateLabel(defaultVal);
+                if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+                    c.seek.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                }
                 break;
             }
-        }
-        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
-            seek.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
         }
         queuePreview();
     }
 
-    private int getControlMin(int type) {
-        if (type == 0) return -20;
-        if (type == 2 || type == 3) return 50;
-        return 0;
-    }
-
     private void addControl(String label, String unit, int type, int min, int max, int current) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(12), dp(8), dp(12), dp(6));
-        card.setBackground(round(0xff121617, 12, 0xff293031, dp(1)));
+        LookRecipeControl[] holder = new LookRecipeControl[1];
+        View card = LookRecipeControl.createCard(this, label, unit, type, min, max, current,
+            new LookRecipeControl.OnChangeListener() {
+                @Override
+                public void onValueChanged(int ctrlType, int value, boolean fromUser, boolean isTrackingTouch) {
+                    LookRecipeControl.applyToLook(look, ctrlType, value);
+                    if (fromUser) {
+                        isScrubbing = isTrackingTouch;
+                        queuePreview(isTrackingTouch ? 40 : 160);
+                    }
+                }
+
+                @Override
+                public void onReset(int ctrlType) {
+                    resetControlToDefault(ctrlType);
+                }
+            }, holder);
+
+        if (holder[0] != null) {
+            controls.add(holder[0]);
+        }
         LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(-1, -2);
         cardLp.bottomMargin = dp(6);
         controlsList.addView(card, cardLp);
-        LinearLayout head = new LinearLayout(this);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        TextView name = text(label, 10, 0xffe6eae4, true);
-        head.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
-
-        TextView resetTag = text("RESET", 7, 0x66d7b574, true);
-        resetTag.setPadding(dp(6), dp(2), dp(6), dp(2));
-        resetTag.setBackground(round(0x22d7b574, 8, 0x44d7b574, dp(1)));
-        head.addView(resetTag);
-
-        TextView value = text("", 9, ACCENT, true);
-        value.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
-        value.setPadding(dp(8), 0, 0, 0);
-        head.addView(value);
-        card.addView(head);
-        SeekBar seek = new SeekBar(this);
-        seek.setMax(max - min);
-        seek.setProgress(Math.max(0, Math.min(max - min, current - min)));
-        seek.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
-        seek.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
-        card.addView(seek, new LinearLayout.LayoutParams(-1, dp(30)));
-
-        View.OnClickListener resetListener = v -> resetControlToDefault(type, seek);
-        resetTag.setOnClickListener(resetListener);
-        value.setOnClickListener(resetListener);
-        head.setOnLongClickListener(v -> {
-            resetControlToDefault(type, seek);
-            return true;
-        });
-
-        Control control = new Control(type, seek, value);
-        controls.add(control);
-        updateControlLabel(control, min + seek.getProgress());
-        final int[] lastHapticVal = {current};
-        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
-                int selected = min + progress;
-                updateLook(type, selected);
-                updateControlLabel(control, selected);
-                if (fromUser) {
-                    if (AppSettings.getBoolean(PhotoEditorActivity.this, AppSettings.HAPTICS, true)) {
-                        boolean isLandmark = false;
-                        if (type == 0 && selected == 0) isLandmark = true;
-                        else if (type == 1 && selected == 0) isLandmark = true;
-                        else if (type == 2 && selected == 100) isLandmark = true;
-                        else if (type == 3 && selected == 100) isLandmark = true;
-                        else if (type == 4 && selected == 0) isLandmark = true;
-                        else if (type == 5 && selected == 0) isLandmark = true;
-                        else if (type == 6 && selected == 0) isLandmark = true;
-                        else if (type == 7 && selected == 0) isLandmark = true;
-                        else if (type == 8 && selected == 50) isLandmark = true;
-                        else if (type == 9 && selected == 50) isLandmark = true;
-                        else if (type == 10 && selected == 50) isLandmark = true;
-                        else if (type == 11 && selected == 0) isLandmark = true;
-                        else if (type == 12 && selected == 50) isLandmark = true;
-                        else if (type == 13 && selected == 50) isLandmark = true;
-                        else if (type == 14 && selected == 100) isLandmark = true;
-
-                        if (isLandmark) {
-                            bar.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-                            lastHapticVal[0] = selected;
-                        } else if (Math.abs(selected - lastHapticVal[0]) >= 6) {
-                            bar.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
-                            lastHapticVal[0] = selected;
-                        }
-                    }
-                    queuePreview(isScrubbing ? 40 : 160);
-                }
-            }
-            @Override public void onStartTrackingTouch(SeekBar bar) {
-                isScrubbing = true;
-            }
-            @Override public void onStopTrackingTouch(SeekBar bar) {
-                isScrubbing = false;
-                queuePreview(0);
-            }
-        });
-    }
-
-    private void updateLook(int type, int value) {
-        switch (type) {
-            case 0: look.exposureEv = value / 10f; break;
-            case 1: look.whiteBalanceKelvin = value == 0 ? 0 : 3200 + (value - 1) * 100; break;
-            case 2: look.contrast = value / 100f; break;
-            case 3: look.saturation = value / 100f; break;
-            case 4: look.highlights = value / 100f; break;
-            case 5: look.shadows = value / 100f; break;
-            case 6: look.grain = value / 100f; break;
-            case 7: look.halation = value / 100f; break;
-            case 8: look.pivot = value / 100f; break;
-            case 9: look.sharpening = value / 100f; break;
-            case 10: look.chromaNr = value / 100f; break;
-            case 11: look.vignette = value / 100f; break;
-            case 12: look.warmth = (value - 50) / 50f; break;
-            case 13: look.colorRollOff = value / 100f; break;
-            case 14: look.lutIntensity = value / 100f; break;
-        }
-    }
-
-    private void updateControlLabel(Control control, int value) {
-        switch (control.type) {
-            case 0: control.value.setText(String.format(Locale.US, "%+.1f EV", value / 10f)); break;
-            case 1: control.value.setText(value == 0 ? "AUTO" : (3200 + (value - 1) * 100) + " K"); break;
-            case 2: case 3: control.value.setText(String.format(Locale.US, "%.2f", value / 100f)); break;
-            case 12: control.value.setText(value == 50 ? "0" : value > 50 ? "WARM +" + (value - 50) : "COOL " + (50 - value)); break;
-            default: control.value.setText(value + "%"); break;
-        }
     }
 
     private void loadSource() {
