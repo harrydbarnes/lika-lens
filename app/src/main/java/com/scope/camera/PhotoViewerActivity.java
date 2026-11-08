@@ -13,6 +13,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.transition.ChangeBounds;
 import android.transition.ChangeImageTransform;
@@ -36,6 +38,8 @@ import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /** Full-screen viewer with interactive pinch-to-zoom, EXIF metadata inspection, sharing, and editor access. */
 public class PhotoViewerActivity extends Activity {
@@ -54,6 +58,15 @@ public class PhotoViewerActivity extends Activity {
     private LinearLayout infoCard;
     private TextView infoButton;
     private boolean infoVisible;
+
+    private Bitmap rawOriginalBitmap;
+    private Bitmap developedBitmap;
+    private boolean isComparing = false;
+    private TextView compareButton;
+    private TextView compareBadge;
+    private TextView zoomHud;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
 
     // Zoom & Pan state
     private final Matrix matrix = new Matrix();
@@ -130,8 +143,25 @@ public class PhotoViewerActivity extends Activity {
         shareBtn.setOnClickListener(v -> { hapticClick(v); sharePhoto(); });
 
         if (archiveKey != null && RawArchive.exists(this, archiveKey)) {
+            compareButton = pill("COMPARE", false);
+            LinearLayout.LayoutParams compLp = new LinearLayout.LayoutParams(dp(62), dp(32));
+            compLp.leftMargin = dp(4);
+            header.addView(compareButton, compLp);
+            compareButton.setOnTouchListener((v, event) -> {
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        startComparing();
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        stopComparing();
+                        return true;
+                }
+                return false;
+            });
+
             TextView edit = pill("EDIT", true);
-            LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(dp(52), dp(32));
+            LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(dp(48), dp(32));
             editLp.leftMargin = dp(4);
             header.addView(edit, editLp);
             edit.setOnClickListener(v -> { hapticClick(v); openEditor(); });
@@ -139,13 +169,29 @@ public class PhotoViewerActivity extends Activity {
 
         if (!getIntent().getBooleanExtra(EXTRA_FROM_LIBRARY, false)) {
             TextView library = pill("GRID", false);
-            LinearLayout.LayoutParams gridLp = new LinearLayout.LayoutParams(dp(50), dp(32));
+            LinearLayout.LayoutParams gridLp = new LinearLayout.LayoutParams(dp(48), dp(32));
             gridLp.leftMargin = dp(4);
             header.addView(library, gridLp);
             library.setOnClickListener(v -> { hapticClick(v); startActivity(new Intent(this, GalleryActivity.class)); });
         }
 
         root.addView(header, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+
+        compareBadge = text("ORIGINAL SENSOR RAW", 8, ACCENT, true);
+        compareBadge.setBackground(round(0xdd0b0d0e, 14, ACCENT, dp(1)));
+        compareBadge.setPadding(dp(12), dp(4), dp(12), dp(4));
+        compareBadge.setVisibility(View.GONE);
+        FrameLayout.LayoutParams cbLp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        cbLp.topMargin = dp(56);
+        root.addView(compareBadge, cbLp);
+
+        zoomHud = text("100% · FIT", 8, ACCENT, true);
+        zoomHud.setBackground(round(0xdd0b0d0e, 12, 0x66d7b574, dp(1)));
+        zoomHud.setPadding(dp(10), dp(4), dp(10), dp(4));
+        zoomHud.setVisibility(View.GONE);
+        FrameLayout.LayoutParams zhLp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        zhLp.bottomMargin = dp(80);
+        root.addView(zoomHud, zhLp);
 
         // EXIF Metadata bottom overlay card
         infoCard = buildInfoCard();
@@ -158,6 +204,79 @@ public class PhotoViewerActivity extends Activity {
         loadPhoto();
     }
 
+    private void startComparing() {
+        if (isComparing) return;
+        isComparing = true;
+        if (compareBadge != null) {
+            compareBadge.setText(rawOriginalBitmap != null ? "ORIGINAL SENSOR RAW" : "DEVELOPING SENSOR ORIGINAL…");
+            compareBadge.setVisibility(View.VISIBLE);
+        }
+        if (compareButton != null) compareButton.setTextColor(ACCENT);
+        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            photoView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+        if (rawOriginalBitmap != null) {
+            photoView.setImageBitmap(rawOriginalBitmap);
+        } else if (archiveKey != null && RawArchive.exists(this, archiveKey)) {
+            worker.execute(() -> {
+                try {
+                    RawArchive.Frame frame = RawArchive.read(PhotoViewerActivity.this, archiveKey);
+                    RawDeveloper.Look neutral = new RawDeveloper.Look();
+                    neutral.brain = "NEUTRAL RAW";
+                    neutral.contrast = 1.0f;
+                    neutral.pivot = 0.5f;
+                    neutral.saturation = 1.0f;
+                    neutral.grain = 0f;
+                    neutral.halation = 0f;
+                    neutral.vignette = 0f;
+                    neutral.sharpening = 0f;
+                    neutral.chromaNr = 0f;
+                    neutral.colorRollOff = 0.5f;
+                    neutral.exposureEv = 0f;
+                    neutral.warmth = 0f;
+                    neutral.aspectRatio = frame.aspectRatio;
+                    Bitmap rawBmp = RawDeveloper.develop(frame, neutral, 2000);
+                    mainHandler.post(() -> {
+                        rawOriginalBitmap = rawBmp;
+                        if (compareBadge != null) compareBadge.setText("ORIGINAL SENSOR RAW");
+                        if (isComparing && rawOriginalBitmap != null) {
+                            photoView.setImageBitmap(rawOriginalBitmap);
+                        }
+                    });
+                } catch (Throwable ignored) {
+                    mainHandler.post(() -> {
+                        if (compareBadge != null) compareBadge.setText("NO RAW DATA");
+                    });
+                }
+            });
+        }
+    }
+
+    private void stopComparing() {
+        if (!isComparing) return;
+        isComparing = false;
+        if (compareBadge != null) compareBadge.setVisibility(View.GONE);
+        if (compareButton != null) compareButton.setTextColor(0xffd8ded7);
+        if (developedBitmap != null) {
+            photoView.setImageBitmap(developedBitmap);
+        }
+        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            photoView.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+        }
+    }
+
+    private final Runnable hideZoomHudRunnable = () -> {
+        if (zoomHud != null) zoomHud.setVisibility(View.GONE);
+    };
+
+    private void showZoomHud(String text) {
+        if (zoomHud == null) return;
+        zoomHud.setText(text);
+        zoomHud.setVisibility(View.VISIBLE);
+        mainHandler.removeCallbacks(hideZoomHudRunnable);
+        mainHandler.postDelayed(hideZoomHudRunnable, 1200);
+    }
+
     private void initTouchGestures() {
         scaleDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override public boolean onScale(ScaleGestureDetector detector) {
@@ -168,6 +287,7 @@ public class PhotoViewerActivity extends Activity {
                     matrix.postScale(scaleFactor, scaleFactor, detector.getFocusX(), detector.getFocusY());
                     clampMatrix();
                     photoView.setImageMatrix(matrix);
+                    showZoomHud(Math.round(currentScale * 100) + "%");
                 }
                 return true;
             }
@@ -178,13 +298,21 @@ public class PhotoViewerActivity extends Activity {
                 hapticClick(photoView);
                 if (currentScale > 1.2f) {
                     resetZoom();
+                    showZoomHud("100% · FIT");
                 } else {
                     currentScale = 2.5f;
                     matrix.postScale(2.5f, 2.5f, e.getX(), e.getY());
                     clampMatrix();
                     photoView.setImageMatrix(matrix);
+                    showZoomHud("250% · DETAIL");
                 }
                 return true;
+            }
+
+            @Override public void onLongPress(MotionEvent e) {
+                if (archiveKey != null && RawArchive.exists(PhotoViewerActivity.this, archiveKey)) {
+                    startComparing();
+                }
             }
         });
 
@@ -219,6 +347,9 @@ public class PhotoViewerActivity extends Activity {
                     break;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
+                    if (isComparing) {
+                        stopComparing();
+                    }
                     if (currentScale < 1.0f) resetZoom();
                     break;
             }
@@ -369,6 +500,10 @@ public class PhotoViewerActivity extends Activity {
             try (InputStream stream = getContentResolver().openInputStream(photoUri)) {
                 Bitmap bitmap = stream == null ? null : BitmapFactory.decodeStream(stream, null, options);
                 if (bitmap != null) {
+                    if (developedBitmap != null && developedBitmap != bitmap && !developedBitmap.isRecycled()) {
+                        developedBitmap.recycle();
+                    }
+                    developedBitmap = bitmap;
                     photoView.setImageBitmap(bitmap);
                     photoView.post(this::fitImageToView);
                 }
@@ -405,4 +540,18 @@ public class PhotoViewerActivity extends Activity {
     }
 
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+
+    @Override protected void onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null);
+        worker.shutdown();
+        if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
+            rawOriginalBitmap.recycle();
+            rawOriginalBitmap = null;
+        }
+        if (developedBitmap != null && !developedBitmap.isRecycled()) {
+            developedBitmap.recycle();
+            developedBitmap = null;
+        }
+        super.onDestroy();
+    }
 }

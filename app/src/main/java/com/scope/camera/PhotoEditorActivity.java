@@ -7,9 +7,12 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.MotionEvent;
 import android.view.View;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -42,6 +45,15 @@ public class PhotoEditorActivity extends Activity {
     private LinearLayout controlsList;
     private int renderGeneration;
 
+    private Bitmap rawOriginalBitmap;
+    private Bitmap currentGradedBitmap;
+    private boolean isComparing = false;
+    private TextView compareButton;
+    private TextView compareBadge;
+    private TextView loupeBadge;
+    private boolean isLoupe1to1 = false;
+    private LinearLayout brainBar;
+
     private static final class Control {
         final int type;
         final SeekBar seek;
@@ -70,6 +82,86 @@ public class PhotoEditorActivity extends Activity {
     private LinearLayout tabBar;
     private String activeTab = "TONE";
 
+    private void startComparing() {
+        if (rawOriginalBitmap == null || isComparing) return;
+        isComparing = true;
+        if (compareBadge != null) compareBadge.setVisibility(View.VISIBLE);
+        if (compareButton != null) compareButton.setTextColor(ACCENT);
+        preview.setImageBitmap(rawOriginalBitmap);
+        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            preview.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+    }
+
+    private void stopComparing() {
+        if (!isComparing) return;
+        isComparing = false;
+        if (compareBadge != null) compareBadge.setVisibility(View.GONE);
+        if (compareButton != null) compareButton.setTextColor(0xffd8ded7);
+        if (currentGradedBitmap != null) {
+            preview.setImageBitmap(currentGradedBitmap);
+        }
+        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            preview.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+        }
+    }
+
+    private void refreshBrainBar() {
+        if (brainBar == null) return;
+        brainBar.removeAllViews();
+        String currentBrain = look.brain == null ? "LIKA / FILM" : look.brain;
+        String[] brains = {"LIKA / FILM", "MONOCHROME", "NEUTRAL RAW"};
+        for (int i = 0; i < brains.length; i++) {
+            String b = brains[i];
+            boolean active = currentBrain.startsWith(b.substring(0, 4));
+            TextView pill = pill(b, active);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(30), 1f);
+            if (i > 0) lp.leftMargin = dp(6);
+            brainBar.addView(pill, lp);
+            pill.setOnClickListener(v -> {
+                hapticClick(v);
+                applyBrainPreset(b);
+            });
+        }
+    }
+
+    private void applyBrainPreset(String preset) {
+        look.brain = preset;
+        if ("MONOCHROME".equals(preset)) {
+            look.contrast = 1.25f;
+            look.saturation = 0.0f;
+            look.warmth = 0.0f;
+            look.grain = 0.32f;
+            look.halation = 0.10f;
+            look.colorRollOff = 0.50f;
+        } else if ("NEUTRAL RAW".equals(preset)) {
+            look.contrast = 1.0f;
+            look.saturation = 1.0f;
+            look.warmth = 0.0f;
+            look.grain = 0.0f;
+            look.halation = 0.0f;
+            look.vignette = 0.0f;
+            look.exposureEv = 0.0f;
+            look.whiteBalanceKelvin = 0;
+            look.highlights = 0.50f;
+            look.shadows = 0.50f;
+            look.pivot = 0.50f;
+            look.sharpening = 0.0f;
+            look.chromaNr = 0.0f;
+            look.colorRollOff = 0.50f;
+        } else { // "LIKA / FILM"
+            look.contrast = 1.12f;
+            look.saturation = 0.98f;
+            look.warmth = 0.08f;
+            look.grain = 0.22f;
+            look.halation = 0.16f;
+            look.colorRollOff = 0.72f;
+        }
+        refreshBrainBar();
+        populateControls();
+        queuePreview();
+    }
+
     private void build() {
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -80,29 +172,99 @@ public class PhotoEditorActivity extends Activity {
         header.setPadding(dp(16), dp(10), dp(16), dp(10));
         TextView back = text("‹", 28, 0xffedf0e9, true);
         back.setGravity(Gravity.CENTER);
-        header.addView(back, new LinearLayout.LayoutParams(dp(38), dp(40)));
+        header.addView(back, new LinearLayout.LayoutParams(dp(36), dp(40)));
         back.setOnClickListener(v -> { hapticClick(v); finish(); });
         TextView title = text("DEVELOP", 13, 0xfff1f2ec, true);
         title.setPadding(dp(8), 0, 0, 0);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+
+        compareButton = pill("COMPARE", false);
+        LinearLayout.LayoutParams compLp = new LinearLayout.LayoutParams(dp(64), dp(32));
+        compLp.leftMargin = dp(4);
+        header.addView(compareButton, compLp);
+        compareButton.setOnTouchListener((v, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    startComparing();
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    stopComparing();
+                    return true;
+            }
+            return false;
+        });
+
         TextView reset = pill("RESET", false);
-        header.addView(reset, new LinearLayout.LayoutParams(dp(56), dp(32)));
+        LinearLayout.LayoutParams resetLp = new LinearLayout.LayoutParams(dp(52), dp(32));
+        resetLp.leftMargin = dp(4);
+        header.addView(reset, resetLp);
         reset.setOnClickListener(v -> { hapticClick(v); resetLook(); });
+
         saveButton = pill("SAVE", true);
-        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(dp(58), dp(32));
-        saveLp.leftMargin = dp(6);
+        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(dp(54), dp(32));
+        saveLp.leftMargin = dp(4);
         header.addView(saveButton, saveLp);
         saveButton.setOnClickListener(v -> { hapticClick(v); saveRender(); });
         page.addView(header);
 
+        FrameLayout previewContainer = new FrameLayout(this);
         preview = new ImageView(this);
         preview.setBackgroundColor(0xff121617);
         preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        page.addView(preview, new LinearLayout.LayoutParams(-1, 0, 1));
+        previewContainer.addView(preview, new FrameLayout.LayoutParams(-1, -1));
+
+        compareBadge = text("ORIGINAL SENSOR RAW", 8, ACCENT, true);
+        compareBadge.setBackground(round(0xdd0b0d0e, 14, ACCENT, dp(1)));
+        compareBadge.setPadding(dp(12), dp(4), dp(12), dp(4));
+        compareBadge.setVisibility(View.GONE);
+        FrameLayout.LayoutParams cbLp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        cbLp.topMargin = dp(12);
+        previewContainer.addView(compareBadge, cbLp);
+
+        loupeBadge = text("1:1 LOUPE · 100% CROP", 8, ACCENT, true);
+        loupeBadge.setBackground(round(0xdd0b0d0e, 14, 0x99d7b574, dp(1)));
+        loupeBadge.setPadding(dp(10), dp(4), dp(10), dp(4));
+        loupeBadge.setVisibility(View.GONE);
+        FrameLayout.LayoutParams lbLp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        lbLp.bottomMargin = dp(10);
+        previewContainer.addView(loupeBadge, lbLp);
+
+        GestureDetector previewGestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override public boolean onDoubleTap(MotionEvent e) {
+                isLoupe1to1 = !isLoupe1to1;
+                preview.setScaleType(isLoupe1to1 ? ImageView.ScaleType.CENTER : ImageView.ScaleType.FIT_CENTER);
+                loupeBadge.setVisibility(isLoupe1to1 ? View.VISIBLE : View.GONE);
+                hapticClick(preview);
+                return true;
+            }
+            @Override public void onLongPress(MotionEvent e) {
+                startComparing();
+            }
+        });
+
+        preview.setOnTouchListener((v, event) -> {
+            previewGestureDetector.onTouchEvent(event);
+            if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                if (isComparing) {
+                    stopComparing();
+                }
+            }
+            return true;
+        });
+
+        page.addView(previewContainer, new LinearLayout.LayoutParams(-1, 0, 1));
+
         status = text("READING SENSOR ORIGINAL", 8, 0xff9ba59e, false);
         status.setGravity(Gravity.CENTER);
-        status.setPadding(dp(8), dp(8), dp(8), dp(3));
+        status.setPadding(dp(8), dp(6), dp(8), dp(2));
         page.addView(status);
+
+        brainBar = new LinearLayout(this);
+        brainBar.setGravity(Gravity.CENTER_VERTICAL);
+        brainBar.setPadding(dp(14), dp(2), dp(14), dp(4));
+        page.addView(brainBar);
+        refreshBrainBar();
 
         tabBar = new LinearLayout(this);
         tabBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -116,7 +278,7 @@ public class PhotoEditorActivity extends Activity {
         controlsList.setOrientation(LinearLayout.VERTICAL);
         controlsList.setPadding(dp(14), dp(2), dp(14), dp(12));
         scroll.addView(controlsList);
-        page.addView(scroll, new LinearLayout.LayoutParams(-1, dp(310)));
+        page.addView(scroll, new LinearLayout.LayoutParams(-1, dp(300)));
         populateControls();
         setContentView(page);
     }
@@ -283,6 +445,45 @@ public class PhotoEditorActivity extends Activity {
         });
     }
 
+    private void resetControlToDefault(int type, SeekBar seek) {
+        int defaultVal;
+        switch (type) {
+            case 0: defaultVal = 0; break;
+            case 1: defaultVal = 0; break;
+            case 2: defaultVal = 100; break;
+            case 3: defaultVal = 100; break;
+            case 4: defaultVal = 50; break;
+            case 5: defaultVal = 50; break;
+            case 6: defaultVal = 0; break;
+            case 7: defaultVal = 0; break;
+            case 8: defaultVal = 50; break;
+            case 9: defaultVal = 50; break;
+            case 10: defaultVal = 50; break;
+            case 11: defaultVal = 0; break;
+            case 12: defaultVal = 50; break;
+            case 13: defaultVal = 50; break;
+            default: defaultVal = 0; break;
+        }
+        updateLook(type, defaultVal);
+        seek.setProgress(defaultVal - getControlMin(type));
+        for (Control c : controls) {
+            if (c.type == type) {
+                updateControlLabel(c, defaultVal);
+                break;
+            }
+        }
+        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            seek.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+        queuePreview();
+    }
+
+    private int getControlMin(int type) {
+        if (type == 0) return -20;
+        if (type == 2 || type == 3) return 50;
+        return 0;
+    }
+
     private void addControl(String label, String unit, int type, int min, int max, int current) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -295,8 +496,15 @@ public class PhotoEditorActivity extends Activity {
         head.setGravity(Gravity.CENTER_VERTICAL);
         TextView name = text(label, 10, 0xffe6eae4, true);
         head.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+
+        TextView resetTag = text("RESET", 7, 0x66d7b574, true);
+        resetTag.setPadding(dp(6), dp(2), dp(6), dp(2));
+        resetTag.setBackground(round(0x22d7b574, 8, 0x44d7b574, dp(1)));
+        head.addView(resetTag);
+
         TextView value = text("", 9, ACCENT, true);
         value.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        value.setPadding(dp(8), 0, 0, 0);
         head.addView(value);
         card.addView(head);
         SeekBar seek = new SeekBar(this);
@@ -305,6 +513,15 @@ public class PhotoEditorActivity extends Activity {
         seek.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
         seek.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
         card.addView(seek, new LinearLayout.LayoutParams(-1, dp(30)));
+
+        View.OnClickListener resetListener = v -> resetControlToDefault(type, seek);
+        resetTag.setOnClickListener(resetListener);
+        value.setOnClickListener(resetListener);
+        head.setOnLongClickListener(v -> {
+            resetControlToDefault(type, seek);
+            return true;
+        });
+
         Control control = new Control(type, seek, value);
         controls.add(control);
         updateControlLabel(control, min + seek.getProgress());
@@ -382,9 +599,26 @@ public class PhotoEditorActivity extends Activity {
         worker.execute(() -> {
             try {
                 RawArchive.Frame loaded = RawArchive.read(this, archiveKey);
+                RawDeveloper.Look neutralLook = new RawDeveloper.Look();
+                neutralLook.brain = "NEUTRAL RAW";
+                neutralLook.contrast = 1.0f;
+                neutralLook.pivot = 0.5f;
+                neutralLook.saturation = 1.0f;
+                neutralLook.grain = 0f;
+                neutralLook.halation = 0f;
+                neutralLook.vignette = 0f;
+                neutralLook.sharpening = 0f;
+                neutralLook.chromaNr = 0f;
+                neutralLook.colorRollOff = 0.5f;
+                neutralLook.exposureEv = 0f;
+                neutralLook.warmth = 0f;
+                neutralLook.aspectRatio = loaded.aspectRatio;
+                neutralLook.flipHorizontal = false;
+                Bitmap neutralBmp = RawDeveloper.develop(loaded, neutralLook, 1400);
                 Bitmap bitmap = RawDeveloper.develop(loaded, look.copy(), 1400);
                 mainHandler.post(() -> {
                     frame = loaded;
+                    rawOriginalBitmap = neutralBmp;
                     setPreview(bitmap);
                     status.setText("RAW ORIGINAL  ·  LOOK PREVIEW");
                 });
@@ -424,15 +658,20 @@ public class PhotoEditorActivity extends Activity {
 
     private void setPreview(Bitmap bitmap) {
         if (bitmap == null) return;
-        Bitmap previous = (Bitmap) preview.getTag();
-        preview.setImageBitmap(bitmap);
-        preview.setTag(bitmap);
-        if (previous != null && previous != bitmap && !previous.isRecycled()) previous.recycle();
+        Bitmap previous = currentGradedBitmap;
+        currentGradedBitmap = bitmap;
+        if (!isComparing) {
+            preview.setImageBitmap(bitmap);
+        }
+        if (previous != null && previous != bitmap && previous != rawOriginalBitmap && !previous.isRecycled()) {
+            previous.recycle();
+        }
     }
 
     private void resetLook() {
         PhotoEditStore.reset(this, archiveKey);
         look = PhotoEditStore.load(this, archiveKey);
+        refreshBrainBar();
         populateControls();
         queuePreview();
     }
@@ -517,8 +756,14 @@ public class PhotoEditorActivity extends Activity {
     @Override protected void onDestroy() {
         mainHandler.removeCallbacksAndMessages(null);
         worker.shutdown();
-        Bitmap bitmap = (Bitmap) preview.getTag();
-        if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+        if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
+            rawOriginalBitmap.recycle();
+            rawOriginalBitmap = null;
+        }
+        if (currentGradedBitmap != null && !currentGradedBitmap.isRecycled()) {
+            currentGradedBitmap.recycle();
+            currentGradedBitmap = null;
+        }
         super.onDestroy();
     }
 }

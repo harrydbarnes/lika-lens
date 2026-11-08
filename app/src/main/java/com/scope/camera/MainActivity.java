@@ -31,6 +31,7 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.DngCreator;
 import android.media.ExifInterface;
 import android.media.Image;
@@ -44,13 +45,16 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.util.Size;
 import android.util.Range;
 import android.util.Log;
+import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.Surface;
@@ -219,6 +223,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         } catch (Throwable ignored) {}
     }
 
+    private FocusReticleOverlay focusReticle;
+    private final Handler focusHandler = new Handler(Looper.getMainLooper());
+    private boolean hasManualFocusPoint = false;
+    private MeteringRectangle[] currentAfRegions;
+    private MeteringRectangle[] currentAeRegions;
+    private int currentAeIndex = 0;
+    private float currentEvOffset = 0f;
+    private boolean aeLocked = false;
+    private float dragStartY = 0f;
+    private float dragStartEv = 0f;
+    private boolean isDraggingEv = false;
+
     private LinearLayout zoomSliderPanel;
     private SeekBar zoomSlider;
     private ScaleGestureDetector scaleGestureDetector;
@@ -378,6 +394,20 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         super.onBackPressed();
     }
 
+    @Override public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            if (videoScreenLocked) {
+                if (videoLockButton != null) videoLockButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+                return true;
+            }
+            if (event.getRepeatCount() == 0) {
+                onShutterPressed();
+                return true;
+            }
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
     private void buildCameraUi() {
         root = new FrameLayout(this);
         root.setBackgroundColor(BG);
@@ -410,6 +440,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         root.addView(textureView, new FrameLayout.LayoutParams(-1, -1));
         gridOverlay = new CompositionGrid(this);
         root.addView(gridOverlay, new FrameLayout.LayoutParams(-1, -1));
+
+        focusReticle = new FocusReticleOverlay(this);
+        focusReticle.setVisibility(View.GONE);
+        focusReticle.setClickable(false);
+        focusReticle.setFocusable(false);
+        root.addView(focusReticle, new FrameLayout.LayoutParams(-1, -1));
 
         GestureOverlay overlay = new GestureOverlay();
         overlay.setOrientation(LinearLayout.VERTICAL);
@@ -465,6 +501,50 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         LinearLayout spacer = new LinearLayout(this);
         overlay.addView(spacer, new LinearLayout.LayoutParams(-1, 0, 1));
 
+        GestureDetector tapDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override public boolean onSingleTapConfirmed(MotionEvent e) {
+                if (videoScreenLocked) return false;
+                handleViewfinderTap(e.getX(), e.getY());
+                return true;
+            }
+            @Override public boolean onDoubleTap(MotionEvent e) {
+                if (videoScreenLocked || videoRecording || videoStarting) return false;
+                handleViewfinderDoubleTap();
+                return true;
+            }
+        });
+
+        spacer.setOnTouchListener((v, event) -> {
+            tapDetector.onTouchEvent(event);
+            if (focusReticle != null && focusReticle.isVisible && event.getPointerCount() == 1) {
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        dragStartY = event.getY();
+                        dragStartEv = currentEvOffset;
+                        isDraggingEv = Math.abs(event.getX() - (focusReticle.reticleX + dp(28))) < dp(50)
+                                || Math.abs(event.getX() - focusReticle.reticleX) < dp(55);
+                        break;
+                    case MotionEvent.ACTION_MOVE:
+                        if (isDraggingEv) {
+                            float dy = dragStartY - event.getY();
+                            float deltaEv = (dy / dp(80)) * 1.5f;
+                            float targetEv = Math.max(-2f, Math.min(2f, dragStartEv + deltaEv));
+                            setExposureCompensationEv(targetEv);
+                            focusReticle.updateEv(targetEv);
+                            scheduleFocusReticleHide();
+                            return true;
+                        }
+                        break;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        isDraggingEv = false;
+                        scheduleFocusReticleHide();
+                        break;
+                }
+            }
+            return true;
+        });
+
         cameraState = label("CHECKING CAMERA SUPPORT…", 8, 0xffe2e7de, true);
         cameraState.setLetterSpacing(.09f);
         cameraState.setGravity(Gravity.CENTER);
@@ -475,6 +555,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         telemetry.addView(readoutView("SHUTTER", "AUTO"), new LinearLayout.LayoutParams(0, -2, 1));
         telemetry.addView(readoutView("ISO", "AUTO"), new LinearLayout.LayoutParams(0, -2, 1));
         telemetry.addView(readoutView("WB", "5600 K"), new LinearLayout.LayoutParams(0, -2, 1));
+        telemetry.setClickable(true);
+        telemetry.setContentDescription("Exposure telemetry. Tap to lock or unlock exposure.");
+        telemetry.setOnClickListener(v -> toggleAeLock());
         overlay.addView(telemetry);
 
         ZoomPresetRow lensRow = new ZoomPresetRow();
@@ -482,13 +565,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         lensRow.setContentDescription("Zoom presets. Swipe horizontally to reveal precision zoom.");
         float[] zooms = new float[]{.5f, 1f, 2f, 5f};
         String[] names = new String[]{".5×", "1×", "2×", "5×"};
+        String[] mmEquivs = new String[]{"14mm", "28mm", "50mm", "135mm"};
         for (int i = 0; i < zooms.length; i++) {
             final float zoom = zooms[i];
-            TextView lens = pill(names[i], Math.abs(zoom - 1f) < .01f);
+            boolean active = Math.abs(zoom - 1f) < .01f;
+            TextView lens = lensPill(names[i], mmEquivs[i], active);
             lens.setTag(zoom);
             lensButtons.add(lens);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), dp(32));
-            lp.setMargins(dp(4), 0, dp(4), 0);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(54), dp(36));
+            lp.setMargins(dp(3), 0, dp(3), 0);
             lensRow.addView(lens, lp);
             lens.setOnClickListener(v -> chooseLens(zoom));
         }
@@ -1347,6 +1432,153 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         view.setBackground(round(active ? 0xe21c1d1b : 0xd8191e1e, 22, active ? ACCENT : 0x556e7872, dp(1)));
         view.setClickable(true);
         return view;
+    }
+
+    private TextView lensPill(String zoomName, String mmName, boolean active) {
+        TextView view = new TextView(this);
+        view.setGravity(Gravity.CENTER);
+        view.setLineSpacing(dp(-1), 1f);
+        view.setText(formatLensSpannable(zoomName, mmName, active));
+        view.setBackground(round(active ? 0xe21c1d1b : 0xd8191e1e, 22, active ? ACCENT : 0x556e7872, dp(1)));
+        view.setClickable(true);
+        return view;
+    }
+
+    private CharSequence formatLensSpannable(String zoomName, String mmName, boolean active) {
+        android.text.SpannableString s = new android.text.SpannableString(zoomName + "\n" + mmName);
+        int split = zoomName.length();
+        s.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD), 0, split, 0);
+        s.setSpan(new android.text.style.RelativeSizeSpan(0.72f), split + 1, s.length(), 0);
+        s.setSpan(new android.text.style.ForegroundColorSpan(active ? ACCENT : 0xffe9ede6), 0, split, 0);
+        s.setSpan(new android.text.style.ForegroundColorSpan(active ? 0xccffffff : 0x88a0aaa4), split + 1, s.length(), 0);
+        return s;
+    }
+
+    private void handleViewfinderTap(float x, float y) {
+        if (textureView == null || captureSession == null || previewRequest == null || cameraDevice == null) return;
+        RectF frame = framingRect(textureView.getWidth(), textureView.getHeight());
+        if (!frame.contains(x, y)) return;
+
+        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            captureButton.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+
+        Rect activeArray = characteristics != null ? characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) : null;
+        if (activeArray != null) {
+            float nx = (x - frame.left) / frame.width();
+            float ny = (y - frame.top) / frame.height();
+            nx = Math.max(0f, Math.min(1f, nx));
+            ny = Math.max(0f, Math.min(1f, ny));
+
+            int sensorX = (int) (ny * activeArray.width());
+            int sensorY = (int) ((1f - nx) * activeArray.height());
+
+            int boxW = Math.max(50, activeArray.width() / 10);
+            int boxH = Math.max(50, activeArray.height() / 10);
+            Rect focusRect = new Rect(
+                    Math.max(0, sensorX - boxW / 2),
+                    Math.max(0, sensorY - boxH / 2),
+                    Math.min(activeArray.width(), sensorX + boxW / 2),
+                    Math.min(activeArray.height(), sensorY + boxH / 2)
+            );
+
+            MeteringRectangle metering = new MeteringRectangle(focusRect, MeteringRectangle.METERING_WEIGHT_MAX);
+            currentAfRegions = new MeteringRectangle[]{metering};
+            currentAeRegions = new MeteringRectangle[]{metering};
+            hasManualFocusPoint = true;
+
+            try {
+                previewRequest.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO);
+                Integer maxAf = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF);
+                Integer maxAe = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE);
+                if (maxAf != null && maxAf > 0) previewRequest.set(CaptureRequest.CONTROL_AF_REGIONS, currentAfRegions);
+                if (maxAe != null && maxAe > 0) previewRequest.set(CaptureRequest.CONTROL_AE_REGIONS, currentAeRegions);
+
+                previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
+                captureSession.capture(previewRequest.build(), null, cameraHandler);
+                previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+                captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+            } catch (Exception ignored) {}
+        }
+
+        if (focusReticle != null) {
+            focusReticle.showAt(x, y, currentEvOffset);
+        }
+        scheduleFocusReticleHide();
+    }
+
+    private void handleViewfinderDoubleTap() {
+        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
+            captureButton.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+        chooseLens(requestedZoom >= 1.8f ? 1.0f : 2.0f);
+    }
+
+    private final Runnable hideFocusReticleRunnable = new Runnable() {
+        @Override public void run() {
+            if (focusReticle != null) focusReticle.fadeOut();
+            resetFocusToContinuous();
+        }
+    };
+
+    private void scheduleFocusReticleHide() {
+        focusHandler.removeCallbacks(hideFocusReticleRunnable);
+        focusHandler.postDelayed(hideFocusReticleRunnable, 3500);
+    }
+
+    private void resetFocusToContinuous() {
+        hasManualFocusPoint = false;
+        currentAfRegions = null;
+        currentAeRegions = null;
+        if (captureSession != null && previewRequest != null && cameraHandler != null) {
+            try {
+                previewRequest.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+                previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+                Integer maxAf = characteristics != null ? characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) : null;
+                Integer maxAe = characteristics != null ? characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) : null;
+                if (maxAf != null && maxAf > 0) previewRequest.set(CaptureRequest.CONTROL_AF_REGIONS, null);
+                if (maxAe != null && maxAe > 0) previewRequest.set(CaptureRequest.CONTROL_AE_REGIONS, null);
+                captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void setExposureCompensationEv(float targetEv) {
+        currentEvOffset = targetEv;
+        if (characteristics == null || previewRequest == null || captureSession == null) return;
+        Range<Integer> range = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+        android.util.Rational step = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
+        if (range == null || step == null) return;
+
+        float stepVal = step.floatValue();
+        if (stepVal <= 0) stepVal = 1f / 3f;
+
+        int index = Math.round(targetEv / stepVal);
+        index = Math.max(range.getLower(), Math.min(range.getUpper(), index));
+        currentAeIndex = index;
+
+        try {
+            previewRequest.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentAeIndex);
+            captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+        } catch (Exception ignored) {}
+    }
+
+    private void toggleAeLock() {
+        if (characteristics == null || previewRequest == null || captureSession == null) return;
+        aeLocked = !aeLocked;
+        if (captureButton != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+        }
+        try {
+            previewRequest.set(CaptureRequest.CONTROL_AE_LOCK, aeLocked);
+            captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+        } catch (Exception ignored) {}
+        if (cameraState != null) {
+            cameraState.setText(aeLocked ? "AE-L  ·  EXPOSURE LOCKED" : "EXPOSURE UNLOCKED");
+            if (!aeLocked) updateVideoModeUi();
+        }
+        if (shutterValueText != null) shutterValueText.setTextColor(aeLocked ? ACCENT : 0xfff0f1ea);
+        if (isoValueText != null) isoValueText.setTextColor(aeLocked ? ACCENT : 0xfff0f1ea);
     }
 
     private GradientDrawable round(int color, int radius, int strokeColor, int strokeWidth) {
@@ -2392,11 +2624,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void updateLensButtons(float factor) {
-        for (TextView button : lensButtons) {
+        float[] zooms = new float[]{.5f, 1f, 2f, 5f};
+        String[] names = new String[]{".5×", "1×", "2×", "5×"};
+        String[] mmEquivs = new String[]{"14mm", "28mm", "50mm", "135mm"};
+        for (int i = 0; i < lensButtons.size(); i++) {
+            TextView button = lensButtons.get(i);
             Object tag = button.getTag();
             if (!(tag instanceof Float)) continue;
             boolean active = Math.abs((Float) tag - factor) < .08f;
-            button.setTextColor(active ? ACCENT : 0xffe9ede6);
+            if (i < names.length) {
+                button.setText(formatLensSpannable(names[i], mmEquivs[i], active));
+            }
             button.setBackground(round(active ? 0xe21c1d1b : 0xd8191e1e, 22, active ? ACCENT : 0x556e7872, dp(1)));
         }
         updateZoomSliderUi();
@@ -2427,6 +2665,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void setFocusMode(CaptureRequest.Builder builder) {
+        if (hasManualFocusPoint && currentAfRegions != null) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO);
+            builder.set(CaptureRequest.CONTROL_AF_REGIONS, currentAfRegions);
+            return;
+        }
         int[] modes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
         if (modes == null) return;
         String preference = AppSettings.get(this, "focus_mode", "Continuous picture autofocus");
@@ -2442,12 +2685,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         String mode = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure");
         if (!mode.startsWith("Manual") || !manualSupported) {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+            builder.set(CaptureRequest.CONTROL_AE_LOCK, aeLocked);
+            builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentAeIndex);
+            if (currentAeRegions != null) {
+                builder.set(CaptureRequest.CONTROL_AE_REGIONS, currentAeRegions);
+            }
             return;
         }
         Range<Long> exposureRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
         Range<Integer> sensitivityRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
         if (exposureRange == null || sensitivityRange == null) {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+            builder.set(CaptureRequest.CONTROL_AE_LOCK, aeLocked);
+            builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentAeIndex);
+            if (currentAeRegions != null) {
+                builder.set(CaptureRequest.CONTROL_AE_REGIONS, currentAeRegions);
+            }
             return;
         }
         long exposure = shutterNanoseconds(AppSettings.get(this, AppSettings.MANUAL_SHUTTER, "1/120 sec"));
@@ -2568,6 +2821,123 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         float frameScale = Math.min(frame.width() / viewWidth, frame.height() / viewHeight);
         matrix.postScale(frameScale, frameScale, centerX, centerY);
         textureView.setTransform(matrix);
+    }
+
+    private final class FocusReticleOverlay extends View {
+        private float reticleX = -1f;
+        private float reticleY = -1f;
+        private float reticleScale = 1.0f;
+        private float evBias = 0f;
+        private boolean showEvSlider = false;
+        private boolean isVisible = false;
+        private final Paint reticlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint sunPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        FocusReticleOverlay(Activity activity) {
+            super(activity);
+            reticlePaint.setColor(ACCENT);
+            reticlePaint.setStyle(Paint.Style.STROKE);
+            reticlePaint.setStrokeWidth(dp(1.5f));
+
+            sunPaint.setColor(ACCENT);
+            sunPaint.setStyle(Paint.Style.STROKE);
+            sunPaint.setStrokeWidth(dp(1.25f));
+
+            textPaint.setColor(ACCENT);
+            textPaint.setTextSize(dp(10));
+            textPaint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        }
+
+        void showAt(float x, float y, float currentEv) {
+            reticleX = x;
+            reticleY = y;
+            evBias = currentEv;
+            showEvSlider = true;
+            isVisible = true;
+            setAlpha(1f);
+            setVisibility(View.VISIBLE);
+
+            animate().cancel();
+            ValueAnimator anim = ValueAnimator.ofFloat(1.35f, 1.0f);
+            anim.setDuration(160);
+            anim.setInterpolator(new DecelerateInterpolator());
+            anim.addUpdateListener(animation -> {
+                reticleScale = (float) animation.getAnimatedValue();
+                invalidate();
+            });
+            anim.start();
+            invalidate();
+        }
+
+        void updateEv(float ev) {
+            evBias = ev;
+            invalidate();
+        }
+
+        void fadeOut() {
+            animate().cancel();
+            animate().alpha(0f).setDuration(350).withEndAction(() -> {
+                isVisible = false;
+                setVisibility(View.GONE);
+            }).start();
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (!isVisible || reticleX < 0 || reticleY < 0) return;
+
+            float boxSize = dp(56) * reticleScale;
+            float half = boxSize / 2f;
+            float cornerLen = dp(12) * reticleScale;
+
+            // Draw 4 corner brackets
+            canvas.drawLine(reticleX - half, reticleY - half, reticleX - half + cornerLen, reticleY - half, reticlePaint);
+            canvas.drawLine(reticleX - half, reticleY - half, reticleX - half, reticleY - half + cornerLen, reticlePaint);
+            canvas.drawLine(reticleX + half, reticleY - half, reticleX + half - cornerLen, reticleY - half, reticlePaint);
+            canvas.drawLine(reticleX + half, reticleY - half, reticleX + half, reticleY - half + cornerLen, reticlePaint);
+            canvas.drawLine(reticleX - half, reticleY + half, reticleX - half + cornerLen, reticleY + half, reticlePaint);
+            canvas.drawLine(reticleX - half, reticleY + half, reticleX - half, reticleY + half - cornerLen, reticlePaint);
+            canvas.drawLine(reticleX + half, reticleY + half, reticleX + half - cornerLen, reticleY + half, reticlePaint);
+            canvas.drawLine(reticleX + half, reticleY + half, reticleX + half, reticleY + half - cornerLen, reticlePaint);
+
+            // Center reticle pip
+            canvas.drawCircle(reticleX, reticleY, dp(1.5f), reticlePaint);
+
+            if (showEvSlider) {
+                float trackX = reticleX + half + dp(16);
+                float trackHeight = dp(80);
+                float trackTop = reticleY - trackHeight / 2f;
+                float trackBottom = reticleY + trackHeight / 2f;
+
+                reticlePaint.setAlpha(80);
+                canvas.drawLine(trackX, trackTop, trackX, trackBottom, reticlePaint);
+                reticlePaint.setAlpha(255);
+
+                float normEv = Math.max(-2f, Math.min(2f, evBias)) / 2f;
+                float sunY = reticleY - normEv * (trackHeight / 2f);
+
+                sunPaint.setStyle(Paint.Style.FILL);
+                canvas.drawCircle(trackX, sunY, dp(4), sunPaint);
+                sunPaint.setStyle(Paint.Style.STROKE);
+                for (int i = 0; i < 6; i++) {
+                    double angle = i * Math.PI / 3.0;
+                    float r1 = dp(5.5f);
+                    float r2 = dp(8.0f);
+                    canvas.drawLine(
+                            trackX + (float) Math.cos(angle) * r1,
+                            sunY + (float) Math.sin(angle) * r1,
+                            trackX + (float) Math.cos(angle) * r2,
+                            sunY + (float) Math.sin(angle) * r2,
+                            sunPaint
+                    );
+                }
+
+                String evText = String.format(Locale.US, "%+.1f", evBias);
+                if (Math.abs(evBias) < 0.05f) evText = "0.0";
+                canvas.drawText(evText, trackX + dp(12), sunY + dp(3.5f), textPaint);
+            }
+        }
     }
 
     private final class GestureOverlay extends LinearLayout {
