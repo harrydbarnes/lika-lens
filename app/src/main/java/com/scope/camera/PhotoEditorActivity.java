@@ -253,7 +253,7 @@ public class PhotoEditorActivity extends Activity {
                 Toast.makeText(this, "No copied recipe yet", Toast.LENGTH_SHORT).show();
                 return;
             }
-            look = PhotoEditStore.pasteFromClipboard(this, look);
+            look = PhotoEditStore.pasteFromClipboard(this);
             refreshBrainBar();
             populateControls();
             queuePreview();

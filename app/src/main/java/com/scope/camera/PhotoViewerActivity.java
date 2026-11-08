@@ -37,6 +37,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -376,7 +377,7 @@ public class PhotoViewerActivity extends Activity {
     }
 
     private void refreshPhotoList() {
-        allPhotos = PhotoRepository.load(this);
+        allPhotos = PhotoRepository.all(this);
         currentIndex = -1;
         if (photoUri == null) return;
         String target = photoUri.toString();
@@ -402,7 +403,7 @@ public class PhotoViewerActivity extends Activity {
         PhotoRepository.Photo next = allPhotos.get(currentIndex);
         photoUri = next.uri;
         photoName = next.name;
-        archiveKey = next.archiveKey;
+        archiveKey = PhotoRepository.archiveKey(next.name);
         if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
             rawOriginalBitmap.recycle();
         }
@@ -464,7 +465,7 @@ public class PhotoViewerActivity extends Activity {
                     PhotoRepository.Photo next = allPhotos.get(idx);
                     photoUri = next.uri;
                     photoName = next.name;
-                    archiveKey = next.archiveKey;
+                    archiveKey = PhotoRepository.archiveKey(next.name);
                     if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
                         rawOriginalBitmap.recycle();
                     }
