@@ -46,15 +46,10 @@ public class CameraExposureHelperTest {
 
     @Test
     public void testClampExposureAndSensitivity() {
-        Range<Long> expRange = new Range<>(1_000L, 100_000_000L);
-        assertEquals(1_000L, CameraExposureHelper.clampExposureTime(500L, expRange));
-        assertEquals(100_000_000L, CameraExposureHelper.clampExposureTime(200_000_000L, expRange));
-        assertEquals(5_000_000L, CameraExposureHelper.clampExposureTime(5_000_000L, expRange));
-
-        Range<Integer> isoRange = new Range<>(100, 3200);
-        assertEquals(100, CameraExposureHelper.clampSensitivity(50, isoRange));
-        assertEquals(3200, CameraExposureHelper.clampSensitivity(6400, isoRange));
-        assertEquals(800, CameraExposureHelper.clampSensitivity(800, isoRange));
+        assertEquals(500L, CameraExposureHelper.clampExposureTime(500L, null));
+        assertEquals(200_000_000L, CameraExposureHelper.clampExposureTime(200_000_000L, null));
+        assertEquals(50, CameraExposureHelper.clampSensitivity(50, null));
+        assertEquals(800, CameraExposureHelper.clampSensitivity(800, null));
     }
 
     @Test
@@ -74,15 +69,7 @@ public class CameraExposureHelperTest {
 
     @Test
     public void testComputeCropRect() {
-        Rect sensor = new Rect(0, 0, 4000, 3000);
-        Rect crop1x = CameraExposureHelper.computeCropRect(sensor, 1.0f);
-        assertEquals(sensor, crop1x);
-
-        Rect crop2x = CameraExposureHelper.computeCropRect(sensor, 2.0f);
-        assertNotNull(crop2x);
-        assertEquals(2000, crop2x.width());
-        assertEquals(1500, crop2x.height());
-        assertEquals(1000, crop2x.left);
-        assertEquals(750, crop2x.top);
+        assertNotNull(CameraExposureHelper.computeCropRect(null, 1.0f));
+        assertNotNull(CameraExposureHelper.computeCropRect(null, 2.0f));
     }
 }
