@@ -34,6 +34,10 @@ final class RawDeveloper {
         float vignette = .10f;
         String aspectRatio;
         boolean flipHorizontal;
+        String highlightRecovery = "Adaptive blend";
+        String shadowProfile = "Deep Cinema Blacks";
+        String toneCurve = "Filmic S-Curve";
+        String grainResponse = "Luminance-weighted";
 
         static Look fromPreferences(Context context) {
             Look look = new Look();
@@ -54,6 +58,10 @@ final class RawDeveloper {
             look.vignette = AppSettings.getInt(context, AppSettings.VIGNETTE, AppSettings.DEFAULT_VIGNETTE) / 100f;
             look.grainStructure = AppSettings.get(context, "grain_structure", "Fine · 35 mm");
             look.aspectRatio = AppSettings.get(context, AppSettings.ASPECT_RATIO, "4:3");
+            look.highlightRecovery = AppSettings.get(context, AppSettings.HIGHLIGHT_RECOVERY, "Adaptive blend");
+            look.shadowProfile = AppSettings.get(context, AppSettings.SHADOW_PROFILE, "Deep Cinema Blacks");
+            look.toneCurve = AppSettings.get(context, AppSettings.TONE_CURVE, "Filmic S-Curve");
+            look.grainResponse = AppSettings.get(context, AppSettings.GRAIN_RESPONSE, "Luminance-weighted");
             return look;
         }
 
@@ -67,6 +75,10 @@ final class RawDeveloper {
             c.vignette = vignette;
             c.aspectRatio = aspectRatio;
             c.flipHorizontal = flipHorizontal;
+            c.highlightRecovery = highlightRecovery;
+            c.shadowProfile = shadowProfile;
+            c.toneCurve = toneCurve;
+            c.grainResponse = grainResponse;
             return c;
         }
     }
@@ -338,14 +350,52 @@ final class RawDeveloper {
     }
 
     private static int renderLook(float r, float g, float b, Look look, int x, int y, int seed, RawArchive.Frame frame) {
-        if (look.brain.startsWith("MONO")) {
+        String brain = look.brain == null ? "LIKA / FILM" : look.brain;
+
+        if (brain.startsWith("MONO")) {
             float luma = Math.max(0f, .2126f * r + .7152f * g + .0722f * b);
             r = g = b = luma;
         }
+
         float oldY = Math.max(.00001f, .2126f * r + .7152f * g + .0722f * b);
-        float contrasted = Math.max(0f, (oldY - look.pivot) * look.contrast + look.pivot);
+
+        float effectiveContrast = look.contrast;
+        float effectivePivot = look.pivot;
+        if (brain.startsWith("KODACHROME")) {
+            effectiveContrast = look.contrast * 1.14f;
+            effectivePivot = Math.max(0.12f, look.pivot * 0.90f);
+        } else if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
+            effectiveContrast = look.contrast * 0.90f;
+            effectivePivot = look.pivot * 1.05f;
+        } else if (brain.startsWith("BLEACH")) {
+            effectiveContrast = look.contrast * 1.30f;
+            effectivePivot = 0.22f;
+        }
+
+        float contrasted;
+        String curve = look.toneCurve == null ? "Filmic S-Curve" : look.toneCurve;
+        if (curve.startsWith("Linear")) {
+            contrasted = oldY;
+        } else if (curve.startsWith("Log")) {
+            float logY = (float) Math.log1p(oldY * 7.0f) / (float) Math.log1p(7.0f);
+            contrasted = Math.max(0f, (logY - effectivePivot) * (effectiveContrast * 0.75f) + effectivePivot);
+        } else { // Filmic S-Curve
+            contrasted = Math.max(0f, (oldY - effectivePivot) * effectiveContrast + effectivePivot);
+        }
+
         float shadowWeight = 1f - smoothstep(.02f, .44f, contrasted);
-        contrasted *= 1f - clamp(look.shadows, 0f, 1f) * .22f * shadowWeight;
+        float shadowDepth = clamp(look.shadows, 0f, 1f);
+        String shadowProf = look.shadowProfile == null ? "Deep Cinema Blacks" : look.shadowProfile;
+        if (shadowProf.startsWith("Lifted") || brain.startsWith("FUJI") || brain.contains("ETERNA")) {
+            shadowDepth *= 0.65f;
+            contrasted = Math.max(0.015f, contrasted);
+        } else if (shadowProf.startsWith("Neutral")) {
+            shadowDepth *= 0.85f;
+        } else if (brain.startsWith("KODACHROME") || brain.startsWith("BLEACH")) {
+            shadowDepth = Math.min(1.2f, shadowDepth * 1.22f);
+        }
+        contrasted *= 1f - shadowDepth * .22f * shadowWeight;
+
         float shoulder = clamp(look.highlights, 0f, 1f);
         if (contrasted > .68f) {
             float excess = contrasted - .68f;
@@ -364,9 +414,24 @@ final class RawDeveloper {
         float highlightWeight = smoothstep(.62f, 1f, lightness);
         shadowWeight = 1f - smoothstep(.12f, .50f, lightness);
 
-        // Subtractive highlight roll-off: desaturate towards highlight source as lightness approaches 1.0
         float highlightDesat = 1f - .35f * smoothstep(.70f, 1.0f, lightness);
-        float chromaScale = clamp(look.saturation, 0f, 1.6f) * (1f - .13f * highlightWeight) * highlightDesat;
+        String hlRec = look.highlightRecovery == null ? "Adaptive blend" : look.highlightRecovery;
+        if (hlRec.startsWith("Subtractive")) {
+            highlightDesat = 1f - .50f * smoothstep(.58f, 0.98f, lightness);
+        } else if (hlRec.startsWith("Hard")) {
+            highlightDesat = 1.0f;
+        }
+
+        float satBase = look.saturation;
+        if (brain.startsWith("BLEACH")) {
+            satBase *= 0.32f;
+        } else if (brain.startsWith("KODACHROME")) {
+            satBase *= 1.16f;
+        } else if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
+            satBase *= 0.88f;
+        }
+
+        float chromaScale = clamp(satBase, 0f, 1.6f) * (1f - .13f * highlightWeight) * highlightDesat;
         a *= chromaScale;
         bb *= chromaScale;
         float chroma = (float) Math.sqrt(a * a + bb * bb);
@@ -378,8 +443,8 @@ final class RawDeveloper {
             a *= scale;
             bb *= scale;
         }
-        if (!look.brain.startsWith("MONO")) {
-            // Adapt base warmth push to ambient illumination to avoid fluorescent/indoor green-yellow tint
+
+        if (!brain.startsWith("MONO")) {
             float ambientWarmthFactor = 1.0f;
             if (look.whiteBalanceKelvin > 0 && look.whiteBalanceKelvin < 4000) {
                 ambientWarmthFactor = clamp(0.5f + 0.5f * (look.whiteBalanceKelvin - 2800f) / 1200f, 0.35f, 1.0f);
@@ -390,10 +455,27 @@ final class RawDeveloper {
                     ambientWarmthFactor = 0.65f;
                 }
             }
-            float baseWarmth = look.brain.startsWith("NEUTRAL") ? 0f : (.42f * ambientWarmthFactor);
+
+            float baseWarmth = brain.startsWith("NEUTRAL") ? 0f : (.42f * ambientWarmthFactor);
+            if (brain.startsWith("KODACHROME")) {
+                baseWarmth = 0.52f * ambientWarmthFactor;
+            } else if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
+                baseWarmth = 0.20f * ambientWarmthFactor;
+            } else if (brain.startsWith("BLEACH")) {
+                baseWarmth = 0.04f;
+            }
+
             float warmth = clamp(look.warmth + baseWarmth, -1f, 1f);
             a += warmth * (.006f + .004f * shadowWeight + .002f * highlightWeight);
             bb += warmth * (.014f + .006f * shadowWeight + .008f * highlightWeight);
+
+            if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
+                bb -= 0.010f * shadowWeight;
+                a -= 0.005f * shadowWeight;
+            }
+            if (brain.startsWith("BLEACH")) {
+                bb -= 0.006f * shadowWeight;
+            }
         }
         lightness = clamp(lightness, 0f, 1f);
 
@@ -421,7 +503,10 @@ final class RawDeveloper {
             float fine = hashNoise(x, y, seed);
             float coarse = hashNoise(x / (grainScale * 3), y / (grainScale * 3), seed ^ 0x51ed270b);
             float texture = (fine * (grainScale == 1 ? .72f : .40f) + coarse * (grainScale == 1 ? .28f : .60f)) * grainAmount * .05f;
-            texture *= .38f + .62f * 4f * lightness * (1f - lightness);
+            String gResp = look.grainResponse == null ? "Luminance-weighted" : look.grainResponse;
+            if (!gResp.startsWith("Uniform")) {
+                texture *= .38f + .62f * 4f * lightness * (1f - lightness);
+            }
             outR += texture; outG += texture; outB += texture;
         }
         return Color.rgb(toSrgb(outR), toSrgb(outG), toSrgb(outB));

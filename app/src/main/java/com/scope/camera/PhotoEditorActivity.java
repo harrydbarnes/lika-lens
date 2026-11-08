@@ -13,6 +13,7 @@ import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -109,13 +110,14 @@ public class PhotoEditorActivity extends Activity {
     private void refreshBrainBar() {
         if (brainBar == null) return;
         brainBar.removeAllViews();
-        String currentBrain = look.brain == null ? "LIKA / FILM" : look.brain;
-        String[] brains = {"LIKA / FILM", "MONOCHROME", "NEUTRAL RAW"};
+        String currentBrain = look.brain == null ? AppSettings.BRAIN_LIKA_FILM : look.brain;
+        String[] brains = AppSettings.BRAIN_CHOICES;
         for (int i = 0; i < brains.length; i++) {
             String b = brains[i];
-            boolean active = currentBrain.startsWith(b.substring(0, 4));
+            boolean active = currentBrain.equals(b);
             TextView pill = pill(b, active);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(30), 1f);
+            pill.setPadding(dp(12), dp(6), dp(12), dp(6));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(30));
             if (i > 0) lp.leftMargin = dp(6);
             brainBar.addView(pill, lp);
             pill.setOnClickListener(v -> {
@@ -127,14 +129,45 @@ public class PhotoEditorActivity extends Activity {
 
     private void applyBrainPreset(String preset) {
         look.brain = preset;
-        if ("MONOCHROME".equals(preset)) {
+        if (AppSettings.BRAIN_MONO_SILVER.equals(preset) || "MONOCHROME".equals(preset)) {
+            look.brain = AppSettings.BRAIN_MONO_SILVER;
             look.contrast = 1.25f;
             look.saturation = 0.0f;
             look.warmth = 0.0f;
             look.grain = 0.32f;
             look.halation = 0.10f;
             look.colorRollOff = 0.50f;
-        } else if ("NEUTRAL RAW".equals(preset)) {
+            look.toneCurve = "Filmic S-Curve";
+            look.shadowProfile = "Deep Cinema Blacks";
+        } else if (AppSettings.BRAIN_KODACHROME.equals(preset)) {
+            look.contrast = 1.25f;
+            look.saturation = 1.16f;
+            look.warmth = 0.14f;
+            look.grain = 0.18f;
+            look.halation = 0.18f;
+            look.colorRollOff = 0.78f;
+            look.toneCurve = "Filmic S-Curve";
+            look.shadowProfile = "Deep Cinema Blacks";
+        } else if (AppSettings.BRAIN_FUJI_ETERNA.equals(preset)) {
+            look.contrast = 0.95f;
+            look.saturation = 0.88f;
+            look.warmth = -0.04f;
+            look.grain = 0.24f;
+            look.halation = 0.12f;
+            look.colorRollOff = 0.82f;
+            look.toneCurve = "Filmic S-Curve";
+            look.shadowProfile = "Lifted Vintage Blacks";
+        } else if (AppSettings.BRAIN_BLEACH_BYPASS.equals(preset)) {
+            look.contrast = 1.38f;
+            look.saturation = 0.35f;
+            look.warmth = -0.06f;
+            look.grain = 0.38f;
+            look.halation = 0.08f;
+            look.colorRollOff = 0.40f;
+            look.toneCurve = "Filmic S-Curve";
+            look.shadowProfile = "Deep Cinema Blacks";
+        } else if (AppSettings.BRAIN_NEUTRAL_RAW.equals(preset) || "NEUTRAL RAW".equals(preset)) {
+            look.brain = AppSettings.BRAIN_NEUTRAL_RAW;
             look.contrast = 1.0f;
             look.saturation = 1.0f;
             look.warmth = 0.0f;
@@ -149,13 +182,18 @@ public class PhotoEditorActivity extends Activity {
             look.sharpening = 0.0f;
             look.chromaNr = 0.0f;
             look.colorRollOff = 0.50f;
+            look.toneCurve = "Linear Response";
+            look.shadowProfile = "Neutral / Open Shadows";
         } else { // "LIKA / FILM"
+            look.brain = AppSettings.BRAIN_LIKA_FILM;
             look.contrast = 1.12f;
             look.saturation = 0.98f;
             look.warmth = 0.08f;
             look.grain = 0.22f;
             look.halation = 0.16f;
             look.colorRollOff = 0.72f;
+            look.toneCurve = "Filmic S-Curve";
+            look.shadowProfile = "Deep Cinema Blacks";
         }
         refreshBrainBar();
         populateControls();
@@ -260,10 +298,14 @@ public class PhotoEditorActivity extends Activity {
         status.setPadding(dp(8), dp(6), dp(8), dp(2));
         page.addView(status);
 
+        HorizontalScrollView brainScroll = new HorizontalScrollView(this);
+        brainScroll.setHorizontalScrollBarEnabled(false);
         brainBar = new LinearLayout(this);
+        brainBar.setOrientation(LinearLayout.HORIZONTAL);
         brainBar.setGravity(Gravity.CENTER_VERTICAL);
         brainBar.setPadding(dp(14), dp(2), dp(14), dp(4));
-        page.addView(brainBar);
+        brainScroll.addView(brainBar, new FrameLayout.LayoutParams(-2, -2));
+        page.addView(brainScroll);
         refreshBrainBar();
 
         tabBar = new LinearLayout(this);

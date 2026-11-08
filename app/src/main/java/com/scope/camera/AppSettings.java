@@ -6,6 +6,31 @@ import android.content.SharedPreferences;
 final class AppSettings {
     static final String PREFS = "scope_camera_preferences";
     static final String BRAIN = "brain";
+    static final String BRAIN_LIKA_FILM = "LIKA / FILM";
+    static final String BRAIN_KODACHROME = "KODACHROME / 64";
+    static final String BRAIN_FUJI_ETERNA = "FUJI / ETERNA";
+    static final String BRAIN_BLEACH_BYPASS = "BLEACH BYPASS";
+    static final String BRAIN_MONO_SILVER = "MONO / SILVER";
+    static final String BRAIN_NEUTRAL_RAW = "NEUTRAL / RAW";
+
+    static final String[] BRAIN_CHOICES = {
+            BRAIN_LIKA_FILM,
+            BRAIN_KODACHROME,
+            BRAIN_FUJI_ETERNA,
+            BRAIN_BLEACH_BYPASS,
+            BRAIN_MONO_SILVER,
+            BRAIN_NEUTRAL_RAW
+    };
+
+    static final String[] BRAIN_DESCRIPTIONS = {
+            "LIKA / FILM · Kodak Vision3 500T 35mm Cinema Stock",
+            "KODACHROME / 64 · Vintage Color Reversal Film",
+            "FUJI / ETERNA · Soft Cinema Negative & Subtle Cyan Tones",
+            "BLEACH BYPASS · Skip-Bleach ENR High Contrast Silver",
+            "MONO / SILVER · Tri-X 400 Silver Gelatin Monochrome",
+            "NEUTRAL / RAW · Linear Unstyled Sensor Baseline"
+    };
+
     static final String CAPTURE_FORMAT = "capture_format";
     static final String RAW_SIZE = "raw_size";
     static final String TIMER = "timer";
@@ -49,6 +74,29 @@ final class AppSettings {
     static final String VIDEO_ASPECT = "video_aspect";
     static final String VIDEO_BITRATE = "video_bitrate";
     static final String SHUTTER_SOUND = "shutter_sound";
+
+    // Processing & Colour Pipeline Keys
+    static final String HIGHLIGHT_RECOVERY = "highlight_recovery";
+    static final String SHADOW_PROFILE = "shadow_profile";
+    static final String TONE_CURVE = "tone_curve";
+    static final String GRAIN_RESPONSE = "grain_response";
+    static final String ANTI_BANDING = "anti_banding";
+
+    // Viewfinder & Camera Shooting Keys
+    static final String VIEWFINDER_LONG_PRESS = "viewfinder_long_press";
+    static final String VIEWFINDER_DOUBLE_TAP = "viewfinder_double_tap";
+    static final String RETICLE_METERING = "reticle_metering";
+    static final String HORIZON_SENSITIVITY = "horizon_sensitivity";
+    static final String VOLUME_ROCKER = "volume_rocker";
+    static final String SHUTTER_WINK = "shutter_wink";
+
+    // File Management & Output Keys
+    static final String DNG_POLICY = "dng_policy";
+    static final String FOLDER_ORG = "folder_organization";
+    static final String FILE_NAMING = "file_naming";
+    static final String JPEG_QUALITY = "jpeg_quality";
+    static final String EXIF_PARAMS = "exif_params";
+    static final String STRIP_GEO = "strip_geo";
 
     static final String[] ASPECT_RATIOS = {
             "2.39:1",

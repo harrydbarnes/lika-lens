@@ -4,18 +4,21 @@ import android.Manifest;
 import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
@@ -169,13 +172,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         boolean showLevel = AppSettings.getBoolean(this, AppSettings.VISUAL_LEVEL, true);
         if (showLevel && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
-            boolean isLevel = Math.abs(smoothRollAngle) <= 1.0f;
+            String sens = AppSettings.get(this, AppSettings.HORIZON_SENSITIVITY, "Normal (±1.0°)");
+            float deadband = sens.contains("0.5") ? 0.5f : 1.0f;
+            boolean isLevel = Math.abs(smoothRollAngle) <= deadband;
             if (isLevel && !wasHorizonLevel) {
                 if (captureButton != null) {
                     captureButton.performHapticFeedback(HapticFeedbackConstants.CONFIRM);
                 }
                 wasHorizonLevel = true;
-            } else if (!isLevel && Math.abs(smoothRollAngle) > 1.4f) {
+            } else if (!isLevel && Math.abs(smoothRollAngle) > (deadband + 0.4f)) {
                 wasHorizonLevel = false;
             }
         }
@@ -196,6 +201,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void triggerShutterWink() {
         if (shutterWink == null) return;
+        if (!AppSettings.getBoolean(this, AppSettings.SHUTTER_WINK, true)) return;
         runOnUiThread(() -> {
             shutterWink.animate().cancel();
             shutterWink.setAlpha(0.88f);
@@ -401,8 +407,23 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 return true;
             }
             if (event.getRepeatCount() == 0) {
-                onShutterPressed();
-                return true;
+                String action = AppSettings.get(this, AppSettings.VOLUME_ROCKER, "Shutter release");
+                if ("Shutter release".equals(action)) {
+                    onShutterPressed();
+                    return true;
+                } else if ("EV compensation bias".equals(action)) {
+                    float step = keyCode == KeyEvent.KEYCODE_VOLUME_UP ? 0.33f : -0.33f;
+                    float newEv = Math.max(-2f, Math.min(2f, currentEvOffset + step));
+                    setExposureCompensationEv(newEv);
+                    if (focusReticle != null) focusReticle.updateEv(newEv);
+                    showMessage(String.format(Locale.US, "EV %+.1f", newEv));
+                    return true;
+                } else if ("Zoom 1× / 2×".equals(action)) {
+                    chooseLens(keyCode == KeyEvent.KEYCODE_VOLUME_UP ? 2.0f : 1.0f);
+                    return true;
+                } else if ("Off".equals(action)) {
+                    return super.onKeyDown(keyCode, event);
+                }
             }
         }
         return super.onKeyDown(keyCode, event);
@@ -511,6 +532,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (videoScreenLocked || videoRecording || videoStarting) return false;
                 handleViewfinderDoubleTap();
                 return true;
+            }
+            @Override public void onLongPress(MotionEvent e) {
+                if (videoScreenLocked || isDraggingEv) return;
+                handleViewfinderLongPress(e.getX(), e.getY());
             }
         });
 
@@ -1463,6 +1488,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             captureButton.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
         }
 
+        String metering = AppSettings.get(this, AppSettings.RETICLE_METERING, "AF + AE Metering");
+        boolean doAf = !metering.contains("AE Only");
+        boolean doAe = !metering.contains("AF Only");
+
         Rect activeArray = characteristics != null ? characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) : null;
         if (activeArray != null) {
             float nx = (x - frame.left) / frame.width();
@@ -1482,21 +1511,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     Math.min(activeArray.height(), sensorY + boxH / 2)
             );
 
-            MeteringRectangle metering = new MeteringRectangle(focusRect, MeteringRectangle.METERING_WEIGHT_MAX);
-            currentAfRegions = new MeteringRectangle[]{metering};
-            currentAeRegions = new MeteringRectangle[]{metering};
-            hasManualFocusPoint = true;
+            MeteringRectangle meteringRect = new MeteringRectangle(focusRect, MeteringRectangle.METERING_WEIGHT_MAX);
+            currentAfRegions = doAf ? new MeteringRectangle[]{meteringRect} : null;
+            currentAeRegions = doAe ? new MeteringRectangle[]{meteringRect} : null;
+            hasManualFocusPoint = doAf;
 
             try {
-                previewRequest.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO);
                 Integer maxAf = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF);
                 Integer maxAe = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE);
-                if (maxAf != null && maxAf > 0) previewRequest.set(CaptureRequest.CONTROL_AF_REGIONS, currentAfRegions);
-                if (maxAe != null && maxAe > 0) previewRequest.set(CaptureRequest.CONTROL_AE_REGIONS, currentAeRegions);
+                if (doAf) {
+                    previewRequest.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO);
+                    if (maxAf != null && maxAf > 0) previewRequest.set(CaptureRequest.CONTROL_AF_REGIONS, currentAfRegions);
+                    previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
+                }
+                if (doAe && maxAe != null && maxAe > 0) {
+                    previewRequest.set(CaptureRequest.CONTROL_AE_REGIONS, currentAeRegions);
+                }
 
-                previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
                 captureSession.capture(previewRequest.build(), null, cameraHandler);
-                previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+                if (doAf) previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
                 captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
             } catch (Exception ignored) {}
         }
@@ -1508,10 +1541,38 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void handleViewfinderDoubleTap() {
-        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
-            captureButton.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        String action = AppSettings.get(this, AppSettings.VIEWFINDER_DOUBLE_TAP, "Toggle 1× / 2× zoom");
+        if ("Toggle 1× / 2× zoom".equals(action)) {
+            if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
+                captureButton.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            }
+            chooseLens(requestedZoom >= 1.8f ? 1.0f : 2.0f);
+        } else if ("Reset exposure bias".equals(action)) {
+            setExposureCompensationEv(0f);
+            if (focusReticle != null) focusReticle.updateEv(0f);
+            if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
+                captureButton.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            }
+            showMessage("EV RESET TO 0.0");
         }
-        chooseLens(requestedZoom >= 1.8f ? 1.0f : 2.0f);
+    }
+
+    private void handleViewfinderLongPress(float x, float y) {
+        String action = AppSettings.get(this, AppSettings.VIEWFINDER_LONG_PRESS, "AE / AF lock");
+        if ("AE / AF lock".equals(action)) {
+            handleViewfinderTap(x, y);
+            if (!aeLocked) toggleAeLock();
+            showMessage("AE / AF LOCKED");
+        } else if ("Lock exposure only (AE-L)".equals(action)) {
+            toggleAeLock();
+        } else if ("Reset exposure bias".equals(action)) {
+            setExposureCompensationEv(0f);
+            if (focusReticle != null) focusReticle.updateEv(0f);
+            if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
+                captureButton.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            }
+            showMessage("EV RESET TO 0.0");
+        }
     }
 
     private final Runnable hideFocusReticleRunnable = new Runnable() {
@@ -1635,22 +1696,20 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void chooseAspectRatio() {
         String current = AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3");
         int selected = Math.max(0, Arrays.asList(AppSettings.ASPECT_RATIOS).indexOf(current));
-        new AlertDialog.Builder(this).setTitle("Frame shape")
-                .setSingleChoiceItems(AppSettings.ASPECT_RATIO_LABELS, selected, (dialog, which) -> {
-                    AppSettings.prefs(this).edit().putString(AppSettings.ASPECT_RATIO, AppSettings.ASPECT_RATIOS[which]).apply();
-                    updateQuickButtons();
-                    if (gridOverlay != null) gridOverlay.invalidate();
-                    if (cameraDevice != null && characteristics != null) {
-                        StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-                        if (map != null) {
-                            Size selectedPreview = choosePreviewSize(map.getOutputSizes(SurfaceTexture.class));
-                            if (selectedPreview != null) previewSize = selectedPreview;
-                            closeSessionOnly();
-                            createPreviewSession();
-                        }
-                    }
-                    dialog.dismiss();
-                }).setNegativeButton("Cancel", null).show();
+        showCustomBottomSheet("FRAME SHAPE", AppSettings.ASPECT_RATIO_LABELS, null, selected, which -> {
+            AppSettings.prefs(this).edit().putString(AppSettings.ASPECT_RATIO, AppSettings.ASPECT_RATIOS[which]).apply();
+            updateQuickButtons();
+            if (gridOverlay != null) gridOverlay.invalidate();
+            if (cameraDevice != null && characteristics != null) {
+                StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                if (map != null) {
+                    Size selectedPreview = choosePreviewSize(map.getOutputSizes(SurfaceTexture.class));
+                    if (selectedPreview != null) previewSize = selectedPreview;
+                    closeSessionOnly();
+                    createPreviewSession();
+                }
+            }
+        });
     }
 
     private void startBackgroundThread() {
@@ -1947,22 +2006,48 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         processor.execute(() -> {
             boolean raw = image.getFormat() == ImageFormat.RAW_SENSOR;
             String archiveKey = null;
-            boolean keepEditableSource = raw
+            String dngPolicy = AppSettings.get(this, AppSettings.DNG_POLICY, "Save DNG beside JPEG (Pictures/RAW)");
+            boolean keepEditableSource = raw && !dngPolicy.startsWith("Do not save RAW")
                     && AppSettings.getBoolean(this, AppSettings.KEEP_RAW, true)
                     && !"Rendered JPEG only".equals(AppSettings.get(this, AppSettings.CAPTURE_FORMAT, "RAW + rendered JPEG"));
             try {
                 String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
                 String format = AppSettings.get(this, AppSettings.CAPTURE_FORMAT, "RAW + rendered JPEG");
-                boolean saveDng = raw && (AppSettings.getBoolean(this, AppSettings.KEEP_RAW, true) || "DNG only".equals(format))
+                boolean saveDng = raw && dngPolicy.startsWith("Save DNG")
+                        && (AppSettings.getBoolean(this, AppSettings.KEEP_RAW, true) || "DNG only".equals(format))
                         && !"Rendered JPEG only".equals(format);
+
                 String prefix = AppSettings.get(this, AppSettings.FILE_PREFIX, "LIKA");
                 if (prefix.startsWith("Custom")) prefix = "LIKA";
+
+                String namingPattern = AppSettings.get(this, AppSettings.FILE_NAMING, "Prefix + Timestamp");
+                String baseFileStem;
+                if (namingPattern.contains("Film Look")) {
+                    String stockName = captureLook.brain != null ? captureLook.brain.replaceAll("[^A-Za-z0-9]", "") : "LIKA";
+                    baseFileStem = stockName + "_" + stamp;
+                } else if (namingPattern.contains("Roll counter")) {
+                    int roll = AppSettings.getInt(this, "roll_counter", 1);
+                    AppSettings.prefs(this).edit().putInt("roll_counter", roll + 1).apply();
+                    baseFileStem = prefix + "_ROLL_" + String.format(Locale.US, "%04d", roll);
+                } else {
+                    baseFileStem = prefix + "_" + stamp;
+                }
+
+                String folderOrg = AppSettings.get(this, AppSettings.FOLDER_ORG, "Single folder (Pictures/Lika Lens)");
+                String orgSub = "";
+                if (folderOrg.contains("month")) {
+                    orgSub = new SimpleDateFormat("yyyy-MM", Locale.US).format(new Date());
+                } else if (folderOrg.contains("film look")) {
+                    orgSub = captureLook.brain != null ? captureLook.brain.replaceAll("[^A-Za-z0-9_ ]", "").replace(' ', '_') : "LIKA_FILM";
+                }
+
                 archiveKey = prefix + "_" + stamp;
                 boolean dngSaved = false;
                 String dngWarning = null;
                 if (saveDng) {
                     try {
-                        writeDng(image, result, capturedCharacteristics, archiveKey + ".dng");
+                        String dngSubfolder = orgSub.isEmpty() ? "RAW" : orgSub + "/RAW";
+                        writeDng(image, result, capturedCharacteristics, baseFileStem + ".dng", dngSubfolder);
                         dngSaved = true;
                     } catch (Exception dngError) {
                         dngWarning = dngError.getClass().getSimpleName();
@@ -1990,7 +2075,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     developed = rotateForDisplay(developed);
                     developed = cropToAspect(developed, capturedAspect);
                 }
-                if (!raw || !"DNG only".equals(format) || !dngSaved) writeJpeg(developed, prefix + "_" + stamp + ".jpg", result);
+                if (!raw || !"DNG only".equals(format) || !dngSaved) {
+                    writeJpeg(developed, baseFileStem + ".jpg", result, orgSub);
+                }
                 if (raw && keepEditableSource) PhotoEditStore.save(this, archiveKey, captureLook);
                 developed.recycle();
                 String resultMessage = dngWarning != null ? "Photo rendered; DNG export failed"
@@ -2122,9 +2209,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         return cropped;
     }
 
-    private void writeDng(Image image, TotalCaptureResult result, CameraCharacteristics captureCharacteristics, String name) throws Exception {
+    private void writeDng(Image image, TotalCaptureResult result, CameraCharacteristics captureCharacteristics, String name, String subfolder) throws Exception {
         if (result == null || captureCharacteristics == null) throw new IllegalStateException("Missing capture metadata");
-        OutputTarget target = createOutput(name, "image/x-adobe-dng", "RAW");
+        OutputTarget target = createOutput(name, "image/x-adobe-dng", subfolder);
         boolean published = false;
         DngCreator creator = null;
         try {
@@ -2140,13 +2227,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
-    private void writeJpeg(Bitmap bitmap, String name, TotalCaptureResult result) throws Exception {
-        OutputTarget target = createOutput(name, "image/jpeg", "");
+    private void writeJpeg(Bitmap bitmap, String name, TotalCaptureResult result, String subfolder) throws Exception {
+        OutputTarget target = createOutput(name, "image/jpeg", subfolder);
         boolean published = false;
         File temp = File.createTempFile("lika_export_", ".jpg", getCacheDir());
         try {
-            String qualityChoice = AppSettings.get(this, "jpeg_quality", "Maximum · 96%");
-            int quality = qualityChoice.startsWith("High") ? 92 : qualityChoice.startsWith("Balanced") ? 85 : 96;
+            String qualityChoice = AppSettings.get(this, AppSettings.JPEG_QUALITY, "High · 95% (Recommended)");
+            int quality;
+            if (qualityChoice.startsWith("Maximum")) quality = 98;
+            else if (qualityChoice.startsWith("High")) quality = 95;
+            else if (qualityChoice.startsWith("Balanced")) quality = 90;
+            else if (qualityChoice.startsWith("Compact")) quality = 85;
+            else quality = 95;
+
             try (FileOutputStream tempOut = new FileOutputStream(temp)) {
                 if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, tempOut)) {
                     throw new IllegalStateException("JPEG encoder could not write the image");
@@ -2160,7 +2253,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 exif.setAttribute(ExifInterface.TAG_SOFTWARE, "Lika Lens (Cinematic Raw)");
                 String timeStamp = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(new Date());
                 exif.setAttribute(ExifInterface.TAG_DATETIME, timeStamp);
-                if (result != null) {
+
+                boolean writeExifParams = AppSettings.getBoolean(this, AppSettings.EXIF_PARAMS, true);
+                if (writeExifParams && result != null) {
                     Long exp = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
                     if (exp != null && exp > 0) {
                         exif.setAttribute(ExifInterface.TAG_EXPOSURE_TIME, String.valueOf(exp / 1_000_000_000.0));
@@ -2177,6 +2272,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     if (aperture != null && aperture > 0) {
                         exif.setAttribute(ExifInterface.TAG_F_NUMBER, String.valueOf(aperture));
                     }
+                }
+
+                boolean stripGeo = AppSettings.getBoolean(this, AppSettings.STRIP_GEO, false);
+                if (stripGeo) {
+                    exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE, null);
+                    exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE_REF, null);
+                    exif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE, null);
+                    exif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE_REF, null);
+                    exif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE, null);
+                    exif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE_REF, null);
+                    exif.setAttribute(ExifInterface.TAG_GPS_TIMESTAMP, null);
+                    exif.setAttribute(ExifInterface.TAG_GPS_DATESTAMP, null);
+                    exif.setAttribute(ExifInterface.TAG_GPS_PROCESSING_METHOD, null);
                 }
                 exif.saveAttributes();
             } catch (Exception exifError) {
@@ -2243,18 +2351,102 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void chooseBrain() {
-        String[] brains = {"LIKA / FILM", "NEUTRAL / RAW", "MONO / SILVER"};
+        String[] brains = AppSettings.BRAIN_CHOICES;
+        String[] descriptions = AppSettings.BRAIN_DESCRIPTIONS;
         String selected = AppSettings.brain(this);
-        int checked = Arrays.asList(brains).indexOf(selected);
-        new AlertDialog.Builder(this)
-                .setTitle("Processing brain")
-                .setSingleChoiceItems(brains, Math.max(0, checked), (dialog, which) -> {
-                    AppSettings.prefs(this).edit().putString(AppSettings.BRAIN, brains[which]).apply();
-                    updateBrainButton();
-                    dialog.dismiss();
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+        int checked = Math.max(0, Arrays.asList(brains).indexOf(selected));
+        showCustomBottomSheet("PROCESSING BRAIN", brains, descriptions, checked, index -> {
+            AppSettings.prefs(this).edit().putString(AppSettings.BRAIN, brains[index]).apply();
+            updateBrainButton();
+        });
+    }
+
+    private void showCustomBottomSheet(String title, String[] items, String[] subtitles, int selectedIndex, BottomSheetCallback callback) {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            dialog.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT);
+        }
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
+        sheet.setPadding(dp(20), dp(16), dp(20), dp(20));
+
+        View handle = new View(this);
+        handle.setBackground(round(0xff404846, 2, 0, 0));
+        LinearLayout.LayoutParams handleLp = new LinearLayout.LayoutParams(dp(36), dp(4));
+        handleLp.gravity = Gravity.CENTER_HORIZONTAL;
+        handleLp.bottomMargin = dp(14);
+        sheet.addView(handle, handleLp);
+
+        TextView titleView = label(title.toUpperCase(Locale.US), 10, ACCENT, true);
+        titleView.setLetterSpacing(.14f);
+        titleView.setGravity(Gravity.CENTER);
+        sheet.addView(titleView);
+
+        View spacer = new View(this);
+        sheet.addView(spacer, new LinearLayout.LayoutParams(-1, dp(12)));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+
+        for (int i = 0; i < items.length; i++) {
+            final int index = i;
+            boolean isCurrent = i == selectedIndex;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(14), dp(12), dp(14), dp(12));
+            row.setBackground(round(isCurrent ? 0x22d7b574 : 0x00000000, 10, isCurrent ? 0x66d7b574 : 0, isCurrent ? dp(1) : 0));
+
+            LinearLayout copy = new LinearLayout(this);
+            copy.setOrientation(LinearLayout.VERTICAL);
+            TextView itemLabel = label(items[i], 11, isCurrent ? ACCENT : 0xffe6eae4, isCurrent);
+            copy.addView(itemLabel);
+            if (subtitles != null && i < subtitles.length && subtitles[i] != null && !subtitles[i].isEmpty()) {
+                TextView sub = label(subtitles[i], 8, 0xff8a948e, false);
+                sub.setPadding(0, dp(2), 0, 0);
+                copy.addView(sub);
+            }
+            row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+
+            if (isCurrent) {
+                TextView check = label("✓", 12, ACCENT, true);
+                row.addView(check);
+            }
+
+            row.setOnClickListener(v -> {
+                if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+                    row.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                }
+                callback.onSelected(index);
+                dialog.dismiss();
+            });
+
+            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, -2);
+            rowLp.bottomMargin = dp(4);
+            list.addView(row, rowLp);
+        }
+        scroll.addView(list, new FrameLayout.LayoutParams(-1, -2));
+        sheet.addView(scroll, new LinearLayout.LayoutParams(-1, dp(Math.min(380, items.length * 54 + 10))));
+
+        TextView cancel = pill("CLOSE", false);
+        cancel.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(-1, dp(38));
+        cancelLp.topMargin = dp(12);
+        sheet.addView(cancel, cancelLp);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+
+        dialog.setContentView(sheet);
+        dialog.show();
+    }
+
+    private interface BottomSheetCallback {
+        void onSelected(int index);
     }
 
     private void openLatestFrame() {
@@ -2294,7 +2486,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void updateBrainButton() {
         if (brainButton != null) {
             String brain = AppSettings.brain(this);
-            brainButton.setText((brain.startsWith("NEUTRAL") ? "RAW" : brain.startsWith("MONO") ? "MONO" : "FILM") + "  ⌄");
+            String label;
+            if (brain.startsWith("KODACHROME")) label = "KODA";
+            else if (brain.startsWith("FUJI") || brain.contains("ETERNA")) label = "ETERNA";
+            else if (brain.startsWith("BLEACH")) label = "BLEACH";
+            else if (brain.startsWith("MONO")) label = "MONO";
+            else if (brain.startsWith("NEUTRAL")) label = "RAW";
+            else label = "FILM";
+            brainButton.setText(label + "  ⌄");
         }
     }
 
@@ -2682,6 +2881,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void setExposure(CaptureRequest.Builder builder) {
+        String antiBanding = AppSettings.get(this, AppSettings.ANTI_BANDING, "Auto (50/60 Hz)");
+        int abMode = CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO;
+        if (antiBanding.startsWith("50")) {
+            abMode = CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ;
+        } else if (antiBanding.startsWith("60")) {
+            abMode = CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ;
+        } else if (antiBanding.startsWith("Off")) {
+            abMode = CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF;
+        }
+        builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, abMode);
+
         String mode = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure");
         if (!mode.startsWith("Manual") || !manualSupported) {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
@@ -3060,7 +3270,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 float cx = frame.centerX();
                 float cy = frame.centerY();
                 float density = getResources().getDisplayMetrics().density;
-                boolean isLevel = Math.abs(smoothRollAngle) <= 1.0f;
+                String sens = AppSettings.get(MainActivity.this, AppSettings.HORIZON_SENSITIVITY, "Normal (±1.0°)");
+                float deadband = sens.contains("0.5") ? 0.5f : 1.0f;
+                boolean isLevel = Math.abs(smoothRollAngle) <= deadband;
 
                 Paint levelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
                 levelPaint.setStyle(Paint.Style.STROKE);

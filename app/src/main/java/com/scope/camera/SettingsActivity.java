@@ -163,10 +163,20 @@ public class SettingsActivity extends Activity {
         addEditorHero();
         beginSection("PROCESSING BRAIN", "The look is developed from sensor data after capture.");
         addChoice("Rendering brain", "Choose the image-making approach", AppSettings.BRAIN,
-                new String[]{"LIKA / FILM", "NEUTRAL / RAW", "MONO / SILVER"}, "LIKA / FILM");
+                AppSettings.BRAIN_CHOICES, AppSettings.BRAIN_LIKA_FILM);
         addChoice("Capture output", "DNG stays untouched; Lika Lens develops the JPEG", AppSettings.CAPTURE_FORMAT,
                 new String[]{"RAW + rendered JPEG", "DNG only", "Rendered JPEG only"}, "RAW + rendered JPEG");
         addSwitch("Keep sensor original", "Save the untouched RAW file beside the render", AppSettings.KEEP_RAW, true);
+
+        beginSection("COLOUR PIPELINE & TONE MAPPING", "Transfer functions, contrast geometry and gamut control.");
+        addChoice("Colour space", "Target display gamut", AppSettings.COLOR_SPACE,
+                new String[]{"sRGB · Standard Display", "Display P3 · Wide Gamut", "Rec. 709 · Cinema Broadcast"}, "sRGB · Standard Display");
+        addChoice("Tone curve", "Transfer curve geometry", AppSettings.TONE_CURVE,
+                new String[]{"Filmic S-Curve", "Linear Response", "Log / Flat"}, "Filmic S-Curve");
+        addChoice("Shadow profile", "Toe response and shadow depth", AppSettings.SHADOW_PROFILE,
+                new String[]{"Deep Cinema Blacks", "Neutral / Open Shadows", "Lifted Vintage Blacks"}, "Deep Cinema Blacks");
+        addChoice("Highlight recovery", "Roll-off behavior approaching clipping", AppSettings.HIGHLIGHT_RECOVERY,
+                new String[]{"Adaptive blend", "Subtractive roll-off", "Hard clip"}, "Adaptive blend");
 
         beginSection("RAW DEVELOPMENT", "Tune the render while preserving the original DNG.");
         addChoice("White balance", "Auto uses this frame's sensor estimate", AppSettings.WHITE_BALANCE_MODE,
@@ -186,6 +196,8 @@ public class SettingsActivity extends Activity {
         addSlider("Film grain", "Fine luminance texture", AppSettings.GRAIN, 0, 100, AppSettings.DEFAULT_GRAIN);
         addChoice("Grain structure", "Character of the texture", "grain_structure",
                 new String[]{"Fine · 35 mm", "Soft · 16 mm", "Coarse · 8 mm", "Monochrome"}, "Fine · 35 mm");
+        addChoice("Grain response", "Luminance-weighted or uniform distribution", AppSettings.GRAIN_RESPONSE,
+                new String[]{"Luminance-weighted", "Uniform"}, "Luminance-weighted");
         addSlider("Halation", "Warm response around bright highlights", AppSettings.HALATION, 0, 100, AppSettings.DEFAULT_HALATION);
         addSlider("Vignette", "Subtle edge fall-off", AppSettings.VIGNETTE, 0, 100, AppSettings.DEFAULT_VIGNETTE);
         addInfo("Optical correction", "Lens shading and chromatic-aberration correction are not active in this build.", 0xffaab3ad);
@@ -212,6 +224,8 @@ public class SettingsActivity extends Activity {
                 new String[]{"Off", "3 seconds", "10 seconds"}, "Off");
         addChoice("Focus behaviour", "Camera2 autofocus mode", "focus_mode",
                 new String[]{"Continuous picture autofocus", "Single autofocus"}, "Continuous picture autofocus");
+        addChoice("Anti-banding / flicker", "Compensate for AC artificial lighting cycles", AppSettings.ANTI_BANDING,
+                new String[]{"Auto (50/60 Hz)", "50 Hz (Europe/Asia)", "60 Hz (Americas/Japan)", "Off"}, "Auto (50/60 Hz)");
         addSwitch("Haptic shutter", "Short tactile response when a frame is taken", AppSettings.HAPTICS, true);
         addSwitch("Shutter sound", "Mechanical leaf shutter audio click on capture", AppSettings.SHUTTER_SOUND, true);
 
@@ -224,10 +238,21 @@ public class SettingsActivity extends Activity {
                 new String[]{"High · 24 Mbps", "Ultra · 35 Mbps", "Standard · 14 Mbps"}, "High · 24 Mbps");
         addInfo("180° Shutter Rule", "In 24 fps cinematic mode, the app targets a 1/48s exposure interval for authentic motion cadence.", 0xffaab3ad);
 
-        beginSection("VIEWFINDER", "Framing and exposure aids.");
+        beginSection("VIEWFINDER & SHOOTING ERGONOMICS", "Framing aids, gesture shortcuts and tactile controls.");
         addChoice("Composition grid", "Choose a guide overlay inside the viewfinder frame", AppSettings.GRID_STYLE,
                 new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");
         addSwitch("Visual level", "Artificial horizon bar that illuminates gold when level", AppSettings.VISUAL_LEVEL, true);
+        addChoice("Horizon sensitivity", "Deadband tolerance for level detection", AppSettings.HORIZON_SENSITIVITY,
+                new String[]{"Normal (±1.0°)", "Precise (±0.5°)"}, "Normal (±1.0°)");
+        addChoice("Long press gesture", "Action when holding finger on viewfinder", AppSettings.VIEWFINDER_LONG_PRESS,
+                new String[]{"AE / AF lock", "Lock exposure only (AE-L)", "Reset exposure bias", "None"}, "AE / AF lock");
+        addChoice("Double tap gesture", "Action when double-tapping viewfinder", AppSettings.VIEWFINDER_DOUBLE_TAP,
+                new String[]{"Toggle 1× / 2× zoom", "Reset exposure bias", "None"}, "Toggle 1× / 2× zoom");
+        addChoice("Reticle metering", "Targeting behaviour for focus reticle tap", AppSettings.RETICLE_METERING,
+                new String[]{"AF + AE Metering", "AF Only (Continuous AE)", "AE Only (Continuous AF)"}, "AF + AE Metering");
+        addChoice("Volume rocker", "Hardware volume key function", AppSettings.VOLUME_ROCKER,
+                new String[]{"Shutter release", "EV compensation bias", "Zoom 1× / 2×", "Off"}, "Shutter release");
+        addSwitch("Shutter ocular wink", "Blackout pulse during optical leaf shutter exposure", AppSettings.SHUTTER_WINK, true);
         addInfo("Grid guides", "The frame outline and grid help compose the shot. They are not saved into the photo.", 0xffaab3ad);
         addInfo("Exposure aids", "Histogram, zebra and focus-peaking overlays are planned.", 0xffaab3ad);
         boolean hasRaw = AppSettings.getBoolean(this, AppSettings.RAW_SUPPORTED, false);
@@ -240,13 +265,17 @@ public class SettingsActivity extends Activity {
     }
 
     private void populateGeneralSettings() {
-        beginSection("OUTPUT & FILES", "Shareable renders and a recoverable negative.");
-        addChoice("Rendered file", "Current Android build exports JPEG", "render_format",
-                new String[]{"JPEG · maximum quality"}, "JPEG · maximum quality");
-        addChoice("JPEG quality", "Compression level for the rendered image", "jpeg_quality",
-                new String[]{"Maximum · 96%", "High · 92%", "Balanced · 85%"}, "Maximum · 96%");
-        addChoice("Colour space", "Lika Lens currently renders an sRGB JPEG", AppSettings.COLOR_SPACE,
-                new String[]{"sRGB · supported"}, "sRGB · supported");
+        beginSection("FILE MANAGEMENT & OUTPUT", "Shareable renders, digital negatives and storage organisation.");
+        addChoice("DNG RAW policy", "How sensor digital negatives are preserved", AppSettings.DNG_POLICY,
+                new String[]{"Save DNG beside JPEG (Pictures/RAW)", "Save in app-private archive only", "Do not save RAW (JPEG only)"}, "Save DNG beside JPEG (Pictures/RAW)");
+        addChoice("File naming pattern", "Format for exported files", AppSettings.FILE_NAMING,
+                new String[]{"Prefix + Timestamp", "Film Look + Timestamp", "Roll counter (e.g. ROLL_0001)"}, "Prefix + Timestamp");
+        addChoice("Folder organisation", "Structure under Pictures/Lika Lens", AppSettings.FOLDER_ORG,
+                new String[]{"Single folder (Pictures/Lika Lens)", "Organise by month (YYYY-MM)", "Organise by film look"}, "Single folder (Pictures/Lika Lens)");
+        addChoice("JPEG quality", "Encoder compression factor", AppSettings.JPEG_QUALITY,
+                new String[]{"Maximum · 98% (Archival)", "High · 95% (Recommended)", "Balanced · 90%", "Compact · 85%"}, "High · 95% (Recommended)");
+        addSwitch("Include EXIF shooting params", "Embed shutter, ISO, aperture, and focal length", AppSettings.EXIF_PARAMS, true);
+        addSwitch("Strip GPS / geo metadata", "Remove geographical coordinates from exported media", AppSettings.STRIP_GEO, false);
         addChoice("File name prefix", "Organise Lika Lens captures in Photos", AppSettings.FILE_PREFIX,
                 new String[]{"LIKA", "STILLS", "Custom later"}, "LIKA");
         addSwitch("Save rendered JPEG to Photos", "Add the developed still to Pictures/Lika Lens", AppSettings.AUTO_EXPORT, true);
@@ -600,7 +629,7 @@ public class SettingsActivity extends Activity {
             optionsList.addView(row, rowLp);
         }
         optScroll.addView(optionsList, new FrameLayout.LayoutParams(-1, -2));
-        sheet.addView(optScroll, new LinearLayout.LayoutParams(-1, dp(Math.min(280, options.length * 52 + 10))));
+        sheet.addView(optScroll, new LinearLayout.LayoutParams(-1, dp(Math.min(380, options.length * 52 + 10))));
 
         TextView cancel = pill("CLOSE", false);
         cancel.setGravity(Gravity.CENTER);
