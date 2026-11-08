@@ -7,12 +7,18 @@ android {
     compileSdk = 35
     enableKotlin = false
 
+    val runNum = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+    val vCode = (project.findProperty("versionCode") as String?)?.toIntOrNull()
+        ?: runNum ?: 1
+    val vName = (project.findProperty("versionName") as String?)
+        ?: (if (runNum != null) "0.1.$runNum" else "0.1.0")
+
     defaultConfig {
         applicationId = "com.scope.camera"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = vCode
+        versionName = vName
     }
 
     buildTypes {

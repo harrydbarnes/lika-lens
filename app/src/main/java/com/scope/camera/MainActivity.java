@@ -573,6 +573,29 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             textureView.postDelayed(exposureAidsSampler, 200L);
             if (textureView.isAvailable()) openCameraIfReady();
         }
+        checkAutomaticUpdates();
+    }
+
+    private void checkAutomaticUpdates() {
+        if (!AppSettings.getBoolean(this, AppSettings.AUTO_CHECK_UPDATES, true)) return;
+        long lastCheck = AppSettings.prefs(this).getLong(AppSettings.LAST_UPDATE_CHECK_TIME, 0L);
+        // Rate-limit automated checks to once every 6 hours
+        if (System.currentTimeMillis() - lastCheck < 6 * 3600 * 1000L) return;
+
+        AppUpdateManager.checkForUpdate(this, false, new AppUpdateManager.UpdateCallback() {
+            @Override
+            public void onUpdateAvailable(AppUpdateManager.UpdateInfo updateInfo) {
+                if (!isFinishing() && !isDestroyed()) {
+                    AppUpdateManager.showUpdateDialog(MainActivity.this, updateInfo);
+                }
+            }
+
+            @Override
+            public void onNoUpdateAvailable() {}
+
+            @Override
+            public void onError(String message) {}
+        });
     }
 
     @Override protected void onPause() {
@@ -1040,8 +1063,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         boolean isWide = windowInfo.isLandscape || (windowInfo.widthDp >= windowInfo.heightDp);
         assembleCameraLayout(isWide);
 
-        buildQuickAdjustPanel();
-
         messageView = label("", 10, BG, true);
         messageView.setGravity(Gravity.CENTER);
         messageView.setPadding(dp(16), dp(10), dp(16), dp(10));
@@ -1050,7 +1071,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         FrameLayout.LayoutParams messageLp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         messageLp.bottomMargin = dp(24);
         root.addView(messageView, messageLp);
-        buildVideoLockOverlay();
 
         shutterWink = new View(this);
         shutterWink.setBackgroundColor(0xff060809);
@@ -1414,7 +1434,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             videoPauseButton.setTextColor(videoPaused ? ACCENT : 0xffe9ede6);
         }
         if (videoSnapButton != null) videoSnapButton.setVisibility(activeVideoTake ? View.VISIBLE : View.GONE);
-        if (videoLockOverlay != null) videoLockOverlay.setVisibility((videoRecording || switchingVideoCamera) && videoScreenLocked ? View.VISIBLE : View.GONE);
+        if ((videoRecording || switchingVideoCamera) && videoScreenLocked) {
+            if (videoLockOverlay == null) buildVideoLockOverlay();
+            videoLockOverlay.setVisibility(View.VISIBLE);
+        } else if (videoLockOverlay != null) {
+            videoLockOverlay.setVisibility(View.GONE);
+        }
 
         boolean idleControlsAvailable = !videoRecording && !videoStarting && !switchingVideoCamera;
         boolean liveSwitchAvailable = !videoStarting && !switchingVideoCamera && !videoScreenLocked;
@@ -2087,7 +2112,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void toggleQuickAdjustPanel() {
-        if (quickAdjustPanel == null) return;
+        if (quickAdjustPanel == null) {
+            buildQuickAdjustPanel();
+        }
         if (quickAdjustPanel.getVisibility() == View.VISIBLE) closeQuickAdjustPanel();
         else {
             populateQuickControls();
