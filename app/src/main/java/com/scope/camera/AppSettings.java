@@ -76,6 +76,9 @@ final class AppSettings {
     static final String SHUTTER_SOUND = "shutter_sound";
 
     // Processing & Colour Pipeline Keys
+    static final String EASY_MODE = "easy_mode";
+    static final String SKIN_PROTECTION = "skin_protection";
+    static final String SMART_VIBRANCE = "smart_vibrance";
     static final String HIGHLIGHT_RECOVERY = "highlight_recovery";
     static final String SHADOW_PROFILE = "shadow_profile";
     static final String TONE_CURVE = "tone_curve";

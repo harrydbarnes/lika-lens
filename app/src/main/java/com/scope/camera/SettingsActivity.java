@@ -161,6 +161,11 @@ public class SettingsActivity extends Activity {
 
     private void populateProcessingSettings() {
         addEditorHero();
+        beginSection("SMART POINT & SHOOT", "Automated scene-adaptive colour science for effortless shooting.");
+        addSwitch("Easy point & shoot mode", "Automatically adapts warmth, protects skin tones and balances dynamic range", AppSettings.EASY_MODE, true);
+        addSwitch("Intelligent skin tone protection", "Preserves healthy skin hues when warmth or film saturation is pushed", AppSettings.SKIN_PROTECTION, true);
+        addSwitch("Smart filmic vibrance", "Enhances everyday subjects (food, clothing, foliage) without digital oversaturation", AppSettings.SMART_VIBRANCE, true);
+
         beginSection("PROCESSING BRAIN", "The look is developed from sensor data after capture.");
         addChoice("Rendering brain", "Choose the image-making approach", AppSettings.BRAIN,
                 AppSettings.BRAIN_CHOICES, AppSettings.BRAIN_LIKA_FILM);

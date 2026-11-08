@@ -30,6 +30,9 @@ final class PhotoEditStore {
         look.whiteBalanceKelvin = prefs.getInt(prefix + "white_balance", look.whiteBalanceKelvin);
         look.aspectRatio = prefs.getString(prefix + "aspect_ratio", null);
         look.flipHorizontal = prefs.getBoolean(prefix + "flip_h", false);
+        look.easyMode = prefs.getBoolean(prefix + "easy_mode", look.easyMode);
+        look.skinProtection = prefs.getBoolean(prefix + "skin_protection", look.skinProtection);
+        look.smartVibrance = prefs.getBoolean(prefix + "smart_vibrance", look.smartVibrance);
         return look;
     }
 
@@ -51,7 +54,10 @@ final class PhotoEditStore {
                 .putFloat(p + "sharpening", look.sharpening)
                 .putFloat(p + "chroma_nr", look.chromaNr)
                 .putFloat(p + "vignette", look.vignette)
-                .putInt(p + "white_balance", look.whiteBalanceKelvin);
+                .putInt(p + "white_balance", look.whiteBalanceKelvin)
+                .putBoolean(p + "easy_mode", look.easyMode)
+                .putBoolean(p + "skin_protection", look.skinProtection)
+                .putBoolean(p + "smart_vibrance", look.smartVibrance);
         if (look.aspectRatio != null) editor.putString(p + "aspect_ratio", look.aspectRatio);
         else editor.remove(p + "aspect_ratio");
         editor.putBoolean(p + "flip_h", look.flipHorizontal);
@@ -67,6 +73,7 @@ final class PhotoEditStore {
                 .remove(p + "highlights").remove(p + "shadows").remove(p + "grain")
                 .remove(p + "halation").remove(p + "sharpening").remove(p + "chroma_nr")
                 .remove(p + "vignette").remove(p + "white_balance")
+                .remove(p + "easy_mode").remove(p + "skin_protection").remove(p + "smart_vibrance")
                 .remove(p + "aspect_ratio").remove(p + "flip_h").apply();
     }
 

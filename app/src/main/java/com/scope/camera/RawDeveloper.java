@@ -38,6 +38,9 @@ final class RawDeveloper {
         String shadowProfile = "Deep Cinema Blacks";
         String toneCurve = "Filmic S-Curve";
         String grainResponse = "Luminance-weighted";
+        boolean easyMode = true;
+        boolean skinProtection = true;
+        boolean smartVibrance = true;
 
         static Look fromPreferences(Context context) {
             Look look = new Look();
@@ -62,6 +65,9 @@ final class RawDeveloper {
             look.shadowProfile = AppSettings.get(context, AppSettings.SHADOW_PROFILE, "Deep Cinema Blacks");
             look.toneCurve = AppSettings.get(context, AppSettings.TONE_CURVE, "Filmic S-Curve");
             look.grainResponse = AppSettings.get(context, AppSettings.GRAIN_RESPONSE, "Luminance-weighted");
+            look.easyMode = AppSettings.getBoolean(context, AppSettings.EASY_MODE, true);
+            look.skinProtection = AppSettings.getBoolean(context, AppSettings.SKIN_PROTECTION, true);
+            look.smartVibrance = AppSettings.getBoolean(context, AppSettings.SMART_VIBRANCE, true);
             return look;
         }
 
@@ -79,6 +85,9 @@ final class RawDeveloper {
             c.shadowProfile = shadowProfile;
             c.toneCurve = toneCurve;
             c.grainResponse = grainResponse;
+            c.easyMode = easyMode;
+            c.skinProtection = skinProtection;
+            c.smartVibrance = smartVibrance;
             return c;
         }
     }
@@ -151,7 +160,11 @@ final class RawDeveloper {
         });
         bitmap.setPixels(allPixels, 0, outW, 0, 0, outW, outH);
 
-        if (look.chromaNr > 0f) applyChromaDenoise(bitmap, look.chromaNr);
+        float effectiveChromaNr = look.chromaNr;
+        if (look.easyMode && frame.sensitivityIso >= 400 && effectiveChromaNr < 0.22f) {
+            effectiveChromaNr = Math.max(effectiveChromaNr, 0.22f);
+        }
+        if (effectiveChromaNr > 0f) applyChromaDenoise(bitmap, effectiveChromaNr);
         if (look.halation > 0f) applyHalation(bitmap, look.halation, aspect);
         if (look.sharpening > 0f) applySharpen(bitmap, Math.min(.14f, look.sharpening * .14f));
         return bitmap;
@@ -192,7 +205,9 @@ final class RawDeveloper {
         });
         Bitmap result = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888);
         bitmap.recycle();
-        if (look.chromaNr > 0f) applyChromaDenoise(result, look.chromaNr);
+        float effectiveJpegChromaNr = look.chromaNr;
+        if (look.easyMode && effectiveJpegChromaNr < 0.15f) effectiveJpegChromaNr = 0.15f;
+        if (effectiveJpegChromaNr > 0f) applyChromaDenoise(result, effectiveJpegChromaNr);
         if (look.halation > 0f) applyHalation(result, look.halation, look.aspectRatio);
         if (look.sharpening > 0f) applySharpen(result, Math.min(.14f, look.sharpening * .14f));
         return result;
@@ -397,6 +412,9 @@ final class RawDeveloper {
         contrasted *= 1f - shadowDepth * .22f * shadowWeight;
 
         float shoulder = clamp(look.highlights, 0f, 1f);
+        if (look.easyMode && shoulder < 0.65f) {
+            shoulder = 0.65f;
+        }
         if (contrasted > .68f) {
             float excess = contrasted - .68f;
             contrasted = .68f + excess / (1f + excess * (1.8f + shoulder * 5f));
@@ -416,8 +434,8 @@ final class RawDeveloper {
 
         float highlightDesat = 1f - .35f * smoothstep(.70f, 1.0f, lightness);
         String hlRec = look.highlightRecovery == null ? "Adaptive blend" : look.highlightRecovery;
-        if (hlRec.startsWith("Subtractive")) {
-            highlightDesat = 1f - .50f * smoothstep(.58f, 0.98f, lightness);
+        if (hlRec.startsWith("Subtractive") || (look.easyMode && !hlRec.startsWith("Hard"))) {
+            highlightDesat = 1f - .48f * smoothstep(.60f, 0.98f, lightness);
         } else if (hlRec.startsWith("Hard")) {
             highlightDesat = 1.0f;
         }
@@ -431,7 +449,38 @@ final class RawDeveloper {
             satBase *= 0.88f;
         }
 
-        float chromaScale = clamp(satBase, 0f, 1.6f) * (1f - .13f * highlightWeight) * highlightDesat;
+        // Detect skin tone hue angle in Oklab:
+        // theta = atan2(bb, a). Skin tones cluster between ~0.45 and ~1.35 radians (~26° to 77°), centering around 0.88 rad (~50°).
+        float hueAngle = (float) Math.atan2(bb, a);
+        if (hueAngle < 0f) hueAngle += (float) (2.0 * Math.PI);
+        float rawChroma = (float) Math.sqrt(a * a + bb * bb);
+        float skinFactor = 0f;
+        if (rawChroma > 0.015f && hueAngle >= 0.45f && hueAngle <= 1.35f) {
+            float d = Math.abs(hueAngle - 0.88f);
+            skinFactor = smoothstep(0.45f, 0.05f, d);
+        }
+
+        boolean applySkinProtection = look.skinProtection || look.easyMode;
+        boolean applySmartVibrance = look.smartVibrance || look.easyMode;
+
+        float vibranceBoost = 1.0f;
+        if (applySmartVibrance && !brain.startsWith("MONO") && !brain.startsWith("BLEACH")) {
+            // Boost low to medium chroma tones (everyday subjects: food, clothing, nature, foliage)
+            // Non-linear boost that tapers off for already saturated tones and protects skin
+            float vibranceWeight = (1.0f - skinFactor * 0.85f) * (1.0f - smoothstep(0.12f, 0.35f, rawChroma));
+            vibranceBoost += 0.22f * vibranceWeight;
+        }
+
+        if (applySkinProtection && skinFactor > 0.05f) {
+            // Keep skin saturation in an optimal, flattering corridor (avoiding sunburn or overly flushed skin)
+            float maxSkinChroma = 0.17f;
+            if (rawChroma * satBase > maxSkinChroma) {
+                float excess = (rawChroma * satBase) - maxSkinChroma;
+                satBase = (maxSkinChroma + excess * 0.40f) / Math.max(0.001f, rawChroma);
+            }
+        }
+
+        float chromaScale = clamp(satBase * vibranceBoost, 0f, 1.8f) * (1f - .13f * highlightWeight) * highlightDesat;
         a *= chromaScale;
         bb *= chromaScale;
         float chroma = (float) Math.sqrt(a * a + bb * bb);
@@ -446,13 +495,15 @@ final class RawDeveloper {
 
         if (!brain.startsWith("MONO")) {
             float ambientWarmthFactor = 1.0f;
+            boolean fluorescentSpike = false;
             if (look.whiteBalanceKelvin > 0 && look.whiteBalanceKelvin < 4000) {
                 ambientWarmthFactor = clamp(0.5f + 0.5f * (look.whiteBalanceKelvin - 2800f) / 1200f, 0.35f, 1.0f);
             } else if (frame != null && frame.wbGains != null && frame.wbGains.length >= 4) {
                 float greenGain = (frame.wbGains[1] + frame.wbGains[2]) * .5f;
                 float redBlueGain = (frame.wbGains[0] + frame.wbGains[3]) * .5f;
-                if (redBlueGain > 0.01f && (greenGain / redBlueGain) > 1.12f) {
-                    ambientWarmthFactor = 0.65f;
+                if (redBlueGain > 0.01f && (greenGain / redBlueGain) > 1.08f) {
+                    fluorescentSpike = true;
+                    ambientWarmthFactor = look.easyMode ? 0.50f : 0.65f;
                 }
             }
 
@@ -468,6 +519,13 @@ final class RawDeveloper {
             float warmth = clamp(look.warmth + baseWarmth, -1f, 1f);
             a += warmth * (.006f + .004f * shadowWeight + .002f * highlightWeight);
             bb += warmth * (.014f + .006f * shadowWeight + .008f * highlightWeight);
+
+            // Illuminant-Adaptive Neutralization in Easy Mode:
+            // Neutralizes the yellow-green jaundiced tint under fluorescent lighting
+            if (look.easyMode && fluorescentSpike) {
+                a += 0.0035f;
+                bb -= 0.0070f;
+            }
 
             if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
                 bb -= 0.010f * shadowWeight;
@@ -498,6 +556,13 @@ final class RawDeveloper {
         }
 
         float grainAmount = clamp(look.grain, 0f, 1f);
+        if (look.easyMode && frame != null && frame.sensitivityIso > 0) {
+            if (frame.sensitivityIso < 100) {
+                grainAmount *= 0.75f;
+            } else if (frame.sensitivityIso > 800) {
+                grainAmount *= 0.65f;
+            }
+        }
         if (grainAmount > 0f) {
             int grainScale = look.grainStructure.startsWith("Coarse") ? 5 : look.grainStructure.startsWith("Soft") ? 2 : 1;
             float fine = hashNoise(x, y, seed);

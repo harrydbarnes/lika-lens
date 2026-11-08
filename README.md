@@ -59,6 +59,28 @@ The default **Lika / Film** rendering is intentionally opinionated. It is design
 
 The image direction is informed by [WIRED's interview with Steve Yedlin](https://www.wired.com/story/the-hollywood-color-nerd-who-shot-knives-out-explains-his-viral-iphone-camera-app/) and [GSM Arena's review of Chromagraph](https://m.gsmarena.com/we_check_out_chromagraph_rian_johnsons_viral_iphone_camera_app-amp-75357.php). Lika Lens uses an original transform, not Chromagraph's proprietary colour math.
 
+## Colour Science: Chromagraph vs. Lika Lens
+
+Both Chromagraph (by director Rian Johnson and team) and Lika Lens stem from the color science philosophy of cinematographer **Steve Yedlin, ASC** (*Knives Out*, *Star Wars: The Last Jedi*, *Looper*). Rather than accepting synthetic mobile processing (aggressive edge-sharpening halos, local tone-mapping HDR flattening, oversaturated unnatural skies), both apps intercept uncompressed raw sensor Bayer data and apply an authored display preparation transform.
+
+However, real-world reviews of Chromagraph revealed critical practical shortcomings that Lika Lens explicitly identifies and solves:
+
+| Pipeline Dimension | Chromagraph (iPhone) | Lika Lens (Native Android) |
+| :--- | :--- | :--- |
+| **Color Space Math** | Static 3×3 matrix with proprietary Look LUT | **Oklab Perceptual Color Space** — lightness ($L$) is mathematically decoupled from chromatic axes ($a, b$), eliminating dirty hue skewing when adjusting contrast. |
+| **Indoor / Artificial Light** | Fixed warmth push yields an unpleasant **yellow-green / jaundiced cast** under fluorescent, LED office, and mixed artificial lighting. | **Illuminant-Adaptive Neutralization**: Continuously analyzes sensor `wbGains`. When green-gain spikes occur under fluorescent fixtures, base warmth is dynamically attenuated and compensatory magenta/blue offsets are applied, keeping neutrals clean while preserving golden warmth under daylight. |
+| **Everyday Subject Vibrance** | Default tuning is muted and understated. Everyday subjects (food, clothing, flowers, city streets) often look **dull, muddy, or lifeless**. | **Selective Filmic Vibrance with Skin Protection**: Protects human skin tones in an anatomical Oklab hue corridor ($\theta = \text{atan2}(b, a) \in [0.45, 1.35]$ rad) while applying non-linear vibrance ($+22\%$) to low/mid-chroma non-skin tones. Everyday scenes pop with vitality without digital harshness. |
+| **Contrast & Dynamic Range** | Unforgiving high contrast. Discarding computational HDR without adaptive curves causes **harsh white sky blowouts or crushed shadows**. | **Adaptive Shoulder & Highlight Recovery**: Subtractive highlight desaturation gracefully rolls bright specular sources and skies toward film paper white rather than clipping to nuclear cyan/yellow. Shadow toe response prevents crushing deep cinema blacks. |
+| **Noise & Emulsion Texture** | Static simulated grain overlay regardless of ambient lighting conditions. | **ISO-Adaptive Film Grain**: At low ISO (< 100), grain scales down to 0.75× to preserve native lens micro-contrast and resolving power. At high ISO (> 800), grain scales to 0.65× and chroma denoise engages to prevent clumping on top of sensor thermal noise. |
+| **Usability & Ergonomics** | Requires manual exposure compensation and lighting awareness; prone to ruined shots for casual users. | **Smart Point & Shoot ("Easy Mode")**: 1-tap viewfinder toggle (`[★ EASY]`) that enables scene-adaptive color intelligence out of the box. Point and shoot with full film transform benefits without fiddling with manual sliders. |
+
+### Smart Point & Shoot ("Easy Mode")
+
+Lika Lens features an instant **`[★ EASY]`** button right on the camera viewfinder in the bottom control strip:
+- **`[★ EASY]` Active (Default)**: Viewfinder displays `SMART P&S · SCENE & ILLUMINANT ADAPTIVE`. Scene-adaptive warmth neutralization, intelligent skin protection, smart filmic vibrance, adaptive highlight compression, and ISO-scaled grain are all active in real time. Perfect for effortless daily shooting.
+- **`[EASY]` Inactive (Pro Mode)**: Viewfinder displays `RAW DEVELOPED AFTER CAPTURE`. Full manual developer parameters (custom curves, specific Kelvin shifts, unadjusted film saturation) take complete precedence for cinematographers seeking absolute manual control.
+- **Dedicated Settings Controls**: Under **Settings > Smart Point & Shoot**, users can independently toggle *Easy point & shoot mode*, *Intelligent skin tone protection*, and *Smart filmic vibrance*.
+
 ## Build in Android Studio
 
 Open this folder as a project. Use JDK 17, Android Gradle Plugin 9.5.0, Gradle 9.6.0, Android SDK Platform 35 and Build Tools 36.0.0. The Java-only app has no third-party library dependencies. The build targets API 35 and supports API 26 and newer.

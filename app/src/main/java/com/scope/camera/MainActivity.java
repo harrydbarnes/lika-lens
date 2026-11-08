@@ -111,6 +111,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private TextView flashButton;
     private TextView aspectButton;
     private TextView timerButton;
+    private TextView easyButton;
     private TextView adjustButton;
     private TextView captureButton;
     private TextView photoModeButton;
@@ -361,6 +362,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             sensorManager.registerListener(sensorEventListener, orientationSensor, SensorManager.SENSOR_DELAY_UI);
         }
         updateBrainButton();
+        updateEasyButton();
         updateQuickButtons();
         updateReadouts();
         updateGalleryButton();
@@ -670,6 +672,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         modeNote.setLetterSpacing(.055f);
         LinearLayout.LayoutParams noteTextLp = new LinearLayout.LayoutParams(0, -2, 1f);
         lookRow.addView(modeNote, noteTextLp);
+        easyButton = pill("★ EASY", true);
+        easyButton.setContentDescription("Toggle Easy Mode: scene-adaptive point and shoot");
+        easyButton.setOnClickListener(v -> { hapticClick(v); toggleEasyMode(); });
+        LinearLayout.LayoutParams easyLp = new LinearLayout.LayoutParams(dp(72), dp(30));
+        easyLp.rightMargin = dp(6);
+        lookRow.addView(easyButton, easyLp);
         adjustButton = pill("ADJUST", false);
         adjustButton.setContentDescription("Open quick look controls");
         adjustButton.setOnClickListener(v -> { hapticClick(v); toggleQuickAdjustPanel(); });
@@ -895,12 +903,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (aspectButton != null) aspectButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (timerButton != null) timerButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (adjustButton != null) adjustButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
+        if (easyButton != null) easyButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (videoFpsButton != null) videoFpsButton.setVisibility(videoMode ? View.VISIBLE : View.GONE);
         if (videoAspectButton != null) videoAspectButton.setVisibility(videoMode ? View.VISIBLE : View.GONE);
         if (modeNote != null) {
-            String fps = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
-            String fpsTag = fps.startsWith("24") ? "24 FPS CINEMATIC" : fps.startsWith("30") ? "30 FPS" : "60 FPS";
-            modeNote.setText(videoMode ? "CINEMATIC VIDEO · " + fpsTag : "RAW DEVELOPED AFTER CAPTURE");
+            if (videoMode) {
+                String fps = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
+                String fpsTag = fps.startsWith("24") ? "24 FPS CINEMATIC" : fps.startsWith("30") ? "30 FPS" : "60 FPS";
+                modeNote.setText("CINEMATIC VIDEO · " + fpsTag);
+            } else {
+                boolean easy = AppSettings.getBoolean(this, AppSettings.EASY_MODE, true);
+                modeNote.setText(easy ? "SMART P&S  ·  SCENE & ILLUMINANT ADAPTIVE" : "RAW DEVELOPED AFTER CAPTURE");
+            }
         }
         if (recordingLockButton != null) recordingLockButton.setVisibility(videoRecording && !videoScreenLocked ? View.VISIBLE : View.GONE);
         if (videoLockOverlay != null) videoLockOverlay.setVisibility(videoRecording && videoScreenLocked ? View.VISIBLE : View.GONE);
@@ -925,6 +939,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             zoomSliderPanel.setVisibility(View.GONE);
         }
         if (adjustButton != null) adjustButton.setEnabled(controlsAvailable);
+        if (easyButton != null) easyButton.setEnabled(controlsAvailable);
         if (recordingLockButton != null) recordingLockButton.setEnabled(videoRecording && !videoScreenLocked);
         if (captureButton != null) captureButton.setEnabled(!videoStarting && (videoRecording || cameraDevice != null));
         if (shutterFrame != null) shutterFrame.setEnabled(!videoStarting && (videoRecording || cameraDevice != null));
@@ -2494,6 +2509,43 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             else if (brain.startsWith("NEUTRAL")) label = "RAW";
             else label = "FILM";
             brainButton.setText(label + "  ⌄");
+        }
+    }
+
+    private void updateEasyButton() {
+        if (easyButton == null) return;
+        if (videoMode) {
+            easyButton.setVisibility(View.GONE);
+            return;
+        }
+        easyButton.setVisibility(View.VISIBLE);
+        boolean easy = AppSettings.getBoolean(this, AppSettings.EASY_MODE, true);
+        if (easy) {
+            easyButton.setText("★ EASY");
+            easyButton.setTextColor(ACCENT);
+            easyButton.setBackground(round(0x33d7b574, 15, ACCENT, dp(1)));
+            if (modeNote != null) {
+                modeNote.setText("SMART P&S  ·  SCENE & ILLUMINANT ADAPTIVE");
+            }
+        } else {
+            easyButton.setText("EASY");
+            easyButton.setTextColor(0xff9ea8a2);
+            easyButton.setBackground(round(0xff181d1c, 15, 0x44606963, dp(1)));
+            if (modeNote != null) {
+                modeNote.setText("RAW DEVELOPED AFTER CAPTURE");
+            }
+        }
+    }
+
+    private void toggleEasyMode() {
+        boolean current = AppSettings.getBoolean(this, AppSettings.EASY_MODE, true);
+        boolean next = !current;
+        AppSettings.prefs(this).edit().putBoolean(AppSettings.EASY_MODE, next).apply();
+        updateEasyButton();
+        showMessage(next ? "EASY P&S ON  ·  Smart film science & scene adaptive"
+                         : "CUSTOM PRO MODE  ·  Manual developer controls active", 2200L);
+        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && easyButton != null) {
+            easyButton.performHapticFeedback(HapticFeedbackConstants.CONFIRM);
         }
     }
 
