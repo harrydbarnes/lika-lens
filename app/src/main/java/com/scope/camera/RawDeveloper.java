@@ -89,8 +89,8 @@ final class RawDeveloper {
         int outH = Math.max(1, (int) Math.ceil(cropHeight / step));
         ByteBuffer raw = frame.rawBuffer();
         float[] cameraToXyz = profileFor(frame, look.whiteBalanceKelvin);
-        float white = frame.dynamicWhiteLevel > 0 ? frame.dynamicWhiteLevel : frame.staticWhiteLevel;
-        if (white <= 0) white = 65535f;
+        float rawWhite = frame.dynamicWhiteLevel > 0 ? frame.dynamicWhiteLevel : frame.staticWhiteLevel;
+        float white = rawWhite <= 0 ? 65535f : rawWhite;
         float[] gains = whiteBalanceGains(frame, look.whiteBalanceKelvin);
         float exposureScale = (float) Math.pow(2.0, look.exposureEv);
         Bitmap bitmap = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
