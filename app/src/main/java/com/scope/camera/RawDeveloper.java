@@ -10,7 +10,6 @@ import android.graphics.Typeface;
 import android.hardware.camera2.CameraCharacteristics;
 
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.Locale;
 import org.json.JSONException;
 import org.json.JSONObject;
