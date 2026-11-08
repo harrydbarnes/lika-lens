@@ -1,12 +1,10 @@
 package com.scope.camera;
 
 import android.app.Activity;
-import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Insets;
 import android.graphics.Rect;
 import android.os.Build;
-import android.util.DisplayMetrics;
 import android.view.DisplayCutout;
 import android.view.View;
 import android.view.WindowInsets;

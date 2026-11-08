@@ -4,6 +4,7 @@ import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.OpenableColumns;
+import android.util.Log;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -15,7 +16,6 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -27,6 +27,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * profiles, and user-imported custom LUTs with intensity blending.
  */
 final class LutManager {
+    private static final String TAG = "LutManager";
     public static final String LUT_NONE = "None";
     public static final String LUT_PORTRA = "Portra 400 Warm";
     public static final String LUT_FUJI = "Fuji 400H Soft";
@@ -220,7 +221,9 @@ final class LutManager {
                         sCache.put(name, custom);
                         return custom;
                     }
-                } catch (Exception ignored) { }
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to load custom LUT file: " + file, e);
+                }
             }
         }
 
@@ -247,7 +250,9 @@ final class LutManager {
                     if (val != null && !val.trim().isEmpty()) displayName = val;
                 }
             }
-        } catch (Exception ignored) { }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to query display name for LUT URI: " + uri, e);
+        }
 
         String baseName = displayName;
         if (baseName.toLowerCase(Locale.US).endsWith(".cube")) {
@@ -325,7 +330,9 @@ final class LutManager {
                         float g = Float.parseFloat(parts[1]);
                         float b = Float.parseFloat(parts[2]);
                         rawData.add(new float[]{r, g, b});
-                    } catch (NumberFormatException ignored) { }
+                    } catch (NumberFormatException e) {
+                        Log.w(TAG, "Malformed RGB triplet in CUBE: " + line, e);
+                    }
                 }
             }
         }

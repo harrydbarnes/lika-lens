@@ -2,22 +2,15 @@ package com.scope.camera;
 
 import android.app.Activity;
 import android.app.ActivityOptions;
-import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.graphics.Canvas;
-import android.graphics.Paint;
-import android.graphics.Rect;
-import android.graphics.RectF;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
-import android.view.ViewGroup;
-import android.view.Window;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -310,65 +303,11 @@ public class GalleryActivity extends Activity {
             launchGifStudioWithSelection();
             return;
         }
-
-        android.app.Dialog dialog = new android.app.Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
-        FrameLayout scrim = new FrameLayout(this);
-        scrim.setBackgroundColor(0x77000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
-        LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setClickable(true);
-        sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
-        sheet.setPadding(dp(20), dp(18), dp(20), dp(20));
-
-        TextView title = text("ANIMATED GIF CREATOR", 11, 0xffd7b574, true);
-        title.setLetterSpacing(.12f);
-        sheet.addView(title);
-
-        TextView sub = text("Create stop-motion, burst loops, or video GIFs with Leica film grading.", 9, 0xff9aa49e, false);
-        sub.setPadding(0, dp(6), 0, dp(14));
-        sheet.addView(sub);
-
-        TextView fromPhotos = pill("SELECT FRAMES FROM LIBRARY", true);
-        sheet.addView(fromPhotos, new LinearLayout.LayoutParams(-1, dp(40)));
-        fromPhotos.setOnClickListener(v -> {
-            hapticClick(v);
-            dialog.dismiss();
-            enterSelectionMode();
-        });
-
-        TextView fromVideo = pill("CONVERT VIDEO TO GIF", false);
-        LinearLayout.LayoutParams fvLp = new LinearLayout.LayoutParams(-1, dp(40));
-        fvLp.topMargin = dp(8);
-        sheet.addView(fromVideo, fvLp);
-        fromVideo.setOnClickListener(v -> {
-            hapticClick(v);
-            dialog.dismiss();
-            Intent intent = new Intent(this, GifStudioActivity.class);
-            intent.putExtra(GifStudioActivity.EXTRA_VIDEO_URI, "");
-            startActivity(intent);
-        });
-
-        TextView openStudio = pill("OPEN GIF STUDIO", false);
-        LinearLayout.LayoutParams osLp = new LinearLayout.LayoutParams(-1, dp(40));
-        osLp.topMargin = dp(8);
-        sheet.addView(openStudio, osLp);
-        openStudio.setOnClickListener(v -> {
-            hapticClick(v);
-            dialog.dismiss();
-            startActivity(new Intent(this, GifStudioActivity.class));
-        });
-
-        int maxSheetWidth = Math.min(dp(440), getResources().getDisplayMetrics().widthPixels);
-        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
-                maxSheetWidth,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
+        GalleryDialogs.showGifCreationDialog(
+                this,
+                this::enterSelectionMode,
+                () -> startActivity(new Intent(this, GifStudioActivity.class))
         );
-        scrim.addView(sheet, sheetLp);
-        dialog.setContentView(scrim);
-        dialog.show();
     }
 
     private void enterSelectionMode() {
@@ -413,61 +352,7 @@ public class GalleryActivity extends Activity {
     }
 
     private void confirmDeleteTile(PhotoRepository.Photo photo) {
-        android.app.Dialog dialog = new android.app.Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
-        android.view.Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0));
-            window.setLayout(android.view.WindowManager.LayoutParams.MATCH_PARENT, android.view.WindowManager.LayoutParams.MATCH_PARENT);
-        }
-
-        FrameLayout scrim = new FrameLayout(this);
-        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        scrim.setBackgroundColor(0x77000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
-        LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setClickable(true);
-        sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
-        sheet.setPadding(dp(20), dp(18), dp(20), dp(20));
-
-        TextView title = text("DELETE FRAME?", 11, 0xffd7b574, true);
-        title.setLetterSpacing(.12f);
-        sheet.addView(title);
-
-        TextView sub = text("Removes " + photo.name + " and its associated RAW archive.", 9, 0xff9aa49e, false);
-        sub.setPadding(0, dp(6), 0, dp(16));
-        sheet.addView(sub);
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        TextView cancel = pill("CANCEL", false);
-        actions.addView(cancel, new LinearLayout.LayoutParams(0, dp(38), 1f));
-        cancel.setOnClickListener(v -> dialog.dismiss());
-
-        TextView del = pill("DELETE", true);
-        del.setTextColor(0xfff0443c);
-        del.setBackground(round(0x22f0443c, 18, 0xfff0443c, dp(1)));
-        LinearLayout.LayoutParams delLp = new LinearLayout.LayoutParams(0, dp(38), 1f);
-        delLp.leftMargin = dp(8);
-        actions.addView(del, delLp);
-        del.setOnClickListener(v -> {
-            hapticClick(v);
-            PhotoRepository.delete(this, photo.uri, photo.name, PhotoRepository.archiveKey(photo.name));
-            dialog.dismiss();
-            loadPhotos();
-        });
-        sheet.addView(actions);
-
-        int maxSheetWidth = Math.min(dp(440), getResources().getDisplayMetrics().widthPixels);
-        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
-                maxSheetWidth,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
-        );
-        scrim.addView(sheet, sheetLp);
-        dialog.setContentView(scrim);
-        dialog.show();
+        GalleryDialogs.showDeleteFrameDialog(this, photo, this::loadPhotos);
     }
 
     private void completeRow(LinearLayout row, int columns) {
@@ -485,7 +370,10 @@ public class GalleryActivity extends Activity {
             options.inSampleSize = 16;
             options.inPreferredConfig = Bitmap.Config.RGB_565;
             return BitmapFactory.decodeStream(stream, null, options);
-        } catch (Exception ignored) { return null; }
+        } catch (Exception e) {
+            android.util.Log.w("GalleryActivity", "Failed to decode thumbnail: " + uri, e);
+            return null;
+        }
     }
 
     private void openPhoto(PhotoRepository.Photo photo, ImageView image) {
@@ -510,8 +398,11 @@ public class GalleryActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != IMPORT_REQUEST || resultCode != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
-        try { getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); }
-        catch (SecurityException ignored) { }
+        try {
+            getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (SecurityException e) {
+            android.util.Log.w("GalleryActivity", "Could not take persistable URI permission for imported image", e);
+        }
         Intent view = new Intent(this, PhotoViewerActivity.class);
         view.putExtra(PhotoViewerActivity.EXTRA_URI, uri.toString());
         view.putExtra(PhotoViewerActivity.EXTRA_NAME, "Imported image");
@@ -548,24 +439,6 @@ public class GalleryActivity extends Activity {
         return d;
     }
 
-    private Bitmap decodeSampledBitmap(Uri uri, int reqW, int reqH) {
-        try (InputStream in = getContentResolver().openInputStream(uri)) {
-            if (in == null) return null;
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inJustDecodeBounds = true;
-            BitmapFactory.decodeStream(in, null, options);
-            int scale = Math.max(1, Math.min(options.outWidth / reqW, options.outHeight / reqH));
-            options.inSampleSize = scale;
-            options.inJustDecodeBounds = false;
-            options.inPreferredConfig = Bitmap.Config.RGB_565;
-            try (InputStream in2 = getContentResolver().openInputStream(uri)) {
-                return BitmapFactory.decodeStream(in2, null, options);
-            }
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
     private void generateContactSheet() {
         List<PhotoRepository.Photo> photos = PhotoRepository.all(this);
         if (photos.isEmpty()) {
@@ -573,171 +446,29 @@ public class GalleryActivity extends Activity {
             return;
         }
         Toast.makeText(this, "Developing 35mm Darkroom Proof Sheet…", Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            try {
-                int count = Math.min(6, photos.size());
-                int sheetW = 2400;
-                int sheetH = 3000;
-                Bitmap sheet = Bitmap.createBitmap(sheetW, sheetH, Bitmap.Config.ARGB_8888);
-                Canvas canvas = new Canvas(sheet);
-                canvas.drawColor(0xFF090B0C);
-
-                Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                textPaint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-
-                // Header
-                textPaint.setColor(0xFFD7B574);
-                textPaint.setTextSize(44f);
-                textPaint.setLetterSpacing(0.08f);
-                canvas.drawText("LIKA LENS ARCHIVE · 35MM DARKROOM PROOF SHEET", 80, 110, textPaint);
-
-                String dateStr = new SimpleDateFormat("yyyy-MM-dd · HH:mm", Locale.US).format(new Date());
-                textPaint.setColor(0xFF89948E);
-                textPaint.setTextSize(26f);
-                textPaint.setTypeface(android.graphics.Typeface.DEFAULT);
-                canvas.drawText("DATE: " + dateStr + "   STOCK: KODAK VISION3 500T 35MM EMULSION", 80, 155, textPaint);
-
-                // Gold rule
-                Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                linePaint.setColor(0x66D7B574);
-                linePaint.setStrokeWidth(3f);
-                canvas.drawLine(80, 185, sheetW - 80, 185, linePaint);
-
-                // 2 rows x 3 columns
-                int cols = 3;
-                int rows = 2;
-                int gridMarginX = 80;
-                int gridTop = 220;
-                int availableW = sheetW - gridMarginX * 2;
-                int colSpacing = 40;
-                int frameW = (availableW - colSpacing * (cols - 1)) / cols;
-                int frameH = Math.round(frameW * (2f / 3f));
-                int rowHeightWithSprockets = frameH + 210;
-
-                Paint sprocketPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                sprocketPaint.setColor(0xCCF0F2EB);
-
-                Paint frameBorderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                frameBorderPaint.setStyle(Paint.Style.STROKE);
-                frameBorderPaint.setStrokeWidth(4f);
-                frameBorderPaint.setColor(0xFF1E2325);
-
-                Paint leicaGoldMark = new Paint(Paint.ANTI_ALIAS_FLAG);
-                leicaGoldMark.setColor(0xFFD7B574);
-                leicaGoldMark.setStyle(Paint.Style.STROKE);
-                leicaGoldMark.setStrokeWidth(6f);
-
-                for (int r = 0; r < rows; r++) {
-                    int rowTop = gridTop + r * rowHeightWithSprockets;
-                    int sprockY1 = rowTop + 10;
-                    int sprockW = 24, sprockH = 36, sprockR = 6;
-                    for (int sx = gridMarginX; sx < sheetW - gridMarginX; sx += 48) {
-                        canvas.drawRoundRect(new RectF(sx, sprockY1, sx + sprockW, sprockY1 + sprockH), sprockR, sprockR, sprocketPaint);
-                    }
-
-                    int photoY = sprockY1 + sprockH + 18;
-
-                    for (int c = 0; c < cols; c++) {
-                        int index = r * cols + c;
-                        int photoX = gridMarginX + c * (frameW + colSpacing);
-
-                        if (index < count) {
-                            PhotoRepository.Photo p = photos.get(index);
-                            Bitmap thumb = decodeSampledBitmap(p.uri, frameW, frameH);
-                            if (thumb != null) {
-                                Rect src = new Rect(0, 0, thumb.getWidth(), thumb.getHeight());
-                                Rect dst = new Rect(photoX, photoY, photoX + frameW, photoY + frameH);
-                                canvas.drawBitmap(thumb, src, dst, null);
-                                thumb.recycle();
-                            } else {
-                                Paint blank = new Paint();
-                                blank.setColor(0xFF121516);
-                                canvas.drawRect(photoX, photoY, photoX + frameW, photoY + frameH, blank);
-                            }
-                        } else {
-                            Paint blank = new Paint();
-                            blank.setColor(0xFF121516);
-                            canvas.drawRect(photoX, photoY, photoX + frameW, photoY + frameH, blank);
-                        }
-
-                        canvas.drawRect(photoX, photoY, photoX + frameW, photoY + frameH, frameBorderPaint);
-
-                        String frameNum = String.format(Locale.US, "► %02dA   KODAK SAFETY FILM", index + 1);
-                        textPaint.setColor(0xFFD7B574);
-                        textPaint.setTextSize(22f);
-                        canvas.drawText(frameNum, photoX + 8, photoY + frameH + 30, textPaint);
-
-                        if (index == 0) {
-                            canvas.drawRect(photoX - 4, photoY - 4, photoX + frameW + 4, photoY + frameH + 4, leicaGoldMark);
-                            textPaint.setTextSize(22f);
-                            canvas.drawText("★ SELECT", photoX + frameW - 130, photoY + frameH + 30, textPaint);
-                        }
-                    }
-
-                    int sprockY2 = photoY + frameH + 46;
-                    for (int sx = gridMarginX; sx < sheetW - gridMarginX; sx += 48) {
-                        canvas.drawRoundRect(new RectF(sx, sprockY2, sx + sprockW, sprockY2 + sprockH), sprockR, sprockR, sprocketPaint);
-                    }
-                }
-
-                String fileName = "LIKA_PROOF_SHEET_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".jpg";
-                Uri savedUri = PhotoRepository.saveBitmap(this, sheet, fileName);
-                sheet.recycle();
-
-                runOnUiThread(() -> {
-                    if (savedUri != null) {
-                        Toast.makeText(this, "Proof sheet saved to Pictures/Lika Lens", Toast.LENGTH_LONG).show();
-                        loadPhotos();
-                        Intent view = new Intent(this, PhotoViewerActivity.class);
-                        view.putExtra(PhotoViewerActivity.EXTRA_URI, savedUri.toString());
-                        view.putExtra(PhotoViewerActivity.EXTRA_NAME, fileName);
-                        view.putExtra(PhotoViewerActivity.EXTRA_FROM_LIBRARY, true);
-                        startActivity(view);
-                    } else {
-                        Toast.makeText(this, "Could not save proof sheet", Toast.LENGTH_SHORT).show();
-                    }
-                });
-            } catch (Throwable t) {
-                runOnUiThread(() -> Toast.makeText(this, "Error generating proof sheet: " + t.getMessage(), Toast.LENGTH_SHORT).show());
+        ContactSheetGenerator.generate(this, photos, new ContactSheetGenerator.Callback() {
+            @Override
+            public void onCompleted(Uri savedUri, String fileName) {
+                Toast.makeText(GalleryActivity.this, "Proof sheet saved to Pictures/Lika Lens", Toast.LENGTH_LONG).show();
+                loadPhotos();
+                Intent view = new Intent(GalleryActivity.this, PhotoViewerActivity.class);
+                view.putExtra(PhotoViewerActivity.EXTRA_URI, savedUri.toString());
+                view.putExtra(PhotoViewerActivity.EXTRA_NAME, fileName);
+                view.putExtra(PhotoViewerActivity.EXTRA_FROM_LIBRARY, true);
+                startActivity(view);
             }
-        }).start();
+
+            @Override
+            public void onError(String message) {
+                Toast.makeText(GalleryActivity.this, message, Toast.LENGTH_SHORT).show();
+            }
+        });
     }
 
     private void showBatchPasteLookDialog() {
-        if (!PhotoEditStore.hasClipboard(this)) {
-            Toast.makeText(this, "No copied recipe yet. Open DEVELOP on a photo and tap COPY.", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        RawDeveloper.Look copied = PhotoEditStore.pasteFromClipboard(this);
-        if (copied == null) return;
-        new AlertDialog.Builder(this)
-                .setTitle("PASTE LOOK RECIPE")
-                .setMessage("Brain: " + copied.brain + "\nApply this graded recipe to:")
-                .setPositiveButton("All Editable RAW Photos", (dialog, which) -> {
-                    List<PhotoRepository.Photo> photos = PhotoRepository.all(this);
-                    int count = 0;
-                    for (PhotoRepository.Photo p : photos) {
-                        String key = PhotoRepository.archiveKey(p.name);
-                        if (RawArchive.file(this, key).exists()) {
-                            PhotoEditStore.save(this, key, copied.copy());
-                            count++;
-                        }
-                    }
-                    Toast.makeText(this, "Recipe applied to " + count + " RAW frame(s)", Toast.LENGTH_SHORT).show();
-                    loadPhotos();
-                })
-                .setNeutralButton("Latest Photo Only", (dialog, which) -> {
-                    PhotoRepository.Photo latest = PhotoRepository.latest(this);
-                    if (latest != null) {
-                        String key = PhotoRepository.archiveKey(latest.name);
-                        PhotoEditStore.save(this, key, copied.copy());
-                        Toast.makeText(this, "Recipe applied to " + latest.name, Toast.LENGTH_SHORT).show();
-                        loadPhotos();
-                    }
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+        GalleryDialogs.showBatchPasteLookDialog(this, this::loadPhotos);
     }
+
 
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 }

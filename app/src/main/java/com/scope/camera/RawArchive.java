@@ -9,6 +9,7 @@ import android.hardware.camera2.params.ColorSpaceTransform;
 import android.hardware.camera2.params.LensShadingMap;
 import android.hardware.camera2.params.RggbChannelVector;
 import android.media.Image;
+import android.util.Log;
 import android.util.Rational;
 
 import java.io.BufferedInputStream;
@@ -27,6 +28,7 @@ import java.util.zip.InflaterInputStream;
 
 /** Compressed, app-private sensor source and the capture metadata needed to develop it again. */
 final class RawArchive {
+    private static final String TAG = "RawArchive";
     private static final int MAGIC = 0x53524157; // SRAW
     private static final int VERSION = 2;
 
@@ -136,7 +138,9 @@ final class RawArchive {
                     frame.lsmGains = new float[lsm.getGainFactorCount()];
                     lsm.copyGainFactors(frame.lsmGains, 0);
                 }
-            } catch (Throwable ignored) { }
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to read lens shading map from capture result", t);
+            }
         }
         frame.captureBuffer = source;
         frame.rowStride = rowStride; frame.pixelStride = pixelStride;

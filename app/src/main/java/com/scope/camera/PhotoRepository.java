@@ -9,6 +9,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
+import android.util.Log;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -19,6 +20,7 @@ import java.util.List;
 
 /** Reads the app's rendered stills from Photos, with an app-folder fallback on older Android versions. */
 final class PhotoRepository {
+    private static final String TAG = "PhotoRepository";
     static final class Photo {
         final Uri uri;
         final String name;
@@ -64,7 +66,9 @@ final class PhotoRepository {
                     long timestamp = (added > 0 ? added : modified) * 1000L;
                     return new Photo(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id), name, timestamp);
                 }
-            } catch (RuntimeException ignored) { }
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Failed to query latest photo from MediaStore", e);
+            }
         }
         List<Photo> photos = queryAppFolder(context);
         if (!photos.isEmpty()) {
@@ -172,7 +176,9 @@ final class PhotoRepository {
                 long timestamp = (added > 0 ? added : modified) * 1000L;
                 photos.add(new Photo(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id), name, timestamp));
             }
-        } catch (RuntimeException ignored) { }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "Failed to query MediaStore", e);
+        }
         return photos;
     }
 
@@ -201,7 +207,9 @@ final class PhotoRepository {
                 } else {
                     deleted = context.getContentResolver().delete(uri, null, null) > 0;
                 }
-            } catch (Exception ignored) { }
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to delete uri: " + uri, e);
+            }
         }
         String stem = archiveKey != null && !archiveKey.isEmpty() ? archiveKey : archiveKey(displayName);
         if (stem != null && !stem.isEmpty()) {
@@ -213,7 +221,9 @@ final class PhotoRepository {
                     context.getContentResolver().delete(filesUri,
                             MediaStore.MediaColumns.DISPLAY_NAME + "=?",
                             new String[]{stem + ".dng"});
-                } catch (Exception ignored) { }
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to delete raw DNG from MediaStore: " + stem, e);
+                }
             }
             File pictures = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
             if (pictures != null) {

@@ -2,8 +2,10 @@ package com.scope.camera;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.util.Log;
 
 final class AppSettings {
+    private static final String TAG = "AppSettings";
     static final String PREFS = "scope_camera_preferences";
     static final String BRAIN = "brain";
     static final String BRAIN_LIKA_FILM = "LIKA / FILM";
@@ -135,6 +137,17 @@ final class AppSettings {
     static final String GIF_RESOLUTION = "gif_resolution";
     static final String GIF_BOOMERANG = "gif_boomerang";
 
+    // In-App Update Keys
+    static final String UPDATE_CHANNEL = "update_channel";
+    static final String UPDATE_CHANNEL_BETA = "Beta (Every Commit / Action)";
+    static final String UPDATE_CHANNEL_STABLE = "Stable (Recommended)";
+    static final String[] UPDATE_CHANNEL_CHOICES = {
+            UPDATE_CHANNEL_BETA,
+            UPDATE_CHANNEL_STABLE
+    };
+    static final String AUTO_CHECK_UPDATES = "auto_check_updates";
+    static final String LAST_UPDATE_CHECK_TIME = "last_update_check_time";
+
     static final String[] ASPECT_RATIOS = {
             "2.39:1",
             "1.85:1",
@@ -164,7 +177,9 @@ final class AppSettings {
                 float w = Float.parseFloat(parts[0].trim());
                 float h = Float.parseFloat(parts[1].trim());
                 if (w > 0f && h > 0f) return w / h;
-            } catch (NumberFormatException ignored) { }
+            } catch (NumberFormatException e) {
+                Log.w(TAG, "Failed to parse aspect ratio: " + aspect, e);
+            }
         }
         return 4f / 3f;
     }

@@ -1,22 +1,41 @@
-name: Build Android APK
+name: Build & Release Android APK
 
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release channel (beta or stable)'
+        required: true
+        default: 'beta'
+        type: choice
+        options:
+          - beta
+          - stable
+      release_title:
+        description: 'Custom release title (optional)'
+        required: false
+        type: string
+      custom_notes:
+        description: 'Custom release notes / changelog (optional)'
+        required: false
+        type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
-    name: Build debug APK
+    name: Build & Release APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Java 17
         uses: actions/setup-java@v6
@@ -42,10 +61,85 @@ jobs:
       - name: Assemble debug APK
         run: gradle --no-daemon --stacktrace assembleDebug
 
-      - name: Upload APK
+      - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: lika-lens-debug-apk
+          name: lika-lens-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Determine release metadata
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+        id: meta
+        run: |
+          RUN_NUM="${{ github.run_number }}"
+          CHANNEL="beta"
+          PRERELEASE_FLAG="--prerelease"
+
+          # Check workflow_dispatch input
+          if [ "${{ github.event.inputs.channel }}" = "stable" ]; then
+            CHANNEL="stable"
+            PRERELEASE_FLAG=""
+          fi
+
+          # Check commit message for [stable] or [release]
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          if echo "$COMMIT_MSG" | grep -iqE "\[stable\]|\[release\]"; then
+            CHANNEL="stable"
+            PRERELEASE_FLAG=""
+          fi
+
+          if [ "$CHANNEL" = "stable" ]; then
+            TAG="v0.1.${RUN_NUM}"
+            TITLE="Lika Lens v0.1.${RUN_NUM} (Stable)"
+          else
+            TAG="v0.1.${RUN_NUM}-beta"
+            TITLE="Lika Lens v0.1.${RUN_NUM} (Beta)"
+          fi
+
+          if [ -n "${{ github.event.inputs.release_title }}" ]; then
+            TITLE="${{ github.event.inputs.release_title }}"
+          fi
+
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "TITLE=$TITLE" >> $GITHUB_ENV
+          echo "PRERELEASE_FLAG=$PRERELEASE_FLAG" >> $GITHUB_ENV
+          echo "CHANNEL=$CHANNEL" >> $GITHUB_ENV
+
+      - name: Generate Changelog
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"* %s (%h)")
+          else
+            CHANGELOG=$(git log -n 10 --pretty=format:"* %s (%h)")
+          fi
+
+          CUSTOM_NOTES="${{ github.event.inputs.custom_notes }}"
+
+          cat <<EOF > release_notes.md
+          ## What's Changed
+          ${CUSTOM_NOTES:+$CUSTOM_NOTES
+
+          }
+          ${CHANGELOG}
+
+          ---
+          *Continuous delivery ${CHANNEL} build #${{ github.run_number }} (${{ github.sha }})*
+          EOF
+
+      - name: Publish GitHub Release
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK_SRC=$(ls app/build/outputs/apk/debug/*.apk | head -n 1)
+          APK_DEST="lika-lens-${TAG}.apk"
+          cp "$APK_SRC" "$APK_DEST"
+
+          gh release create "$TAG" "$APK_DEST" \
+            --title "$TITLE" \
+            --notes-file release_notes.md \
+            $PRERELEASE_FLAG

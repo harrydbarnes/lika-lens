@@ -104,7 +104,7 @@ final class PhotoEditStore {
         return load(context, "__clipboard_recipe__");
     }
 
-    private static String prefix(String key) {
+    static String prefix(String key) {
         String safe = key == null ? "" : key.replaceAll("[^A-Za-z0-9_.-]", "_");
         return safe + ".";
     }

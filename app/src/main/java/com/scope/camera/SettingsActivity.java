@@ -31,7 +31,6 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.content.Intent;
-import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -40,6 +39,7 @@ import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.util.Log;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -48,6 +48,7 @@ import java.util.Locale;
 
 /** Native settings for capture, RAW development and the viewfinder. */
 public class SettingsActivity extends Activity {
+    private static final String TAG = "SettingsActivity";
     private static final int BG = 0xff0b0d0e;
     private static final int CARD = 0xff121617;
     private static final int LINE = 0xff293031;
@@ -366,9 +367,42 @@ public class SettingsActivity extends Activity {
                 new String[]{"320px · Compact & Light", "480px · Standard (Recommended)", "640px · Pro HD"}, "480px · Standard (Recommended)");
         addSwitch("Boomerang forward/reverse loop", "Ping-pong sequence for burst animations", AppSettings.GIF_BOOMERANG, false);
 
+        beginSection("UPDATES & RELEASES", "Continuous delivery from GitHub releases with Stable and Beta channels.");
+        addChoice("Update release channel", "Choose between continuous beta builds or stable releases",
+                AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_CHOICES, AppSettings.UPDATE_CHANNEL_BETA);
+        addSwitch("Check for updates on launch", "Silently check for new versions when opening Lika Lens",
+                AppSettings.AUTO_CHECK_UPDATES, true);
+        addInfo("Check for updates now", "Query GitHub Releases API for the latest APK", ACCENT, this::checkAppUpdate);
+        String verName = AppUpdateManager.getAppVersionName(this);
+        int verCode = AppUpdateManager.getAppVersionCode(this);
+        addInfo("Installed version", "Lika Lens v" + verName + " (Build " + verCode + ")", 0xffaab3ad);
+
         beginSection("APP", "About the current image pipeline.");
         addInfo("Viewfinder", "The device's live feed is only for framing. Lika Lens develops the final look from RAW after capture.", 0xffaab3ad);
         finishSection();
+    }
+
+    private void checkAppUpdate() {
+        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            getWindow().getDecorView().performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+        Toast.makeText(this, "Checking GitHub for updates…", Toast.LENGTH_SHORT).show();
+        AppUpdateManager.checkForUpdate(this, true, new AppUpdateManager.UpdateCallback() {
+            @Override
+            public void onUpdateAvailable(AppUpdateManager.UpdateInfo updateInfo) {
+                AppUpdateManager.showUpdateDialog(SettingsActivity.this, updateInfo);
+            }
+
+            @Override
+            public void onNoUpdateAvailable() {
+                Toast.makeText(SettingsActivity.this, "You're running the latest version of Lika Lens.", Toast.LENGTH_SHORT).show();
+            }
+
+            @Override
+            public void onError(String message) {
+                Toast.makeText(SettingsActivity.this, "Update check failed: " + message, Toast.LENGTH_SHORT).show();
+            }
+        });
     }
 
     private void beginSection(String title, String subtitle) {
@@ -534,7 +568,8 @@ public class SettingsActivity extends Activity {
                         }
                     });
                 }
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                Log.w(TAG, "Hero image preview update failed", e);
             } finally {
                 isUpdatingHero = false;
             }
@@ -584,7 +619,9 @@ public class SettingsActivity extends Activity {
                     long id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID));
                     return ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
                 }
-            } catch (RuntimeException ignored) { }
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Failed to query latest Scope image from MediaStore", e);
+            }
         }
         java.util.List<File> candidates = new java.util.ArrayList<>();
         File pictures = getExternalFilesDir(Environment.DIRECTORY_PICTURES);

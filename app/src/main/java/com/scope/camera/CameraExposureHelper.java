@@ -1,6 +1,7 @@
 package com.scope.camera;
 
 import android.graphics.Rect;
+import android.util.Log;
 import android.util.Range;
 
 import java.util.Locale;
@@ -13,6 +14,7 @@ import java.util.Locale;
  * comprehensive unit testing with deterministic inputs.
  */
 public final class CameraExposureHelper {
+    private static final String TAG = "CameraExposureHelper";
 
     public static final float MIN_ZOOM = 0.5f;
     public static final float MAX_ZOOM = 5.0f;
@@ -32,7 +34,9 @@ public final class CameraExposureHelper {
                 if (denominator > 0) {
                     return Math.round(1_000_000_000.0 / denominator);
                 }
-            } catch (NumberFormatException ignored) {}
+            } catch (NumberFormatException e) {
+                Log.w(TAG, "Failed to parse shutter speed denominator: " + clean, e);
+            }
         }
         if (value.startsWith("1/30")) return 33_333_333L;
         if (value.startsWith("1/60")) return 16_666_667L;
