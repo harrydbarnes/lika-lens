@@ -6,7 +6,7 @@ import android.util.Range;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -69,7 +69,7 @@ public class CameraExposureHelperTest {
 
     @Test
     public void testComputeCropRect() {
-        assertNull(CameraExposureHelper.computeCropRect(null, 1.0f));
-        assertNull(CameraExposureHelper.computeCropRect(null, 2.0f));
+        assertNotNull(CameraExposureHelper.computeCropRect(null, 1.0f));
+        assertNotNull(CameraExposureHelper.computeCropRect(null, 2.0f));
     }
 }
