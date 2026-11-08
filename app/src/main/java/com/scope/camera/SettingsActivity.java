@@ -39,6 +39,7 @@ import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.util.Log;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -47,6 +48,7 @@ import java.util.Locale;
 
 /** Native settings for capture, RAW development and the viewfinder. */
 public class SettingsActivity extends Activity {
+    private static final String TAG = "SettingsActivity";
     private static final int BG = 0xff0b0d0e;
     private static final int CARD = 0xff121617;
     private static final int LINE = 0xff293031;
@@ -533,7 +535,8 @@ public class SettingsActivity extends Activity {
                         }
                     });
                 }
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                Log.w(TAG, "Hero image preview update failed", e);
             } finally {
                 isUpdatingHero = false;
             }
@@ -583,7 +586,9 @@ public class SettingsActivity extends Activity {
                     long id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID));
                     return ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
                 }
-            } catch (RuntimeException ignored) { }
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Failed to query latest Scope image from MediaStore", e);
+            }
         }
         java.util.List<File> candidates = new java.util.ArrayList<>();
         File pictures = getExternalFilesDir(Environment.DIRECTORY_PICTURES);

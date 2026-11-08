@@ -2,8 +2,10 @@ package com.scope.camera;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.util.Log;
 
 final class AppSettings {
+    private static final String TAG = "AppSettings";
     static final String PREFS = "scope_camera_preferences";
     static final String BRAIN = "brain";
     static final String BRAIN_LIKA_FILM = "LIKA / FILM";
@@ -164,7 +166,9 @@ final class AppSettings {
                 float w = Float.parseFloat(parts[0].trim());
                 float h = Float.parseFloat(parts[1].trim());
                 if (w > 0f && h > 0f) return w / h;
-            } catch (NumberFormatException ignored) { }
+            } catch (NumberFormatException e) {
+                Log.w(TAG, "Failed to parse aspect ratio: " + aspect, e);
+            }
         }
         return 4f / 3f;
     }

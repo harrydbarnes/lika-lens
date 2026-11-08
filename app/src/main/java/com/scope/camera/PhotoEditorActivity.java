@@ -21,6 +21,7 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.util.Log;
 
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -31,6 +32,7 @@ import java.util.concurrent.Executors;
 
 /** Re-develops one photo from its archived sensor data and saves only its look settings. */
 public class PhotoEditorActivity extends Activity {
+    private static final String TAG = "PhotoEditorActivity";
     static final String EXTRA_KEY = "scope_archive_key";
     private static final int BG = 0xff0b0d0e;
     private static final int ACCENT = 0xffd7b574;
@@ -1056,7 +1058,9 @@ public class PhotoEditorActivity extends Activity {
                         }
                         exif.saveAttributes();
                     }
-                } catch (Throwable ignored) { }
+                } catch (Throwable t) {
+                    Log.w(TAG, "Failed to write EXIF attributes to updated JPEG", t);
+                }
                 PhotoEditStore.save(this, archiveKey, snapshot);
             } catch (Exception e) {
                 failure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();

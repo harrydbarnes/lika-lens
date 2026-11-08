@@ -260,7 +260,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 mediaActionSound.load(android.media.MediaActionSound.STOP_VIDEO_RECORDING);
             }
             mediaActionSound.play(soundType);
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to play shutter/video sound", t);
+        }
     }
 
     private FocusReticleOverlay focusReticle;
@@ -376,7 +378,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                             sample.recycle();
                             gridOverlay.invalidate();
                         }
-                    } catch (Throwable ignored) {}
+                    } catch (Throwable t) {
+                        Log.w(TAG, "Failed to sample texture for exposure aids", t);
+                    }
                     textureView.postDelayed(this, 110L);
                     return;
                 }
@@ -593,7 +597,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         processor.shutdown();
         ioExecutor.shutdown();
         if (mediaActionSound != null) {
-            try { mediaActionSound.release(); } catch (Throwable ignored) {}
+            try {
+                mediaActionSound.release();
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to release mediaActionSound", t);
+            }
             mediaActionSound = null;
         }
         super.onDestroy();
@@ -1873,14 +1881,26 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void releaseMediaRecorder() {
         if (mediaRecorder == null) return;
-        try { mediaRecorder.reset(); } catch (RuntimeException ignored) { }
-        try { mediaRecorder.release(); } catch (RuntimeException ignored) { }
+        try {
+            mediaRecorder.reset();
+        } catch (RuntimeException e) {
+            Log.w(TAG, "Failed to reset media recorder", e);
+        }
+        try {
+            mediaRecorder.release();
+        } catch (RuntimeException e) {
+            Log.w(TAG, "Failed to release media recorder", e);
+        }
         mediaRecorder = null;
     }
 
     private void releaseRecordingPreviewSurface() {
         if (recordingPreviewSurface == null) return;
-        try { recordingPreviewSurface.release(); } catch (RuntimeException ignored) { }
+        try {
+            recordingPreviewSurface.release();
+        } catch (RuntimeException e) {
+            Log.w(TAG, "Failed to release recording preview surface", e);
+        }
         recordingPreviewSurface = null;
     }
 
@@ -1950,7 +1970,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             } catch (Exception e) {
                 Log.e(TAG, "Failed to publish video", e);
                 if (destination != null) {
-                    try { getContentResolver().delete(destination, null, null); } catch (RuntimeException ignored) { }
+                    try {
+                        getContentResolver().delete(destination, null, null);
+                    } catch (RuntimeException re) {
+                        Log.w(TAG, "Failed to clean up destination video URI: " + destination, re);
+                    }
                 }
                 if (legacyFile != null && legacyFile.exists()) legacyFile.delete();
                 runOnUiThread(() -> showMessage("Could not save the video."));
@@ -1981,7 +2005,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     muxer.setOrientationHint(Integer.parseInt(rot));
                 }
                 retriever.release();
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to read orientation hint from video segment", t);
+            }
 
             // Discover tracks from first valid segment
             for (File seg : segments) {
@@ -2084,7 +2110,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             return false;
         } finally {
             if (muxer != null) {
-                try { muxer.release(); } catch (RuntimeException ignored) {}
+                try {
+                    muxer.release();
+                } catch (RuntimeException re) {
+                    Log.w(TAG, "Failed to release media muxer", re);
+                }
             }
         }
     }
@@ -2365,7 +2395,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 captureSession.capture(previewRequest.build(), null, cameraHandler);
                 if (doAf) previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
                 captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to apply manual focus/metering region", e);
+            }
         }
 
         if (focusReticle != null) {
@@ -2446,7 +2478,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (maxAf != null && maxAf > 0) previewRequest.set(CaptureRequest.CONTROL_AF_REGIONS, null);
                 if (maxAe != null && maxAe > 0) previewRequest.set(CaptureRequest.CONTROL_AE_REGIONS, null);
                 captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to reset focus to continuous", e);
+            }
         }
     }
 
@@ -2467,7 +2501,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         try {
             previewRequest.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentAeIndex);
             captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to set exposure compensation", e);
+        }
     }
 
     private void toggleAeLock() {
@@ -2479,7 +2515,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         try {
             previewRequest.set(CaptureRequest.CONTROL_AE_LOCK, aeLocked);
             captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to toggle AE lock", e);
+        }
         if (cameraState != null) {
             cameraState.setText(aeLocked ? "AE-L  ·  EXPOSURE LOCKED" : "EXPOSURE UNLOCKED");
             if (!aeLocked) updateVideoModeUi();
@@ -3291,9 +3329,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         void discard() {
             if (uri != null) {
-                try { getContentResolver().delete(uri, null, null); } catch (RuntimeException ignored) { }
+                try {
+                    getContentResolver().delete(uri, null, null);
+                } catch (RuntimeException e) {
+                    Log.w(TAG, "Failed to discard output URI: " + uri, e);
+                }
             } else if (file != null) {
-                try { file.delete(); } catch (RuntimeException ignored) { }
+                try {
+                    file.delete();
+                } catch (RuntimeException e) {
+                    Log.w(TAG, "Failed to delete output file: " + file, e);
+                }
             }
         }
     }
@@ -3561,7 +3607,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         if (galleryButton != null) galleryButton.setImageBitmap(thumbnail);
                     });
                 }
-            } catch (Exception ignored) { }
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to load latest photo thumbnail for gallery button", e);
+            }
         });
     }
 
@@ -3919,7 +3967,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             try {
                 applyZoom(previewRequest);
                 captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
-            } catch (CameraAccessException | IllegalStateException ignored) { }
+            } catch (CameraAccessException | IllegalStateException e) {
+                Log.w(TAG, "Failed to apply interactive zoom", e);
+            }
         }
     }
 
@@ -4017,7 +4067,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             try {
                 applyZoom(previewRequest);
                 captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
-            } catch (CameraAccessException | IllegalStateException ignored) { }
+            } catch (CameraAccessException | IllegalStateException e) {
+                Log.w(TAG, "Failed to update zoom during animation", e);
+            }
         });
         zoomAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
@@ -4261,7 +4313,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             setFlash(previewRequest, true);
             applyOpticalSettings(previewRequest, videoMode);
             captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
-        } catch (CameraAccessException | IllegalStateException ignored) { }
+        } catch (CameraAccessException | IllegalStateException e) {
+            Log.w(TAG, "Failed to refresh preview request", e);
+        }
     }
 
     private long shutterNanoseconds(String value) {
@@ -4436,7 +4490,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     }
                     full.recycle();
                 }
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to sample loupe bitmap", t);
+            }
         }
 
         void updateEv(float ev) {
@@ -4661,7 +4717,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void closeReader(ImageReader reader) {
         if (reader != null) {
-            try { reader.setOnImageAvailableListener(null, null); } catch (RuntimeException ignored) {}
+            try {
+                reader.setOnImageAvailableListener(null, null);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Failed to clear ImageReader listener", e);
+            }
             reader.close();
         }
     }

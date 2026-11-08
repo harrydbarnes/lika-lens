@@ -29,6 +29,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.util.Log;
 
 import java.io.InputStream;
 import java.util.List;
@@ -38,6 +39,7 @@ import java.util.concurrent.Executors;
 
 /** Full-screen viewer with interactive pinch-to-zoom, EXIF metadata inspection, sharing, and editor access. */
 public class PhotoViewerActivity extends Activity {
+    private static final String TAG = "PhotoViewerActivity";
     static final String EXTRA_URI = "scope_image_uri";
     static final String EXTRA_NAME = "scope_image_name";
     static final String EXTRA_FROM_LIBRARY = "scope_from_library";
@@ -620,7 +622,9 @@ public class PhotoViewerActivity extends Activity {
                 String fLen = exif.getAttribute(ExifInterface.TAG_FOCAL_LENGTH);
                 if (fLen != null && !fLen.isEmpty()) focal = fLen + "mm";
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to parse EXIF metadata", t);
+        }
 
         boolean hasRaw = archiveKey != null && RawArchive.exists(this, archiveKey);
         line1.setText(shutter + "  ·  " + iso + "  ·  " + focal + (dimensions.isEmpty() ? "" : "  ·  " + dimensions));
@@ -700,7 +704,9 @@ public class PhotoViewerActivity extends Activity {
                 }
                 photoView.post(this::fitImageToView);
                 return;
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                Log.w(TAG, "ImageDecoder failed, falling back to BitmapFactory", e);
+            }
         }
 
         try (InputStream boundsStream = getContentResolver().openInputStream(photoUri)) {
