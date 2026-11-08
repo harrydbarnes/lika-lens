@@ -117,8 +117,13 @@ jobs:
             CHANGELOG=$(git log -n 10 --pretty=format:"* %s (%h)")
           fi
 
+          CUSTOM_NOTES="${{ github.event.inputs.custom_notes }}"
+
           cat <<EOF > release_notes.md
           ## What's Changed
+          ${CUSTOM_NOTES:+$CUSTOM_NOTES
+
+          }
           ${CHANGELOG}
 
           ---

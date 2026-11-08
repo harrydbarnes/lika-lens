@@ -280,14 +280,22 @@ public final class AppUpdateManager {
                 conn.setReadTimeout(30000);
 
                 int responseCode = conn.getResponseCode();
-                // Handle manual redirect if needed
-                if (responseCode == HttpURLConnection.HTTP_MOVED_TEMP || responseCode == HttpURLConnection.HTTP_MOVED_PERM
-                        || responseCode == 307 || responseCode == 308) {
+                int redirects = 0;
+                // Follow redirect chain (e.g. github.com -> objects.githubusercontent.com AWS S3 signed URL)
+                while ((responseCode == HttpURLConnection.HTTP_MOVED_TEMP
+                        || responseCode == HttpURLConnection.HTTP_MOVED_PERM
+                        || responseCode == 307
+                        || responseCode == 308) && redirects < 5) {
                     String newUrl = conn.getHeaderField("Location");
+                    if (newUrl == null) break;
                     conn.disconnect();
                     url = new URL(newUrl);
                     conn = (HttpURLConnection) url.openConnection();
                     conn.setRequestProperty("User-Agent", "LikaLens-Android");
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(30000);
+                    responseCode = conn.getResponseCode();
+                    redirects++;
                 }
 
                 long totalBytes = conn.getContentLengthLong();
@@ -337,6 +345,8 @@ public final class AppUpdateManager {
      */
     public static void promptInstall(Activity activity, File apkFile) {
         if (activity == null || apkFile == null || !apkFile.exists()) return;
+        if (activity.isFinishing()) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed()) return;
 
         // Check for Unknown App Sources permission on Android 8.0+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -367,6 +377,7 @@ public final class AppUpdateManager {
      */
     public static void showUpdateDialog(Activity activity, UpdateInfo info) {
         if (activity == null || activity.isFinishing() || info == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed()) return;
 
         Dialog dialog = new Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar);
         Window window = dialog.getWindow();
