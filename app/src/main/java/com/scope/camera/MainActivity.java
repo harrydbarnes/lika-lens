@@ -4225,6 +4225,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 viewfinderSpacer.setLayoutParams(lp);
             }
         }
+    }
+
     private final class ShutterTouchListener implements View.OnTouchListener {
         private boolean isDown = false;
 
