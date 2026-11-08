@@ -127,17 +127,23 @@ public final class GifMediaHelper {
         }
     }
 
+    public static int[] calculateTargetDimensions(int srcW, int srcH, int maxDimension) {
+        if (srcW <= 0 || srcH <= 0 || maxDimension <= 0) return new int[]{1, 1};
+        if (srcW <= maxDimension && srcH <= maxDimension) return new int[]{srcW, srcH};
+        float ratio = Math.min((float) maxDimension / srcW, (float) maxDimension / srcH);
+        int dstW = Math.max(1, Math.round(srcW * ratio));
+        int dstH = Math.max(1, Math.round(srcH * ratio));
+        return new int[]{dstW, dstH};
+    }
+
     public static Bitmap scaleDown(Bitmap src, int maxDimension) {
         if (src == null) return null;
         int w = src.getWidth();
         int h = src.getHeight();
-        if (w <= maxDimension && h <= maxDimension) return src;
+        int[] target = calculateTargetDimensions(w, h, maxDimension);
+        if (target[0] == w && target[1] == h) return src;
 
-        float ratio = Math.min((float) maxDimension / w, (float) maxDimension / h);
-        int dstW = Math.max(1, Math.round(w * ratio));
-        int dstH = Math.max(1, Math.round(h * ratio));
-
-        Bitmap scaled = Bitmap.createScaledBitmap(src, dstW, dstH, true);
+        Bitmap scaled = Bitmap.createScaledBitmap(src, target[0], target[1], true);
         if (scaled != src) src.recycle();
         return scaled;
     }
