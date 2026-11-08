@@ -12,6 +12,8 @@ import android.hardware.camera2.CameraCharacteristics;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Locale;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /** Scene-linear RAW development followed by the authored Lika Lens display rendering. */
 final class RawDeveloper {
@@ -100,6 +102,80 @@ final class RawDeveloper {
             c.frameBorder = frameBorder;
             return c;
         }
+
+        String toJson() {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("brain", brain);
+                o.put("grainStructure", grainStructure);
+                o.put("whiteBalanceKelvin", whiteBalanceKelvin);
+                o.put("exposureEv", (double) exposureEv);
+                o.put("warmth", (double) warmth);
+                o.put("contrast", (double) contrast);
+                o.put("pivot", (double) pivot);
+                o.put("saturation", (double) saturation);
+                o.put("colorRollOff", (double) colorRollOff);
+                o.put("highlights", (double) highlights);
+                o.put("shadows", (double) shadows);
+                o.put("grain", (double) grain);
+                o.put("halation", (double) halation);
+                o.put("sharpening", (double) sharpening);
+                o.put("chromaNr", (double) chromaNr);
+                o.put("vignette", (double) vignette);
+                if (aspectRatio != null) o.put("aspectRatio", aspectRatio);
+                o.put("flipHorizontal", flipHorizontal);
+                o.put("highlightRecovery", highlightRecovery);
+                o.put("shadowProfile", shadowProfile);
+                o.put("toneCurve", toneCurve);
+                o.put("grainResponse", grainResponse);
+                o.put("easyMode", easyMode);
+                o.put("skinProtection", skinProtection);
+                o.put("smartVibrance", smartVibrance);
+                o.put("opticalCorrection", opticalCorrection);
+                o.put("frameBorder", frameBorder);
+                return o.toString();
+            } catch (JSONException e) {
+                return null;
+            }
+        }
+
+        static Look fromJson(String jsonStr) {
+            if (jsonStr == null || jsonStr.trim().isEmpty()) return null;
+            try {
+                JSONObject o = new JSONObject(jsonStr);
+                Look look = new Look();
+                if (o.has("brain")) look.brain = o.getString("brain");
+                if (o.has("grainStructure")) look.grainStructure = o.getString("grainStructure");
+                if (o.has("whiteBalanceKelvin")) look.whiteBalanceKelvin = o.getInt("whiteBalanceKelvin");
+                if (o.has("exposureEv")) look.exposureEv = (float) o.getDouble("exposureEv");
+                if (o.has("warmth")) look.warmth = (float) o.getDouble("warmth");
+                if (o.has("contrast")) look.contrast = (float) o.getDouble("contrast");
+                if (o.has("pivot")) look.pivot = (float) o.getDouble("pivot");
+                if (o.has("saturation")) look.saturation = (float) o.getDouble("saturation");
+                if (o.has("colorRollOff")) look.colorRollOff = (float) o.getDouble("colorRollOff");
+                if (o.has("highlights")) look.highlights = (float) o.getDouble("highlights");
+                if (o.has("shadows")) look.shadows = (float) o.getDouble("shadows");
+                if (o.has("grain")) look.grain = (float) o.getDouble("grain");
+                if (o.has("halation")) look.halation = (float) o.getDouble("halation");
+                if (o.has("sharpening")) look.sharpening = (float) o.getDouble("sharpening");
+                if (o.has("chromaNr")) look.chromaNr = (float) o.getDouble("chromaNr");
+                if (o.has("vignette")) look.vignette = (float) o.getDouble("vignette");
+                if (o.has("aspectRatio")) look.aspectRatio = o.getString("aspectRatio");
+                if (o.has("flipHorizontal")) look.flipHorizontal = o.getBoolean("flipHorizontal");
+                if (o.has("highlightRecovery")) look.highlightRecovery = o.getString("highlightRecovery");
+                if (o.has("shadowProfile")) look.shadowProfile = o.getString("shadowProfile");
+                if (o.has("toneCurve")) look.toneCurve = o.getString("toneCurve");
+                if (o.has("grainResponse")) look.grainResponse = o.getString("grainResponse");
+                if (o.has("easyMode")) look.easyMode = o.getBoolean("easyMode");
+                if (o.has("skinProtection")) look.skinProtection = o.getBoolean("skinProtection");
+                if (o.has("smartVibrance")) look.smartVibrance = o.getBoolean("smartVibrance");
+                if (o.has("opticalCorrection")) look.opticalCorrection = o.getBoolean("opticalCorrection");
+                if (o.has("frameBorder")) look.frameBorder = o.getString("frameBorder");
+                return look;
+            } catch (JSONException e) {
+                return null;
+            }
+        }
     }
 
     /** maxDimension=0 renders at the sensor's available resolution, within the safety pixel budget. */
@@ -119,6 +195,21 @@ final class RawDeveloper {
         int outW = Math.max(1, (int) Math.ceil(cropWidth / step));
         int outH = Math.max(1, (int) Math.ceil(cropHeight / step));
         ByteBuffer raw = frame.rawBuffer();
+        short[] rawShorts = new short[width * height];
+        if (frame.rawSamples != null) {
+            raw.position(0);
+            raw.asShortBuffer().get(rawShorts);
+        } else {
+            int rowStride = frame.rowStride;
+            int pixelStride = frame.pixelStride;
+            for (int y = 0; y < height; y++) {
+                int rowStart = y * rowStride;
+                int dstRow = y * width;
+                for (int x = 0; x < width; x++) {
+                    rawShorts[dstRow + x] = raw.getShort(rowStart + x * pixelStride);
+                }
+            }
+        }
         float[] cameraToXyz = profileFor(frame, look.whiteBalanceKelvin);
         float rawWhite = frame.dynamicWhiteLevel > 0 ? frame.dynamicWhiteLevel : frame.staticWhiteLevel;
         float white = rawWhite <= 0 ? 65535f : rawWhite;
@@ -143,9 +234,9 @@ final class RawDeveloper {
                     case 270: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dy)); sy = Math.min(height - 1, (int) dx); break;
                     default: sx = Math.min(width - 1, (int) dx); sy = Math.min(height - 1, (int) dy); break;
                 }
-                float r = interpolate(raw, frame, white, sx, sy, 0);
-                float g = interpolate(raw, frame, white, sx, sy, 1);
-                float b = interpolate(raw, frame, white, sx, sy, 2);
+                float r = interpolate(rawShorts, frame, white, sx, sy, 0);
+                float g = interpolate(rawShorts, frame, white, sx, sy, 1);
+                float b = interpolate(rawShorts, frame, white, sx, sy, 2);
                 if (applyLsm) {
                     float[] lsm = sampleLsm(frame, sx, sy);
                     r *= lsm[0];
@@ -309,7 +400,7 @@ final class RawDeveloper {
         return bordered;
     }
 
-    private static float interpolate(ByteBuffer raw, RawArchive.Frame frame, float white,
+    private static float interpolate(short[] raw, RawArchive.Frame frame, float white,
                                      int x, int y, int wanted) {
         int site = colorAt(x, y, frame.cfa);
         if (site == wanted) return rawValue(raw, frame, white, x, y);
@@ -334,7 +425,7 @@ final class RawDeveloper {
         return rawValue(raw, frame, white, x, y);
     }
 
-    private static float directionalGreen(ByteBuffer raw, RawArchive.Frame frame, float white,
+    private static float directionalGreen(short[] raw, RawArchive.Frame frame, float white,
                                            int x, int y, boolean horizontal) {
         float sum = 0f;
         int count = 0;
@@ -350,12 +441,9 @@ final class RawDeveloper {
         return count == 0 ? rawValue(raw, frame, white, x, y) : sum / count;
     }
 
-    private static float rawValue(ByteBuffer raw, RawArchive.Frame frame, float white, int x, int y) {
+    private static float rawValue(short[] raw, RawArchive.Frame frame, float white, int x, int y) {
         if (x < 0 || y < 0 || x >= frame.width || y >= frame.height) return 0f;
-        int offset = frame.rawSamples != null ? (y * frame.width + x) * 2
-                : y * frame.rowStride + x * frame.pixelStride;
-        if (offset < 0 || offset + 1 >= raw.limit()) return 0f;
-        int sample = raw.getShort(offset) & 0xffff;
+        int sample = raw[y * frame.width + x] & 0xffff;
         float black = frame.blackLevels[(y & 1) * 2 + (x & 1)];
         return clamp((sample - black) / Math.max(1f, white - black), 0f, 4f);
     }

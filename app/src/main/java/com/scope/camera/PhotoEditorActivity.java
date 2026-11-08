@@ -53,6 +53,7 @@ public class PhotoEditorActivity extends Activity {
     private TextView compareBadge;
     private TextView loupeBadge;
     private boolean isLoupe1to1 = false;
+    private boolean isScrubbing = false;
     private LinearLayout brainBar;
 
     private static final class Control {
@@ -258,6 +259,15 @@ public class PhotoEditorActivity extends Activity {
             populateControls();
             queuePreview();
             Toast.makeText(this, "Look recipe pasted", Toast.LENGTH_SHORT).show();
+        });
+
+        TextView recipeBtn = pill("RECIPE", false);
+        LinearLayout.LayoutParams recLp = new LinearLayout.LayoutParams(dp(54), dp(32));
+        recLp.leftMargin = dp(4);
+        header.addView(recipeBtn, recLp);
+        recipeBtn.setOnClickListener(v -> {
+            hapticClick(v);
+            showSaveRecipeDialog();
         });
 
         TextView reset = pill("RESET", false);
@@ -662,11 +672,16 @@ public class PhotoEditorActivity extends Activity {
                             lastHapticVal[0] = selected;
                         }
                     }
-                    queuePreview();
+                    queuePreview(isScrubbing ? 40 : 160);
                 }
             }
-            @Override public void onStartTrackingTouch(SeekBar bar) { }
-            @Override public void onStopTrackingTouch(SeekBar bar) { }
+            @Override public void onStartTrackingTouch(SeekBar bar) {
+                isScrubbing = true;
+            }
+            @Override public void onStopTrackingTouch(SeekBar bar) {
+                isScrubbing = false;
+                queuePreview(0);
+            }
         });
     }
 
@@ -749,10 +764,18 @@ public class PhotoEditorActivity extends Activity {
     }
 
     private void queuePreview() {
-        status.setText("DEVELOPING PREVIEW");
+        queuePreview(isScrubbing ? 40 : 160);
+    }
+
+    private void queuePreview(long delayMs) {
+        status.setText(isScrubbing ? "SCRUBBING PREVIEW" : "DEVELOPING PREVIEW");
         renderGeneration++;
         mainHandler.removeCallbacks(previewRunnable);
-        mainHandler.postDelayed(previewRunnable, 180);
+        if (delayMs <= 0) {
+            previewRunnable.run();
+        } else {
+            mainHandler.postDelayed(previewRunnable, delayMs);
+        }
     }
 
     private final Runnable previewRunnable = this::renderPreviewNow;
@@ -762,8 +785,9 @@ public class PhotoEditorActivity extends Activity {
         int generation = renderGeneration;
         RawDeveloper.Look snapshot = look.copy();
         RawArchive.Frame source = frame;
+        int maxDim = isScrubbing ? 720 : 1600;
         worker.execute(() -> {
-            Bitmap bitmap = RawDeveloper.develop(source, snapshot, 1400);
+            Bitmap bitmap = RawDeveloper.develop(source, snapshot, maxDim);
             mainHandler.post(() -> {
                 if (generation != renderGeneration || isFinishing()) { if (bitmap != null) bitmap.recycle(); return; }
                 setPreview(bitmap);
@@ -868,6 +892,41 @@ public class PhotoEditorActivity extends Activity {
         return d;
     }
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+
+    private void showSaveRecipeDialog() {
+        String[] options = new String[3];
+        for (int i = 1; i <= 3; i++) {
+            String name = AppSettings.getCustomRecipeName(this, i);
+            options[i - 1] = "Slot " + i + ": " + (name != null ? name : "(Empty)");
+        }
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("SAVE AS CUSTOM RECIPE")
+                .setItems(options, (dialog, which) -> {
+                    int slot = which + 1;
+                    promptRecipeName(slot);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void promptRecipeName(int slot) {
+        android.widget.EditText input = new android.widget.EditText(this);
+        String existing = AppSettings.getCustomRecipeName(this, slot);
+        input.setText(existing != null ? existing : (look.brain + " Custom"));
+        input.setSelectAllOnFocus(true);
+        input.setTextColor(0xFFF1F2EC);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("RECIPE " + slot + " NAME")
+                .setView(input)
+                .setPositiveButton("Save", (dialog, which) -> {
+                    String name = input.getText().toString().trim();
+                    if (name.isEmpty()) name = "Recipe " + slot;
+                    AppSettings.saveCustomRecipe(this, slot, name, look.toJson());
+                    Toast.makeText(this, "Saved to Recipe " + slot + " (" + name + ")", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
 
     @Override protected void onDestroy() {
         mainHandler.removeCallbacksAndMessages(null);

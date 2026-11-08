@@ -1,14 +1,18 @@
 package com.scope.camera;
 
 import android.content.ContentUris;
+import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -71,6 +75,39 @@ final class PhotoRepository {
         if (displayName == null) return "";
         return displayName.toLowerCase(java.util.Locale.US).endsWith(".jpg")
                 ? displayName.substring(0, displayName.length() - 4) : displayName;
+    }
+
+    static Uri saveBitmap(Context context, Bitmap bmp, String name) {
+        if (bmp == null) return null;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Lika Lens");
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                Uri uri = context.getContentResolver().insert(
+                        MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values);
+                if (uri != null) {
+                    try (OutputStream out = context.getContentResolver().openOutputStream(uri)) {
+                        if (out != null) bmp.compress(Bitmap.CompressFormat.JPEG, 96, out);
+                    }
+                    values.clear();
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                    context.getContentResolver().update(uri, values, null, null);
+                    return uri;
+                }
+            }
+            File parent = new File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "Lika Lens");
+            if (!parent.exists()) parent.mkdirs();
+            File file = new File(parent, name);
+            try (OutputStream out = new FileOutputStream(file)) {
+                bmp.compress(Bitmap.CompressFormat.JPEG, 96, out);
+            }
+            return Uri.fromFile(file);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static List<Photo> queryMediaStore(Context context) {

@@ -94,6 +94,20 @@ final class AppSettings {
     static final String VOLUME_ROCKER = "volume_rocker";
     static final String SHUTTER_WINK = "shutter_wink";
 
+    // Pro UX & Viewfinder Feature Keys
+    static final String LIVE_FILM_PREVIEW = "live_film_preview";
+    static final String RANGEFINDER_LINES = "rangefinder_frame_lines";
+    static final String OPTICAL_LOUPE = "optical_loupe";
+    static final String HISTOGRAM_MODE = "histogram_mode";
+
+    // Custom Film Recipes (User Presets)
+    static final String RECIPE_1_NAME = "recipe_1_name";
+    static final String RECIPE_1_DATA = "recipe_1_data";
+    static final String RECIPE_2_NAME = "recipe_2_name";
+    static final String RECIPE_2_DATA = "recipe_2_data";
+    static final String RECIPE_3_NAME = "recipe_3_name";
+    static final String RECIPE_3_DATA = "recipe_3_data";
+
     // File Management & Output Keys
     static final String DNG_POLICY = "dng_policy";
     static final String FOLDER_ORG = "folder_organization";
@@ -195,5 +209,27 @@ final class AppSettings {
             changed = true;
         }
         if (changed) editor.apply();
+    }
+
+    static String getCustomRecipeName(Context context, int slot) {
+        String key = slot == 1 ? RECIPE_1_NAME : slot == 2 ? RECIPE_2_NAME : RECIPE_3_NAME;
+        return get(context, key, null);
+    }
+
+    static String getCustomRecipeData(Context context, int slot) {
+        String key = slot == 1 ? RECIPE_1_DATA : slot == 2 ? RECIPE_2_DATA : RECIPE_3_DATA;
+        return get(context, key, null);
+    }
+
+    static void saveCustomRecipe(Context context, int slot, String name, String data) {
+        String nameKey = slot == 1 ? RECIPE_1_NAME : slot == 2 ? RECIPE_2_NAME : RECIPE_3_NAME;
+        String dataKey = slot == 1 ? RECIPE_1_DATA : slot == 2 ? RECIPE_2_DATA : RECIPE_3_DATA;
+        prefs(context).edit().putString(nameKey, name).putString(dataKey, data).apply();
+    }
+
+    static void deleteCustomRecipe(Context context, int slot) {
+        String nameKey = slot == 1 ? RECIPE_1_NAME : slot == 2 ? RECIPE_2_NAME : RECIPE_3_NAME;
+        String dataKey = slot == 1 ? RECIPE_1_DATA : slot == 2 ? RECIPE_2_DATA : RECIPE_3_DATA;
+        prefs(context).edit().remove(nameKey).remove(dataKey).apply();
     }
 }

@@ -210,6 +210,14 @@ public class SettingsActivity extends Activity {
         addChoice("Frame border", "Optional film rebate or museum matte border on export", AppSettings.FRAME_BORDER,
                 new String[]{"None", "35mm Film Rebate", "Museum Matte"}, "None");
         addSwitch("Optical lens correction", "Apply sensor lens shading map and geometric distortion correction", AppSettings.OPTICAL_CORRECTION, true);
+
+        beginSection("CUSTOM FILM RECIPES", "Store and manage personalized look presets.");
+        for (int i = 1; i <= 3; i++) {
+            final int slot = i;
+            String name = AppSettings.getCustomRecipeName(this, slot);
+            String desc = name != null ? ("Active: " + name + " (saved)") : "Empty preset slot (save from Camera or Develop)";
+            addInfo("Recipe Slot " + slot, desc, name != null ? ACCENT : 0xff89948e);
+        }
         finishSection();
     }
 
@@ -256,6 +264,9 @@ public class SettingsActivity extends Activity {
         addInfo("180° Shutter Rule", "In 24 fps cinematic mode, the app targets a 1/48s exposure interval for authentic motion cadence.", 0xffaab3ad);
 
         beginSection("VIEWFINDER & SHOOTING ERGONOMICS", "Framing aids, exposure telemetry, gesture shortcuts and tactile controls.");
+        addSwitch("Live film stock viewfinder preview", "Real-time film color science simulation in the live viewfinder", AppSettings.LIVE_FILM_PREVIEW, true);
+        addSwitch("Rangefinder frame lines", "Translucent outside-the-frame context with Leica illuminated brightlines and corner brackets", AppSettings.RANGEFINDER_LINES, true);
+        addSwitch("Pro optical loupe (5×)", "High-magnification focus assist loupe with gold bezel during reticle adjustment", AppSettings.OPTICAL_LOUPE, true);
         addChoice("Composition grid", "Choose a guide overlay inside the viewfinder frame", AppSettings.GRID_STYLE,
                 new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");
         addSwitch("Visual level & flat-lay crosshair", "Horizon bar and top-down concentric crosshairs that illuminate gold when level", AppSettings.VISUAL_LEVEL, true);
@@ -263,7 +274,9 @@ public class SettingsActivity extends Activity {
                 new String[]{"Smart (near level only)", "Always visible"}, "Smart (near level only)");
         addChoice("Horizon sensitivity", "Deadband tolerance for level detection", AppSettings.HORIZON_SENSITIVITY,
                 new String[]{"Normal (±1.0°)", "Precise (±0.5°)"}, "Normal (±1.0°)");
-        addSwitch("Live luminance histogram", "Real-time tonal distribution graph in the viewfinder corner", AppSettings.HISTOGRAM, false);
+        addSwitch("Live tonal histogram", "Real-time tonal distribution graph in the viewfinder corner", AppSettings.HISTOGRAM, false);
+        addChoice("Histogram display style", "Tonal curve graph type (can also tap histogram in viewfinder to cycle)", AppSettings.HISTOGRAM_MODE,
+                new String[]{"Luminance", "RGB Parade", "Compact"}, "Luminance");
         addSwitch("Highlight zebra stripes", "Diagonal warning stripes when sensor luminance approaches clipping (>95%)", AppSettings.ZEBRA, false);
         addSwitch("Focus peaking", "Highlight sharp in-focus contrast edges in gold", AppSettings.FOCUS_PEAKING, false);
         addChoice("Long press gesture", "Action when holding finger on viewfinder", AppSettings.VIEWFINDER_LONG_PRESS,
