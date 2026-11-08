@@ -2543,7 +2543,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         AppSettings.prefs(this).edit().putBoolean(AppSettings.EASY_MODE, next).apply();
         updateEasyButton();
         showMessage(next ? "EASY P&S ON  ·  Smart film science & scene adaptive"
-                         : "CUSTOM PRO MODE  ·  Manual developer controls active", 2200L);
+                         : "CUSTOM PRO MODE  ·  Manual developer controls active");
         if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && easyButton != null) {
             easyButton.performHapticFeedback(HapticFeedbackConstants.CONFIRM);
         }
