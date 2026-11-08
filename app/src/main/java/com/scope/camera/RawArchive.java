@@ -6,6 +6,7 @@ import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.BlackLevelPattern;
 import android.hardware.camera2.params.ColorSpaceTransform;
+import android.hardware.camera2.params.LensShadingMap;
 import android.hardware.camera2.params.RggbChannelVector;
 import android.media.Image;
 import android.util.Rational;
@@ -27,7 +28,7 @@ import java.util.zip.InflaterInputStream;
 /** Compressed, app-private sensor source and the capture metadata needed to develop it again. */
 final class RawArchive {
     private static final int MAGIC = 0x53524157; // SRAW
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
 
     static final class Frame {
         int width;
@@ -48,6 +49,9 @@ final class RawArchive {
         int illuminant1;
         int illuminant2;
         String aspectRatio = "4:3";
+        int lsmCols;
+        int lsmRows;
+        float[] lsmGains;
         byte[] rawSamples;
         ByteBuffer captureBuffer;
         int rowStride;
@@ -127,6 +131,17 @@ final class RawArchive {
         frame.sensorToXyz1 = toXyz1; frame.sensorToXyz2 = toXyz2;
         frame.illuminant1 = illum1 == null ? 0 : illum1;
         frame.illuminant2 = illum2 == null ? 0 : Byte.toUnsignedInt(illum2);
+        if (result != null) {
+            try {
+                LensShadingMap lsm = result.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP);
+                if (lsm != null && lsm.getColumnCount() > 0 && lsm.getRowCount() > 0) {
+                    frame.lsmCols = lsm.getColumnCount();
+                    frame.lsmRows = lsm.getRowCount();
+                    frame.lsmGains = new float[lsm.getGainFactorCount()];
+                    lsm.copyGainFactors(frame.lsmGains, 0);
+                }
+            } catch (Throwable ignored) { }
+        }
         frame.captureBuffer = source;
         frame.rowStride = rowStride; frame.pixelStride = pixelStride;
 
@@ -147,6 +162,14 @@ final class RawArchive {
             writeMatrix(out, frame.sensorToXyz1);
             writeMatrix(out, frame.sensorToXyz2);
             out.writeInt(frame.illuminant1); out.writeInt(frame.illuminant2);
+            if (frame.lsmGains != null && frame.lsmCols > 0 && frame.lsmRows > 0) {
+                out.writeInt(frame.lsmCols);
+                out.writeInt(frame.lsmRows);
+                for (float g : frame.lsmGains) out.writeFloat(g);
+            } else {
+                out.writeInt(0);
+                out.writeInt(0);
+            }
 
             for (int y = 0; y < height; y++) {
                 int row = y * rowStride;
@@ -168,7 +191,9 @@ final class RawArchive {
     static Frame read(Context context, String key) throws IOException {
         File source = file(context, key);
         try (DataInputStream in = new DataInputStream(new BufferedInputStream(new InflaterInputStream(new FileInputStream(source))))) {
-            if (in.readInt() != MAGIC || in.readInt() != VERSION) throw new IOException("Unsupported RAW archive");
+            int magic = in.readInt();
+            int version = in.readInt();
+            if (magic != MAGIC || (version != 1 && version != VERSION)) throw new IOException("Unsupported RAW archive");
             Frame frame = new Frame();
             frame.width = in.readInt(); frame.height = in.readInt(); frame.cfa = in.readInt();
             frame.orientation = in.readInt();
@@ -186,6 +211,15 @@ final class RawArchive {
             frame.sensorToXyz2 = readMatrix(in);
             frame.illuminant1 = in.readInt();
             frame.illuminant2 = in.readInt();
+            if (version >= 2) {
+                frame.lsmCols = in.readInt();
+                frame.lsmRows = in.readInt();
+                if (frame.lsmCols > 0 && frame.lsmRows > 0 && frame.lsmCols <= 128 && frame.lsmRows <= 128) {
+                    int count = frame.lsmCols * frame.lsmRows * 4;
+                    frame.lsmGains = new float[count];
+                    for (int i = 0; i < count; i++) frame.lsmGains[i] = in.readFloat();
+                }
+            }
             long bytes = (long) frame.width * frame.height * 2L;
             if (frame.width <= 0 || frame.height <= 0 || bytes > Integer.MAX_VALUE
                     || bytes > Runtime.getRuntime().maxMemory() * .60d) {

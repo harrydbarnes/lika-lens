@@ -100,6 +100,15 @@ final class AppSettings {
     static final String JPEG_QUALITY = "jpeg_quality";
     static final String EXIF_PARAMS = "exif_params";
     static final String STRIP_GEO = "strip_geo";
+    static final String CUSTOM_PREFIX_VALUE = "custom_prefix_value";
+    static final String FRAME_BORDER = "frame_border";
+
+    // Optical, Hardware & Video Keys
+    static final String OPTICAL_CORRECTION = "optical_correction";
+    static final String MIRROR_FRONT = "mirror_front";
+    static final String STABILIZATION = "stabilization";
+    static final String VIDEO_CODEC = "video_codec";
+    static final String VIDEO_AUDIO = "video_audio";
 
     static final String[] ASPECT_RATIOS = {
             "2.39:1",

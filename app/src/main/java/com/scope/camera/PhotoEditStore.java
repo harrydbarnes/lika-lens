@@ -33,6 +33,8 @@ final class PhotoEditStore {
         look.easyMode = prefs.getBoolean(prefix + "easy_mode", look.easyMode);
         look.skinProtection = prefs.getBoolean(prefix + "skin_protection", look.skinProtection);
         look.smartVibrance = prefs.getBoolean(prefix + "smart_vibrance", look.smartVibrance);
+        look.opticalCorrection = prefs.getBoolean(prefix + "optical_correction", look.opticalCorrection);
+        look.frameBorder = prefs.getString(prefix + "frame_border", look.frameBorder);
         return look;
     }
 
@@ -57,7 +59,9 @@ final class PhotoEditStore {
                 .putInt(p + "white_balance", look.whiteBalanceKelvin)
                 .putBoolean(p + "easy_mode", look.easyMode)
                 .putBoolean(p + "skin_protection", look.skinProtection)
-                .putBoolean(p + "smart_vibrance", look.smartVibrance);
+                .putBoolean(p + "smart_vibrance", look.smartVibrance)
+                .putBoolean(p + "optical_correction", look.opticalCorrection)
+                .putString(p + "frame_border", look.frameBorder == null ? "None" : look.frameBorder);
         if (look.aspectRatio != null) editor.putString(p + "aspect_ratio", look.aspectRatio);
         else editor.remove(p + "aspect_ratio");
         editor.putBoolean(p + "flip_h", look.flipHorizontal);
@@ -74,7 +78,25 @@ final class PhotoEditStore {
                 .remove(p + "halation").remove(p + "sharpening").remove(p + "chroma_nr")
                 .remove(p + "vignette").remove(p + "white_balance")
                 .remove(p + "easy_mode").remove(p + "skin_protection").remove(p + "smart_vibrance")
+                .remove(p + "optical_correction").remove(p + "frame_border")
                 .remove(p + "aspect_ratio").remove(p + "flip_h").apply();
+    }
+
+    static void copyToClipboard(Context context, RawDeveloper.Look look) {
+        if (look == null) return;
+        save(context, "__clipboard_recipe__", look);
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean("__has_clipboard_recipe__", true).apply();
+    }
+
+    static boolean hasClipboard(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getBoolean("__has_clipboard_recipe__", false);
+    }
+
+    static RawDeveloper.Look pasteFromClipboard(Context context) {
+        if (!hasClipboard(context)) return null;
+        return load(context, "__clipboard_recipe__");
     }
 
     private static String prefix(String key) {

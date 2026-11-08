@@ -205,7 +205,9 @@ public class SettingsActivity extends Activity {
                 new String[]{"Luminance-weighted", "Uniform"}, "Luminance-weighted");
         addSlider("Halation", "Warm response around bright highlights", AppSettings.HALATION, 0, 100, AppSettings.DEFAULT_HALATION);
         addSlider("Vignette", "Subtle edge fall-off", AppSettings.VIGNETTE, 0, 100, AppSettings.DEFAULT_VIGNETTE);
-        addInfo("Optical correction", "Lens shading and chromatic-aberration correction are not active in this build.", 0xffaab3ad);
+        addChoice("Frame border", "Optional film rebate or museum matte border on export", AppSettings.FRAME_BORDER,
+                new String[]{"None", "35mm Film Rebate", "Museum Matte"}, "None");
+        addSwitch("Optical lens correction", "Apply sensor lens shading map and geometric distortion correction", AppSettings.OPTICAL_CORRECTION, true);
         finishSection();
     }
 
@@ -215,8 +217,11 @@ public class SettingsActivity extends Activity {
                 AppSettings.ASPECT_RATIOS, "4:3");
         addChoice("Default lens", "Camera lens selected on app launch", AppSettings.DEFAULT_LENS,
                 new String[]{"Auto / Wide 1×", "Ultra-wide .5×", "Telephoto 2×/5×", "Last used"}, "Auto / Wide 1×");
-        addChoice("Flash mode", "Flash hardware and RAW capture compatibility vary by camera", AppSettings.FLASH,
+        addChoice("Flash mode", "Rear LED flash or front warm Retina screen illumination", AppSettings.FLASH,
                 new String[]{"Off", "Torch", "Auto"}, "Off");
+        addSwitch("Mirror front camera", "Save front-camera selfies horizontally flipped as previewed", AppSettings.MIRROR_FRONT, true);
+        addChoice("Stabilization", "Optical (OIS) and electronic video stabilization", AppSettings.STABILIZATION,
+                new String[]{"Cinema OIS + EIS", "Optical only (OIS)", "Off (Tripod / Gimbal)"}, "Cinema OIS + EIS");
         addChoice("RAW capture size", "Uses the largest RAW stream the camera supports", AppSettings.RAW_SIZE,
                 new String[]{"Maximum sensor resolution", "12 MP · faster development"}, "Maximum sensor resolution");
         addChoice("Exposure mode", "Manual sensor controls require device support", AppSettings.EXPOSURE_MODE,
@@ -234,32 +239,39 @@ public class SettingsActivity extends Activity {
         addSwitch("Haptic shutter", "Short tactile response when a frame is taken", AppSettings.HAPTICS, true);
         addSwitch("Shutter sound", "Mechanical leaf shutter audio click on capture", AppSettings.SHUTTER_SOUND, true);
 
-        beginSection("CINEMATIC VIDEO", "High-bitrate motion recording with film shutter timing.");
+        beginSection("CINEMATIC VIDEO", "High-bitrate motion recording with mid-take camera switching.");
         addChoice("Video frame rate", "Cinematic motion blur cadence", AppSettings.VIDEO_FPS,
                 new String[]{"24 fps (Cinematic)", "30 fps", "60 fps"}, "24 fps (Cinematic)");
         addChoice("Video framing", "Framing aspect ratio for video recording", AppSettings.VIDEO_ASPECT,
                 new String[]{"16:9 Widescreen", "2.39:1 Cinemascope"}, "16:9 Widescreen");
         addChoice("Video bitrate", "Encoding target bitrate for motion detail", AppSettings.VIDEO_BITRATE,
                 new String[]{"High · 24 Mbps", "Ultra · 35 Mbps", "Standard · 14 Mbps"}, "High · 24 Mbps");
+        addChoice("Video codec", "Compression standard for recorded video", AppSettings.VIDEO_CODEC,
+                new String[]{"H.264 · Universal", "HEVC (H.265) · High Efficiency"}, "H.264 · Universal");
+        addChoice("Audio source", "Microphone processing during video recording", AppSettings.VIDEO_AUDIO,
+                new String[]{"Camcorder · Stereo", "Unprocessed · Raw Mic", "Voice · Filtered", "Muted · MOS (No Audio)"}, "Camcorder · Stereo");
+        addInfo("Mid-Take Camera Switching", "Switch between front/rear cameras or lenses while recording. Segments are stitched automatically into a single video.", ACCENT);
         addInfo("180° Shutter Rule", "In 24 fps cinematic mode, the app targets a 1/48s exposure interval for authentic motion cadence.", 0xffaab3ad);
 
-        beginSection("VIEWFINDER & SHOOTING ERGONOMICS", "Framing aids, gesture shortcuts and tactile controls.");
+        beginSection("VIEWFINDER & SHOOTING ERGONOMICS", "Framing aids, exposure telemetry, gesture shortcuts and tactile controls.");
         addChoice("Composition grid", "Choose a guide overlay inside the viewfinder frame", AppSettings.GRID_STYLE,
                 new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");
-        addSwitch("Visual level", "Artificial horizon bar that illuminates gold when level", AppSettings.VISUAL_LEVEL, true);
+        addSwitch("Visual level & flat-lay crosshair", "Horizon bar and top-down concentric crosshairs that illuminate gold when level", AppSettings.VISUAL_LEVEL, true);
         addChoice("Horizon sensitivity", "Deadband tolerance for level detection", AppSettings.HORIZON_SENSITIVITY,
                 new String[]{"Normal (±1.0°)", "Precise (±0.5°)"}, "Normal (±1.0°)");
+        addSwitch("Live luminance histogram", "Real-time tonal distribution graph in the viewfinder corner", AppSettings.HISTOGRAM, false);
+        addSwitch("Highlight zebra stripes", "Diagonal warning stripes when sensor luminance approaches clipping (>95%)", AppSettings.ZEBRA, false);
+        addSwitch("Focus peaking", "Highlight sharp in-focus contrast edges in gold", AppSettings.FOCUS_PEAKING, false);
         addChoice("Long press gesture", "Action when holding finger on viewfinder", AppSettings.VIEWFINDER_LONG_PRESS,
                 new String[]{"AE / AF lock", "Lock exposure only (AE-L)", "Reset exposure bias", "None"}, "AE / AF lock");
         addChoice("Double tap gesture", "Action when double-tapping viewfinder", AppSettings.VIEWFINDER_DOUBLE_TAP,
                 new String[]{"Toggle 1× / 2× zoom", "Reset exposure bias", "None"}, "Toggle 1× / 2× zoom");
-        addChoice("Reticle metering", "Targeting behaviour for focus reticle tap", AppSettings.RETICLE_METERING,
+        addChoice("Reticle metering", "Targeting behaviour for focus reticle tap (dual EV + Shadow sliders)", AppSettings.RETICLE_METERING,
                 new String[]{"AF + AE Metering", "AF Only (Continuous AE)", "AE Only (Continuous AF)"}, "AF + AE Metering");
         addChoice("Volume rocker", "Hardware volume key function", AppSettings.VOLUME_ROCKER,
                 new String[]{"Shutter release", "EV compensation bias", "Zoom 1× / 2×", "Off"}, "Shutter release");
         addSwitch("Shutter ocular wink", "Blackout pulse during optical leaf shutter exposure", AppSettings.SHUTTER_WINK, true);
         addInfo("Grid guides", "The frame outline and grid help compose the shot. They are not saved into the photo.", 0xffaab3ad);
-        addInfo("Exposure aids", "Histogram, zebra and focus-peaking overlays are planned.", 0xffaab3ad);
         boolean hasRaw = AppSettings.getBoolean(this, AppSettings.RAW_SUPPORTED, false);
         addInfo("RAW sensor support", hasRaw ? "Available on the last opened camera" : "Not confirmed yet · open the camera to detect support", hasRaw ? ACCENT : 0xffdfb56f);
         boolean hasManual = AppSettings.getBoolean(this, AppSettings.MANUAL_SUPPORTED, false);
@@ -282,7 +294,7 @@ public class SettingsActivity extends Activity {
         addSwitch("Include EXIF shooting params", "Embed shutter, ISO, aperture, and focal length", AppSettings.EXIF_PARAMS, true);
         addSwitch("Strip GPS / geo metadata", "Remove geographical coordinates from exported media", AppSettings.STRIP_GEO, false);
         addChoice("File name prefix", "Organise Lika Lens captures in Photos", AppSettings.FILE_PREFIX,
-                new String[]{"LIKA", "STILLS", "Custom later"}, "LIKA");
+                new String[]{"LIKA", "STILLS", "REEL", "CUSTOM…"}, "LIKA");
         addSwitch("Save rendered JPEG to Photos", "Add the developed still to Pictures/Lika Lens", AppSettings.AUTO_EXPORT, true);
         addSwitch("Write location metadata", "Location permission and metadata support are not enabled in this build", AppSettings.LOCATION, false);
 
@@ -557,10 +569,73 @@ public class SettingsActivity extends Activity {
         }
         row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
         String current = AppSettings.get(this, key, defaultValue);
-        TextView value = pill(shortValue(current), false);
+        String display = shortValue(current);
+        if (AppSettings.FILE_PREFIX.equals(key) && current.startsWith("CUSTOM")) {
+            display = "CUSTOM: " + AppSettings.get(this, AppSettings.CUSTOM_PREFIX_VALUE, "LIKA");
+        }
+        TextView value = pill(display, false);
         row.addView(value, new LinearLayout.LayoutParams(-2, dp(32)));
         row.setOnClickListener(v -> showChoiceDialog(title, key, options, defaultValue, value));
         addRowToCurrentCard(row);
+    }
+
+    private void showCustomPrefixDialog(TextView valueView) {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            dialog.getWindow().setGravity(Gravity.CENTER);
+            dialog.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT);
+        }
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
+        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+
+        TextView head = text("CUSTOM FILE PREFIX", 10, ACCENT, true);
+        head.setLetterSpacing(.14f);
+        box.addView(head);
+
+        android.widget.EditText input = new android.widget.EditText(this);
+        input.setText(AppSettings.get(this, AppSettings.CUSTOM_PREFIX_VALUE, "LIKA"));
+        input.setTextColor(0xfff0f2eb);
+        input.setHintTextColor(0xff6b746f);
+        input.setHint("e.g. SCENE01");
+        input.setSingleLine(true);
+        input.setBackground(round(0xff161c1d, 10, 0xff323b3c, dp(1)));
+        input.setPadding(dp(12), dp(10), dp(12), dp(10));
+        LinearLayout.LayoutParams inLp = new LinearLayout.LayoutParams(-1, -2);
+        inLp.topMargin = dp(12);
+        inLp.bottomMargin = dp(14);
+        box.addView(input, inLp);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        TextView cancel = pill("CANCEL", false);
+        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        cLp.rightMargin = dp(6);
+        actions.addView(cancel, cLp);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+
+        TextView save = pill("SAVE PREFIX", true);
+        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        sLp.leftMargin = dp(6);
+        actions.addView(save, sLp);
+        save.setOnClickListener(v -> {
+            String raw = input.getText() == null ? "" : input.getText().toString().trim().toUpperCase(Locale.US);
+            String clean = raw.replaceAll("[^A-Z0-9_-]", "");
+            if (clean.isEmpty()) clean = "LIKA";
+            if (clean.length() > 12) clean = clean.substring(0, 12);
+            AppSettings.prefs(this).edit()
+                    .putString(AppSettings.FILE_PREFIX, "CUSTOM…")
+                    .putString(AppSettings.CUSTOM_PREFIX_VALUE, clean)
+                    .apply();
+            valueView.setText("CUSTOM: " + clean);
+            dialog.dismiss();
+        });
+        box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+        dialog.setContentView(box);
+        dialog.show();
     }
 
     private void showChoiceDialog(String title, String key, String[] options, String defaultValue, TextView valueView) {
@@ -616,6 +691,11 @@ public class SettingsActivity extends Activity {
             row.setOnClickListener(v -> {
                 if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
                     row.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                }
+                if (AppSettings.FILE_PREFIX.equals(key) && option.startsWith("CUSTOM")) {
+                    dialog.dismiss();
+                    showCustomPrefixDialog(valueView);
+                    return;
                 }
                 AppSettings.prefs(this).edit().putString(key, option).apply();
                 if (AppSettings.WHITE_BALANCE_MODE.equals(key)) {

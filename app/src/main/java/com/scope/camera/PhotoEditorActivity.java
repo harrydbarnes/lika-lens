@@ -216,8 +216,8 @@ public class PhotoEditorActivity extends Activity {
         title.setPadding(dp(8), 0, 0, 0);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
 
-        compareButton = pill("COMPARE", false);
-        LinearLayout.LayoutParams compLp = new LinearLayout.LayoutParams(dp(64), dp(32));
+        compareButton = pill("RAW", false);
+        LinearLayout.LayoutParams compLp = new LinearLayout.LayoutParams(dp(44), dp(32));
         compLp.leftMargin = dp(4);
         header.addView(compareButton, compLp);
         compareButton.setOnTouchListener((v, event) -> {
@@ -233,14 +233,41 @@ public class PhotoEditorActivity extends Activity {
             return false;
         });
 
+        TextView copyBtn = pill("COPY", false);
+        LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(dp(46), dp(32));
+        copyLp.leftMargin = dp(4);
+        header.addView(copyBtn, copyLp);
+        copyBtn.setOnClickListener(v -> {
+            hapticClick(v);
+            PhotoEditStore.copyToClipboard(this, look);
+            Toast.makeText(this, "Look recipe copied", Toast.LENGTH_SHORT).show();
+        });
+
+        TextView pasteBtn = pill("PASTE", false);
+        LinearLayout.LayoutParams pasteLp = new LinearLayout.LayoutParams(dp(50), dp(32));
+        pasteLp.leftMargin = dp(4);
+        header.addView(pasteBtn, pasteLp);
+        pasteBtn.setOnClickListener(v -> {
+            hapticClick(v);
+            if (!PhotoEditStore.hasClipboard(this)) {
+                Toast.makeText(this, "No copied recipe yet", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            look = PhotoEditStore.pasteFromClipboard(this, look);
+            refreshBrainBar();
+            populateControls();
+            queuePreview();
+            Toast.makeText(this, "Look recipe pasted", Toast.LENGTH_SHORT).show();
+        });
+
         TextView reset = pill("RESET", false);
-        LinearLayout.LayoutParams resetLp = new LinearLayout.LayoutParams(dp(52), dp(32));
+        LinearLayout.LayoutParams resetLp = new LinearLayout.LayoutParams(dp(50), dp(32));
         resetLp.leftMargin = dp(4);
         header.addView(reset, resetLp);
         reset.setOnClickListener(v -> { hapticClick(v); resetLook(); });
 
         saveButton = pill("SAVE", true);
-        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(dp(54), dp(32));
+        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(dp(50), dp(32));
         saveLp.leftMargin = dp(4);
         header.addView(saveButton, saveLp);
         saveButton.setOnClickListener(v -> { hapticClick(v); saveRender(); });
@@ -472,7 +499,9 @@ public class PhotoEditorActivity extends Activity {
         mirrorCard.setGravity(Gravity.CENTER_VERTICAL);
         mirrorCard.setPadding(dp(12), dp(10), dp(12), dp(10));
         mirrorCard.setBackground(round(0xff121617, 12, 0xff293031, dp(1)));
-        controlsList.addView(mirrorCard, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams mirrorLp = new LinearLayout.LayoutParams(-1, -2);
+        mirrorLp.bottomMargin = dp(8);
+        controlsList.addView(mirrorCard, mirrorLp);
 
         TextView mirrorLabel = text("Flip / Mirror Horizontal", 10, 0xffe6eae4, true);
         mirrorCard.addView(mirrorLabel, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -485,6 +514,40 @@ public class PhotoEditorActivity extends Activity {
             populateControls();
             queuePreview();
         });
+
+        LinearLayout borderCard = new LinearLayout(this);
+        borderCard.setOrientation(LinearLayout.VERTICAL);
+        borderCard.setPadding(dp(12), dp(10), dp(12), dp(10));
+        borderCard.setBackground(round(0xff121617, 12, 0xff293031, dp(1)));
+        controlsList.addView(borderCard, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView borderTitle = text("FRAME BORDER & REBATE", 9, ACCENT, true);
+        borderTitle.setLetterSpacing(.12f);
+        borderCard.addView(borderTitle);
+
+        LinearLayout borderRow = new LinearLayout(this);
+        borderRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams borderRowLp = new LinearLayout.LayoutParams(-1, dp(34));
+        borderRowLp.topMargin = dp(8);
+        borderCard.addView(borderRow, borderRowLp);
+
+        String[] borders = {"None", "35mm Film Rebate", "Museum Matte"};
+        String[] shortLabels = {"NONE", "35MM REBATE", "MUSEUM MATTE"};
+        String curBorder = look.frameBorder == null ? "None" : look.frameBorder;
+        for (int i = 0; i < borders.length; i++) {
+            final String b = borders[i];
+            boolean active = curBorder.equals(b);
+            TextView bp = pill(shortLabels[i], active);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
+            if (i > 0) lp.leftMargin = dp(4);
+            borderRow.addView(bp, lp);
+            bp.setOnClickListener(v -> {
+                hapticClick(v);
+                look.frameBorder = b;
+                populateControls();
+                queuePreview();
+            });
+        }
     }
 
     private void resetControlToDefault(int type, SeekBar seek) {

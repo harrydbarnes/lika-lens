@@ -156,6 +156,55 @@ public class GalleryActivity extends Activity {
         lp.rightMargin = dp(3);
         row.addView(tile, lp);
         tile.setOnClickListener(v -> { hapticClick(v); openPhoto(photo, image); });
+        tile.setOnLongClickListener(v -> {
+            hapticClick(v);
+            confirmDeleteTile(photo);
+            return true;
+        });
+    }
+
+    private void confirmDeleteTile(PhotoRepository.Photo photo) {
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0));
+            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            dialog.getWindow().setLayout(-1, -2);
+        }
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
+        sheet.setPadding(dp(20), dp(18), dp(20), dp(20));
+
+        TextView title = text("DELETE FRAME?", 11, 0xffd7b574, true);
+        title.setLetterSpacing(.12f);
+        sheet.addView(title);
+
+        TextView sub = text("Removes " + photo.name + " and its associated RAW archive.", 9, 0xff9aa49e, false);
+        sub.setPadding(0, dp(6), 0, dp(16));
+        sheet.addView(sub);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        TextView cancel = pill("CANCEL", false);
+        actions.addView(cancel, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        cancel.setOnClickListener(v -> dialog.dismiss());
+
+        TextView del = pill("DELETE", true);
+        del.setTextColor(0xfff0443c);
+        del.setBackground(round(0x22f0443c, 18, 0xfff0443c, dp(1)));
+        LinearLayout.LayoutParams delLp = new LinearLayout.LayoutParams(0, dp(38), 1f);
+        delLp.leftMargin = dp(8);
+        actions.addView(del, delLp);
+        del.setOnClickListener(v -> {
+            hapticClick(v);
+            PhotoRepository.delete(this, photo.uri, photo.name, PhotoRepository.archiveKey(photo.name));
+            dialog.dismiss();
+            loadPhotos();
+        });
+        sheet.addView(actions);
+        dialog.setContentView(sheet);
+        dialog.show();
     }
 
     private void completeRow(LinearLayout row) {

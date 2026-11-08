@@ -65,6 +65,10 @@ public class PhotoViewerActivity extends Activity {
     private TextView compareButton;
     private TextView compareBadge;
     private TextView zoomHud;
+    private TextView titleView;
+    private TextView editButton;
+    private List<PhotoRepository.Photo> allPhotos = new java.util.ArrayList<>();
+    private int currentIndex = -1;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
 
@@ -116,60 +120,65 @@ public class PhotoViewerActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(16), dp(10), dp(16), dp(10));
+        header.setPadding(dp(12), dp(10), dp(12), dp(10));
         header.setBackground(new android.graphics.drawable.GradientDrawable(
                 android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
                 new int[]{0xb8080b0c, 0x00080b0c}));
 
         TextView back = text("‹", 28, 0xffedf0e9, true);
         back.setGravity(Gravity.CENTER);
-        header.addView(back, new LinearLayout.LayoutParams(dp(36), dp(40)));
+        header.addView(back, new LinearLayout.LayoutParams(dp(34), dp(40)));
         back.setOnClickListener(v -> { hapticClick(v); finishAfterTransition(); });
 
-        TextView title = text(photoName == null ? "LIKA LENS" : photoName, 10, 0xffe6eae4, true);
-        title.setPadding(dp(8), 0, 0, 0);
-        header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        titleView = text(photoName == null ? "LIKA LENS" : photoName, 9, 0xffe6eae4, true);
+        titleView.setPadding(dp(6), 0, 0, 0);
+        titleView.setMaxLines(1);
+        header.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1));
 
         infoButton = pill("INFO", false);
-        LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(dp(50), dp(32));
+        LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(dp(44), dp(32));
         infoLp.leftMargin = dp(4);
         header.addView(infoButton, infoLp);
         infoButton.setOnClickListener(v -> { hapticClick(v); toggleInfo(); });
 
         TextView shareBtn = pill("SHARE", false);
-        LinearLayout.LayoutParams shareLp = new LinearLayout.LayoutParams(dp(54), dp(32));
+        LinearLayout.LayoutParams shareLp = new LinearLayout.LayoutParams(dp(50), dp(32));
         shareLp.leftMargin = dp(4);
         header.addView(shareBtn, shareLp);
         shareBtn.setOnClickListener(v -> { hapticClick(v); sharePhoto(); });
 
-        if (archiveKey != null && RawArchive.exists(this, archiveKey)) {
-            compareButton = pill("COMPARE", false);
-            LinearLayout.LayoutParams compLp = new LinearLayout.LayoutParams(dp(62), dp(32));
-            compLp.leftMargin = dp(4);
-            header.addView(compareButton, compLp);
-            compareButton.setOnTouchListener((v, event) -> {
-                switch (event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        startComparing();
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                    case MotionEvent.ACTION_CANCEL:
-                        stopComparing();
-                        return true;
-                }
-                return false;
-            });
+        TextView deleteBtn = pill("DEL", false);
+        LinearLayout.LayoutParams delLp = new LinearLayout.LayoutParams(dp(40), dp(32));
+        delLp.leftMargin = dp(4);
+        header.addView(deleteBtn, delLp);
+        deleteBtn.setOnClickListener(v -> { hapticClick(v); confirmDeleteCurrentPhoto(); });
 
-            TextView edit = pill("EDIT", true);
-            LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(dp(48), dp(32));
-            editLp.leftMargin = dp(4);
-            header.addView(edit, editLp);
-            edit.setOnClickListener(v -> { hapticClick(v); openEditor(); });
-        }
+        compareButton = pill("RAW", false);
+        LinearLayout.LayoutParams compLp = new LinearLayout.LayoutParams(dp(44), dp(32));
+        compLp.leftMargin = dp(4);
+        header.addView(compareButton, compLp);
+        compareButton.setOnTouchListener((v, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    startComparing();
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    stopComparing();
+                    return true;
+            }
+            return false;
+        });
+
+        editButton = pill("EDIT", true);
+        LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(dp(46), dp(32));
+        editLp.leftMargin = dp(4);
+        header.addView(editButton, editLp);
+        editButton.setOnClickListener(v -> { hapticClick(v); openEditor(); });
 
         if (!getIntent().getBooleanExtra(EXTRA_FROM_LIBRARY, false)) {
             TextView library = pill("GRID", false);
-            LinearLayout.LayoutParams gridLp = new LinearLayout.LayoutParams(dp(48), dp(32));
+            LinearLayout.LayoutParams gridLp = new LinearLayout.LayoutParams(dp(44), dp(32));
             gridLp.leftMargin = dp(4);
             header.addView(library, gridLp);
             library.setOnClickListener(v -> { hapticClick(v); startActivity(new Intent(this, GalleryActivity.class)); });
@@ -201,6 +210,7 @@ public class PhotoViewerActivity extends Activity {
         root.addView(infoCard, infoCardLp);
 
         setContentView(root);
+        refreshPhotoList();
         loadPhoto();
     }
 
@@ -350,11 +360,125 @@ public class PhotoViewerActivity extends Activity {
                     if (isComparing) {
                         stopComparing();
                     }
+                    if (!scaleDetector.isInProgress() && currentScale <= 1.05f) {
+                        float dx = event.getX() - startPoint.x;
+                        float dy = event.getY() - startPoint.y;
+                        if (Math.abs(dx) > dp(72) && Math.abs(dx) > Math.abs(dy) * 1.3f) {
+                            stepPhoto(dx < 0 ? 1 : -1);
+                            return true;
+                        }
+                    }
                     if (currentScale < 1.0f) resetZoom();
                     break;
             }
             return true;
         });
+    }
+
+    private void refreshPhotoList() {
+        allPhotos = PhotoRepository.load(this);
+        currentIndex = -1;
+        if (photoUri == null) return;
+        String target = photoUri.toString();
+        for (int i = 0; i < allPhotos.size(); i++) {
+            PhotoRepository.Photo p = allPhotos.get(i);
+            if (p.uri != null && (target.equals(p.uri.toString()) || (photoName != null && photoName.equals(p.name)))) {
+                currentIndex = i;
+                break;
+            }
+        }
+    }
+
+    private void stepPhoto(int delta) {
+        if (allPhotos == null || allPhotos.isEmpty()) refreshPhotoList();
+        if (allPhotos == null || allPhotos.size() <= 1 || currentIndex < 0) return;
+        int nextIndex = currentIndex + delta;
+        if (nextIndex < 0 || nextIndex >= allPhotos.size()) {
+            showZoomHud(delta < 0 ? "NEWEST FRAME" : "OLDEST FRAME");
+            return;
+        }
+        hapticClick(photoView);
+        currentIndex = nextIndex;
+        PhotoRepository.Photo next = allPhotos.get(currentIndex);
+        photoUri = next.uri;
+        photoName = next.name;
+        archiveKey = next.archiveKey;
+        if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
+            rawOriginalBitmap.recycle();
+        }
+        rawOriginalBitmap = null;
+        photoView.animate().alpha(0.35f).setDuration(80).withEndAction(() -> {
+            loadPhoto();
+            photoView.animate().alpha(1f).setDuration(140).start();
+        }).start();
+    }
+
+    private void confirmDeleteCurrentPhoto() {
+        if (photoUri == null) return;
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            dialog.getWindow().setLayout(android.view.WindowManager.LayoutParams.MATCH_PARENT, android.view.WindowManager.LayoutParams.WRAP_CONTENT);
+        }
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
+        sheet.setPadding(dp(20), dp(18), dp(20), dp(20));
+
+        TextView title = text("DELETE THIS FRAME?", 11, ACCENT, true);
+        title.setLetterSpacing(.14f);
+        sheet.addView(title);
+
+        TextView sub = text("Removes " + (photoName != null ? photoName : "this photo") + " and its associated RAW archive.", 9, 0xff9ba59e, false);
+        sub.setPadding(0, dp(6), 0, dp(16));
+        sheet.addView(sub);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+
+        TextView cancel = pill("CANCEL", false);
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(0, dp(38), 1f);
+        cancelLp.rightMargin = dp(6);
+        actions.addView(cancel, cancelLp);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+
+        TextView confirm = pill("DELETE", true);
+        confirm.setTextColor(0xffff6b6b);
+        confirm.setBackground(round(0x33ff5252, 16, 0xffff6b6b, dp(1)));
+        LinearLayout.LayoutParams confirmLp = new LinearLayout.LayoutParams(0, dp(38), 1f);
+        confirmLp.leftMargin = dp(6);
+        actions.addView(confirm, confirmLp);
+        confirm.setOnClickListener(v -> {
+            dialog.dismiss();
+            boolean deleted = PhotoRepository.delete(this, photoUri, photoName, archiveKey);
+            if (deleted) {
+                Toast.makeText(this, "Frame deleted", Toast.LENGTH_SHORT).show();
+                refreshPhotoList();
+                if (allPhotos.isEmpty()) {
+                    finish();
+                } else {
+                    int idx = Math.max(0, Math.min(currentIndex, allPhotos.size() - 1));
+                    currentIndex = idx;
+                    PhotoRepository.Photo next = allPhotos.get(idx);
+                    photoUri = next.uri;
+                    photoName = next.name;
+                    archiveKey = next.archiveKey;
+                    if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
+                        rawOriginalBitmap.recycle();
+                    }
+                    rawOriginalBitmap = null;
+                    loadPhoto();
+                }
+            } else {
+                Toast.makeText(this, "Could not delete this frame", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        sheet.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+        dialog.setContentView(sheet);
+        dialog.show();
     }
 
     private void clampMatrix() {
@@ -485,6 +609,13 @@ public class PhotoViewerActivity extends Activity {
 
     private void loadPhoto() {
         if (photoUri == null || photoView == null) return;
+        if (titleView != null) {
+            titleView.setText(photoName == null ? "LIKA LENS" : photoName);
+        }
+        boolean hasRaw = archiveKey != null && RawArchive.exists(this, archiveKey);
+        if (compareButton != null) compareButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
+        if (editButton != null) editButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
+
         try (InputStream boundsStream = getContentResolver().openInputStream(photoUri)) {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
@@ -505,8 +636,10 @@ public class PhotoViewerActivity extends Activity {
                         developedBitmap.recycle();
                     }
                     developedBitmap = bitmap;
+                    currentScale = 1.0f;
                     photoView.setImageBitmap(bitmap);
                     photoView.post(this::fitImageToView);
+                    if (infoVisible) populateInfoData();
                 }
             }
         } catch (Exception ignored) {

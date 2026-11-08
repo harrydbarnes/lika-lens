@@ -3,11 +3,15 @@ package com.scope.camera;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.hardware.camera2.CameraCharacteristics;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Locale;
 
 /** Scene-linear RAW development followed by the authored Lika Lens display rendering. */
 final class RawDeveloper {
@@ -41,6 +45,8 @@ final class RawDeveloper {
         boolean easyMode = true;
         boolean skinProtection = true;
         boolean smartVibrance = true;
+        boolean opticalCorrection = true;
+        String frameBorder = "None";
 
         static Look fromPreferences(Context context) {
             Look look = new Look();
@@ -68,6 +74,8 @@ final class RawDeveloper {
             look.easyMode = AppSettings.getBoolean(context, AppSettings.EASY_MODE, true);
             look.skinProtection = AppSettings.getBoolean(context, AppSettings.SKIN_PROTECTION, true);
             look.smartVibrance = AppSettings.getBoolean(context, AppSettings.SMART_VIBRANCE, true);
+            look.opticalCorrection = AppSettings.getBoolean(context, AppSettings.OPTICAL_CORRECTION, true);
+            look.frameBorder = AppSettings.get(context, AppSettings.FRAME_BORDER, "None");
             return look;
         }
 
@@ -88,6 +96,8 @@ final class RawDeveloper {
             c.easyMode = easyMode;
             c.skinProtection = skinProtection;
             c.smartVibrance = smartVibrance;
+            c.opticalCorrection = opticalCorrection;
+            c.frameBorder = frameBorder;
             return c;
         }
     }
@@ -114,6 +124,7 @@ final class RawDeveloper {
         float white = rawWhite <= 0 ? 65535f : rawWhite;
         float[] gains = whiteBalanceGains(frame, look.whiteBalanceKelvin);
         float exposureScale = (float) Math.pow(2.0, look.exposureEv);
+        boolean applyLsm = look.opticalCorrection && frame.lsmGains != null && frame.lsmCols > 1 && frame.lsmRows > 1;
         Bitmap bitmap = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
         int[] allPixels = new int[outW * outH];
         int seed = frame.key == null ? width * 31 + height : frame.key.hashCode();
@@ -136,6 +147,12 @@ final class RawDeveloper {
                 float r = interpolate(raw, frame, white, sx, sy, 0);
                 float g = interpolate(raw, frame, white, sx, sy, 1);
                 float b = interpolate(raw, frame, white, sx, sy, 2);
+                if (applyLsm) {
+                    float[] lsm = sampleLsm(frame, sx, sy);
+                    r *= lsm[0];
+                    g *= (lsm[1] + lsm[2]) * 0.5f;
+                    b *= lsm[3];
+                }
                 r *= gains[0];
                 g *= (gains[1] + gains[2]) * .5f;
                 b *= gains[3];
@@ -167,11 +184,18 @@ final class RawDeveloper {
         if (effectiveChromaNr > 0f) applyChromaDenoise(bitmap, effectiveChromaNr);
         if (look.halation > 0f) applyHalation(bitmap, look.halation, aspect);
         if (look.sharpening > 0f) applySharpen(bitmap, Math.min(.14f, look.sharpening * .14f));
+        if (look.frameBorder != null && !look.frameBorder.startsWith("None")) {
+            bitmap = applyFrameBorder(bitmap, look, frame);
+        }
         return bitmap;
     }
 
     /** JPEG fallback keeps the file usable, but cannot undo the phone's baked image processing. */
     static Bitmap developJpeg(byte[] bytes, Context context) {
+        return developJpeg(bytes, context, false);
+    }
+
+    static Bitmap developJpeg(byte[] bytes, Context context, boolean flipHorizontal) {
         Bitmap source = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
         if (source == null) return null;
         int maxSide = 3000;
@@ -180,6 +204,7 @@ final class RawDeveloper {
                 Math.max(1, Math.round(source.getWidth() * scale)), Math.max(1, Math.round(source.getHeight() * scale)), true) : source;
         if (bitmap != source) source.recycle();
         Look look = Look.fromPreferences(context);
+        look.flipHorizontal = flipHorizontal;
         float exposureScale = (float) Math.pow(2.0, look.exposureEv);
         float wbRatio = look.whiteBalanceKelvin <= 0 ? 1f : clamp(look.whiteBalanceKelvin / 5600f, .55f, 1.45f);
         float wbShift = (float) Math.sqrt(wbRatio);
@@ -189,7 +214,8 @@ final class RawDeveloper {
         java.util.stream.IntStream.range(0, h).parallel().forEach(y -> {
             int rowOffset = y * w;
             for (int x = 0; x < w; x++) {
-                int c = pixels[rowOffset + x];
+                int srcX = look.flipHorizontal ? (w - 1 - x) : x;
+                int c = pixels[rowOffset + srcX];
                 float r = srgbToLinear(Color.red(c) / 255f) * exposureScale * wbShift;
                 float g = srgbToLinear(Color.green(c) / 255f) * exposureScale;
                 float b = srgbToLinear(Color.blue(c) / 255f) * exposureScale / wbShift;
@@ -211,6 +237,77 @@ final class RawDeveloper {
         if (look.halation > 0f) applyHalation(result, look.halation, look.aspectRatio);
         if (look.sharpening > 0f) applySharpen(result, Math.min(.14f, look.sharpening * .14f));
         return result;
+    }
+
+    private static float[] sampleLsm(RawArchive.Frame frame, int sx, int sy) {
+        float gx = clamp(sx / (float) Math.max(1, frame.width - 1), 0f, 1f) * (frame.lsmCols - 1);
+        float gy = clamp(sy / (float) Math.max(1, frame.height - 1), 0f, 1f) * (frame.lsmRows - 1);
+        int x0 = (int) gx, y0 = (int) gy;
+        int x1 = Math.min(frame.lsmCols - 1, x0 + 1);
+        int y1 = Math.min(frame.lsmRows - 1, y0 + 1);
+        float tx = gx - x0, ty = gy - y0;
+        float[] out = new float[4];
+        int i00 = (y0 * frame.lsmCols + x0) * 4;
+        int i10 = (y0 * frame.lsmCols + x1) * 4;
+        int i01 = (y1 * frame.lsmCols + x0) * 4;
+        int i11 = (y1 * frame.lsmCols + x1) * 4;
+        for (int c = 0; c < 4; c++) {
+            float top = frame.lsmGains[i00 + c] * (1f - tx) + frame.lsmGains[i10 + c] * tx;
+            float bot = frame.lsmGains[i01 + c] * (1f - tx) + frame.lsmGains[i11 + c] * tx;
+            out[c] = clamp(top * (1f - ty) + bot * ty, 0.5f, 3.5f);
+        }
+        return out;
+    }
+
+    static Bitmap applyFrameBorder(Bitmap src, Look look, RawArchive.Frame frame) {
+        if (src == null || look == null || look.frameBorder == null || look.frameBorder.startsWith("None")) return src;
+        int w = src.getWidth(), h = src.getHeight();
+        int padSide = Math.max(16, Math.round(Math.min(w, h) * 0.045f));
+        int padBottom = Math.max(36, Math.round(Math.min(w, h) * 0.115f));
+        int outW = w + padSide * 2;
+        int outH = h + padSide + padBottom;
+        boolean museum = look.frameBorder.startsWith("Museum");
+        Bitmap bordered = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bordered);
+        canvas.drawColor(museum ? 0xFFF7F5EF : 0xFF0A0C0D);
+        canvas.drawBitmap(src, padSide, padSide, null);
+
+        Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        linePaint.setStyle(Paint.Style.STROKE);
+        linePaint.setStrokeWidth(Math.max(1f, Math.min(w, h) * 0.002f));
+        linePaint.setColor(museum ? 0x331A1D1E : 0x55D7B574);
+        canvas.drawRect(padSide, padSide, padSide + w, padSide + h, linePaint);
+
+        Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        textPaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
+        float textSize = Math.max(11f, (padBottom - padSide) * 0.30f);
+        textPaint.setTextSize(textSize);
+        textPaint.setLetterSpacing(0.14f);
+        textPaint.setColor(museum ? 0xFF1F2324 : 0xFFD7B574);
+
+        String brainName = look.brain == null ? "LIKA / FILM" : look.brain;
+        String meta = brainName;
+        if (frame != null) {
+            String shutter = frame.exposureTimeNs > 0
+                    ? (frame.exposureTimeNs < 1_000_000_000L
+                        ? String.format(Locale.US, "1/%ds", Math.max(1, Math.round(1_000_000_000.0 / frame.exposureTimeNs)))
+                        : String.format(Locale.US, "%.1fs", frame.exposureTimeNs / 1_000_000_000.0))
+                    : "";
+            String iso = frame.sensitivityIso > 0 ? ("ISO " + frame.sensitivityIso) : "";
+            if (!shutter.isEmpty()) meta += "  ·  " + shutter;
+            if (!iso.isEmpty()) meta += "  ·  " + iso;
+        }
+        float textY = padSide + h + (padBottom * 0.58f);
+        canvas.drawText(meta, padSide, textY, textPaint);
+
+        String rightTag = museum ? "LIKA LENS ARCHIVE" : "► 500T  ·  KODAK SAFETY FILM";
+        float rightWidth = textPaint.measureText(rightTag);
+        if (padSide + rightWidth < outW - padSide - textPaint.measureText(meta) - 24) {
+            textPaint.setColor(museum ? 0xFF767D79 : 0x99D7B574);
+            canvas.drawText(rightTag, outW - padSide - rightWidth, textY, textPaint);
+        }
+        src.recycle();
+        return bordered;
     }
 
     private static float interpolate(ByteBuffer raw, RawArchive.Frame frame, float white,

@@ -88,4 +88,37 @@ final class PhotoRepository {
         }
         return photos;
     }
+
+    static boolean delete(Context context, Uri uri, String displayName, String archiveKey) {
+        boolean deleted = false;
+        if (uri != null) {
+            try {
+                if ("file".equalsIgnoreCase(uri.getScheme()) && uri.getPath() != null) {
+                    File f = new File(uri.getPath());
+                    deleted = f.delete();
+                } else {
+                    deleted = context.getContentResolver().delete(uri, null, null) > 0;
+                }
+            } catch (Exception ignored) { }
+        }
+        String stem = archiveKey != null && !archiveKey.isEmpty() ? archiveKey : archiveKey(displayName);
+        if (stem != null && !stem.isEmpty()) {
+            RawArchive.delete(context, stem);
+            PhotoEditStore.reset(context, stem);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    Uri filesUri = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+                    context.getContentResolver().delete(filesUri,
+                            MediaStore.MediaColumns.DISPLAY_NAME + "=?",
+                            new String[]{stem + ".dng"});
+                } catch (Exception ignored) { }
+            }
+            File pictures = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+            if (pictures != null) {
+                File rawDng = new File(new File(new File(pictures, "Lika Lens"), "RAW"), stem + ".dng");
+                if (rawDng.exists()) rawDng.delete();
+            }
+        }
+        return deleted;
+    }
 }
