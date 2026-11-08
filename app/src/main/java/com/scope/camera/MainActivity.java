@@ -299,6 +299,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private HandlerThread cameraThread;
     private Handler cameraHandler;
     private final ExecutorService processor = Executors.newSingleThreadExecutor();
+    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
     private final Object captureLock = new Object();
     private Image pendingImage;
     private TotalCaptureResult pendingResult;
@@ -561,6 +562,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             cameraHandler = null;
         }
         processor.shutdown();
+        ioExecutor.shutdown();
         if (mediaActionSound != null) {
             try { mediaActionSound.release(); } catch (Throwable ignored) {}
             mediaActionSound = null;
@@ -2686,13 +2688,21 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 }
                 Bitmap developed;
                 if (raw) {
-                    RawArchive.Frame frame = RawArchive.write(this, archiveKey, image, capturedCharacteristics,
+                    RawArchive.Frame frame = RawArchive.createFrame(archiveKey, image, capturedCharacteristics,
                             result, capturedOrientation, capturedAspect);
                     try {
                         developed = RawDeveloper.develop(frame, captureLook, 0);
                     } catch (IllegalArgumentException resolutionError) {
                         Log.w(TAG, "Full-resolution RAW render failed; retrying at a safe display size", resolutionError);
                         developed = RawDeveloper.develop(frame, captureLook, 3000);
+                    }
+                    if (keepEditableSource) {
+                        try {
+                            RawArchive.writeArchive(this, frame);
+                            PhotoEditStore.save(this, archiveKey, captureLook);
+                        } catch (Exception archiveErr) {
+                            Log.w(TAG, "Could not save editable RAW archive", archiveErr);
+                        }
                     }
                 } else {
                     ByteBuffer buffer = image.getPlanes()[0].getBuffer();
@@ -2708,7 +2718,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (!raw || !"DNG only".equals(format) || !dngSaved) {
                     writeJpeg(developed, baseFileStem + ".jpg", result, orgSub);
                 }
-                if (raw && keepEditableSource) PhotoEditStore.save(this, archiveKey, captureLook);
                 developed.recycle();
                 String resultMessage = dngWarning != null ? "Photo rendered; DNG export failed"
                         : !raw ? "JPEG fallback captured and rendered"
@@ -2732,7 +2741,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 });
             } finally {
                 image.close();
-                if (raw && !keepEditableSource && archiveKey != null) RawArchive.delete(this, archiveKey);
                 pendingRenders.decrementAndGet();
             }
         });
@@ -2746,7 +2754,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (captureSession == null || captureInFlight) {
             return;
         }
-        if (pendingRenders.get() >= 3) {
+        if (pendingRenders.get() >= 5) {
             showMessage("Developing previous frames…");
             return;
         }
@@ -3145,19 +3153,27 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void updateGalleryButton() {
         if (galleryButton == null) return;
-        PhotoRepository.Photo latest = PhotoRepository.latest(this);
-        if (latest == null) {
-            galleryButton.setImageResource(R.drawable.ic_lika_lens);
-            return;
-        }
-        try (InputStream stream = getContentResolver().openInputStream(latest.uri)) {
-            if (stream == null) return;
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = 16;
-            options.inPreferredConfig = Bitmap.Config.RGB_565;
-            Bitmap thumbnail = BitmapFactory.decodeStream(stream, null, options);
-            if (thumbnail != null) galleryButton.setImageBitmap(thumbnail);
-        } catch (Exception ignored) { }
+        ioExecutor.execute(() -> {
+            PhotoRepository.Photo latest = PhotoRepository.latest(this);
+            if (latest == null) {
+                runOnUiThread(() -> {
+                    if (galleryButton != null) galleryButton.setImageResource(R.drawable.ic_lika_lens);
+                });
+                return;
+            }
+            try (InputStream stream = getContentResolver().openInputStream(latest.uri)) {
+                if (stream == null) return;
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inSampleSize = 16;
+                options.inPreferredConfig = Bitmap.Config.RGB_565;
+                Bitmap thumbnail = BitmapFactory.decodeStream(stream, null, options);
+                if (thumbnail != null) {
+                    runOnUiThread(() -> {
+                        if (galleryButton != null) galleryButton.setImageBitmap(thumbnail);
+                    });
+                }
+            } catch (Exception ignored) { }
+        });
     }
 
     private void updateBrainButton() {

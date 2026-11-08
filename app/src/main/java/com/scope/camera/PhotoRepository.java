@@ -38,8 +38,33 @@ final class PhotoRepository {
     }
 
     static Photo latest(Context context) {
-        List<Photo> photos = all(context);
-        return photos.isEmpty() ? null : photos.get(0);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            String[] columns = {MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME,
+                    MediaStore.Images.Media.DATE_ADDED, MediaStore.Images.Media.DATE_MODIFIED};
+            try (Cursor cursor = context.getContentResolver().query(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, columns,
+                    "(" + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ? OR "
+                            + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ?) AND "
+                            + MediaStore.Images.Media.MIME_TYPE + "=?",
+                    new String[]{Environment.DIRECTORY_PICTURES + "/Lika Lens/%",
+                            Environment.DIRECTORY_PICTURES + "/SCOPE/%", "image/jpeg"},
+                    MediaStore.Images.Media.DATE_ADDED + " DESC LIMIT 1")) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    long id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID));
+                    String name = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME));
+                    long added = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED));
+                    long modified = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_MODIFIED));
+                    long timestamp = (added > 0 ? added : modified) * 1000L;
+                    return new Photo(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id), name, timestamp);
+                }
+            } catch (RuntimeException ignored) { }
+        }
+        List<Photo> photos = queryAppFolder(context);
+        if (!photos.isEmpty()) {
+            Collections.sort(photos, (a, b) -> Long.compare(b.timestampMillis, a.timestampMillis));
+            return photos.get(0);
+        }
+        return null;
     }
 
     static String archiveKey(String displayName) {

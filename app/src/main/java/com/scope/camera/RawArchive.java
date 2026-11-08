@@ -73,12 +73,8 @@ final class RawArchive {
         return new File(new File(context.getFilesDir(), "raw-archive"), safe + ".sraw");
     }
 
-    static Frame write(Context context, String key, Image image, CameraCharacteristics characteristics,
-                       TotalCaptureResult result, int orientation, String aspectRatio) throws IOException {
-        File target = file(context, key);
-        File folder = target.getParentFile();
-        if (folder == null || (!folder.exists() && !folder.mkdirs())) throw new IOException("Could not create RAW archive folder");
-        File temporary = new File(folder, target.getName() + ".tmp");
+    static Frame createFrame(String key, Image image, CameraCharacteristics characteristics,
+                             TotalCaptureResult result, int orientation, String aspectRatio) {
         Image.Plane plane = image.getPlanes()[0];
         ByteBuffer source = plane.getBuffer().duplicate().order(ByteOrder.LITTLE_ENDIAN);
         source.position(0);
@@ -144,6 +140,21 @@ final class RawArchive {
         }
         frame.captureBuffer = source;
         frame.rowStride = rowStride; frame.pixelStride = pixelStride;
+        return frame;
+    }
+
+    static void writeArchive(Context context, Frame frame) throws IOException {
+        if (frame == null || frame.captureBuffer == null) return;
+        File target = file(context, frame.key);
+        File folder = target.getParentFile();
+        if (folder == null || (!folder.exists() && !folder.mkdirs())) throw new IOException("Could not create RAW archive folder");
+        File temporary = new File(folder, target.getName() + ".tmp");
+        ByteBuffer source = frame.captureBuffer.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+        source.position(0);
+        int width = frame.width;
+        int height = frame.height;
+        int rowStride = frame.rowStride;
+        int pixelStride = frame.pixelStride;
 
         try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(
                 new DeflaterOutputStream(new FileOutputStream(temporary), new Deflater(4))))) {
@@ -185,6 +196,12 @@ final class RawArchive {
             temporary.delete();
             throw new IOException("Could not finish RAW archive");
         }
+    }
+
+    static Frame write(Context context, String key, Image image, CameraCharacteristics characteristics,
+                       TotalCaptureResult result, int orientation, String aspectRatio) throws IOException {
+        Frame frame = createFrame(key, image, characteristics, result, orientation, aspectRatio);
+        writeArchive(context, frame);
         return frame;
     }
 
