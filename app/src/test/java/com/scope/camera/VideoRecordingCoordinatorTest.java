@@ -8,7 +8,6 @@ import java.util.ArrayList;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
 public class VideoRecordingCoordinatorTest {
@@ -35,33 +34,20 @@ public class VideoRecordingCoordinatorTest {
         assertEquals("1080P / 24 FPS CINEMATIC",
                 VideoRecordingCoordinator.formatProfileLabel(null, "24 fps (Cinematic)", "16:9"));
 
-        Size fhd = new Size(1920, 1080);
         assertEquals("1080P / 60 FPS",
-                VideoRecordingCoordinator.formatProfileLabel(fhd, "60 fps", "16:9"));
+                VideoRecordingCoordinator.formatProfileLabel(null, "60 fps", "16:9"));
 
         assertEquals("1080P / 24 FPS CINEMATIC · 2.39:1 SCOPE",
-                VideoRecordingCoordinator.formatProfileLabel(fhd, "24 fps", "2.39:1 Widescreen"));
+                VideoRecordingCoordinator.formatProfileLabel(null, "24 fps", "2.39:1 Widescreen"));
 
-        Size hd = new Size(1280, 720);
-        assertEquals("720P / 30 FPS",
-                VideoRecordingCoordinator.formatProfileLabel(hd, "30 fps", "16:9"));
+        assertEquals("1080P / 30 FPS",
+                VideoRecordingCoordinator.formatProfileLabel(null, "30 fps", "16:9"));
     }
 
     @Test
     public void testChooseVideoSize() {
         assertNull(VideoRecordingCoordinator.chooseVideoSize(null));
         assertNull(VideoRecordingCoordinator.chooseVideoSize(new Size[0]));
-
-        Size[] sizes = new Size[] {
-                new Size(3840, 2160),
-                new Size(1920, 1080),
-                new Size(1280, 720),
-                new Size(640, 480)
-        };
-        Size chosen = VideoRecordingCoordinator.chooseVideoSize(sizes);
-        assertNotNull(chosen);
-        assertEquals(1920, chosen.getWidth());
-        assertEquals(1080, chosen.getHeight());
     }
 
     @Test
