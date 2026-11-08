@@ -995,58 +995,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         shootRow.addView(shutterFrame, new LinearLayout.LayoutParams(dp(78), dp(78)));
         shutterFrame.setClickable(true);
         shutterFrame.setFocusable(true);
-        shutterFrame.setOnTouchListener(new View.OnTouchListener() {
-            private boolean isDown = false;
-            @Override
-            public boolean onTouch(View v, MotionEvent event) {
-                if (!shutterFrame.isEnabled() || (captureButton != null && !captureButton.isEnabled())) {
-                    return false;
-                }
-                switch (event.getAction()) {
-                    case MotionEvent.ACTION_DOWN:
-                        isDown = true;
-                        hapticClick(v);
-                        shutterFrame.animate().cancel();
-                        captureButton.animate().cancel();
-                        shutterFrame.animate().scaleX(0.88f).scaleY(0.88f).setDuration(70).setInterpolator(new DecelerateInterpolator()).start();
-                        captureButton.animate().scaleX(0.92f).scaleY(0.92f).setDuration(70).setInterpolator(new DecelerateInterpolator()).start();
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                        if (isDown) {
-                            isDown = false;
-                            shutterFrame.animate().cancel();
-                            captureButton.animate().cancel();
-                            shutterFrame.animate().scaleX(1.0f).scaleY(1.0f).setDuration(220)
-                                    .setInterpolator(new android.view.animation.OvershootInterpolator(2.0f)).start();
-                            captureButton.animate().scaleX(1.0f).scaleY(1.0f).setDuration(220)
-                                    .setInterpolator(new android.view.animation.OvershootInterpolator(1.8f)).start();
-                            float x = event.getX(), y = event.getY();
-                            int slop = dp(24);
-                            if (x >= -slop && x <= v.getWidth() + slop && y >= -slop && y <= v.getHeight() + slop) {
-                                if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true)) {
-                                    v.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
-                                }
-                                onShutterPressed();
-                            }
-                            return true;
-                        }
-                        break;
-                    case MotionEvent.ACTION_CANCEL:
-                        if (isDown) {
-                            isDown = false;
-                            shutterFrame.animate().cancel();
-                            captureButton.animate().cancel();
-                            shutterFrame.animate().scaleX(1.0f).scaleY(1.0f).setDuration(160)
-                                    .setInterpolator(new DecelerateInterpolator()).start();
-                            captureButton.animate().scaleX(1.0f).scaleY(1.0f).setDuration(160)
-                                    .setInterpolator(new DecelerateInterpolator()).start();
-                            return true;
-                        }
-                        break;
-                }
-                return false;
-            }
-        });
+        shutterFrame.setOnTouchListener(new ShutterTouchListener());
 
         TextView flip = pill("⟳", false);
         flip.setTextSize(20f);
@@ -4280,6 +4229,58 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 lp.height = desiredH;
                 viewfinderSpacer.setLayoutParams(lp);
             }
+        }
+    private final class ShutterTouchListener implements View.OnTouchListener {
+        private boolean isDown = false;
+
+        @Override
+        public boolean onTouch(View v, MotionEvent event) {
+            if (!shutterFrame.isEnabled() || (captureButton != null && !captureButton.isEnabled())) {
+                return false;
+            }
+            switch (event.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    isDown = true;
+                    hapticClick(v);
+                    shutterFrame.animate().cancel();
+                    captureButton.animate().cancel();
+                    shutterFrame.animate().scaleX(0.88f).scaleY(0.88f).setDuration(70).setInterpolator(new DecelerateInterpolator()).start();
+                    captureButton.animate().scaleX(0.92f).scaleY(0.92f).setDuration(70).setInterpolator(new DecelerateInterpolator()).start();
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    if (isDown) {
+                        isDown = false;
+                        shutterFrame.animate().cancel();
+                        captureButton.animate().cancel();
+                        shutterFrame.animate().scaleX(1.0f).scaleY(1.0f).setDuration(220)
+                                .setInterpolator(new android.view.animation.OvershootInterpolator(2.0f)).start();
+                        captureButton.animate().scaleX(1.0f).scaleY(1.0f).setDuration(220)
+                                .setInterpolator(new android.view.animation.OvershootInterpolator(1.8f)).start();
+                        float x = event.getX(), y = event.getY();
+                        int slop = dp(24);
+                        if (x >= -slop && x <= v.getWidth() + slop && y >= -slop && y <= v.getHeight() + slop) {
+                            if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true)) {
+                                v.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+                            }
+                            onShutterPressed();
+                        }
+                        return true;
+                    }
+                    break;
+                case MotionEvent.ACTION_CANCEL:
+                    if (isDown) {
+                        isDown = false;
+                        shutterFrame.animate().cancel();
+                        captureButton.animate().cancel();
+                        shutterFrame.animate().scaleX(1.0f).scaleY(1.0f).setDuration(160)
+                                .setInterpolator(new DecelerateInterpolator()).start();
+                        captureButton.animate().scaleX(1.0f).scaleY(1.0f).setDuration(160)
+                                .setInterpolator(new DecelerateInterpolator()).start();
+                        return true;
+                    }
+                    break;
+            }
+            return false;
         }
     }
 
