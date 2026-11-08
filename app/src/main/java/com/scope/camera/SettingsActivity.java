@@ -220,7 +220,7 @@ public class SettingsActivity extends Activity {
         addChoice("Default lens", "Camera lens selected on app launch", AppSettings.DEFAULT_LENS,
                 new String[]{"Auto / Wide 1×", "Ultra-wide .5×", "Telephoto 2×/5×", "Last used"}, "Auto / Wide 1×");
         addChoice("Flash mode", "Rear LED flash or front warm Retina screen illumination", AppSettings.FLASH,
-                new String[]{"Off", "Torch", "Auto"}, "Off");
+                new String[]{"Off", "Auto", "Torch"}, "Off");
         addSwitch("Mirror front camera", "Save front-camera selfies horizontally flipped as previewed", AppSettings.MIRROR_FRONT, true);
         addChoice("Stabilization", "Optical (OIS) and electronic video stabilization", AppSettings.STABILIZATION,
                 new String[]{"Cinema OIS + EIS", "Optical only (OIS)", "Off (Tripod / Gimbal)"}, "Cinema OIS + EIS");

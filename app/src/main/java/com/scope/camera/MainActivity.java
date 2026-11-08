@@ -2232,7 +2232,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             return;
         }
         String current = AppSettings.get(this, AppSettings.FLASH, "Off");
-        String next = current.startsWith("Off") ? "Torch" : current.startsWith("Torch") ? "Auto" : "Off";
+        String next = current.startsWith("Off") ? "Auto" : current.startsWith("Auto") ? "Torch" : "Off";
         AppSettings.prefs(this).edit().putString(AppSettings.FLASH, next).apply();
         updateQuickButtons();
         if (front && !"Off".equals(next)) {
