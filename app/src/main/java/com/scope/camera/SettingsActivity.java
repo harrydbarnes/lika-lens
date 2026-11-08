@@ -257,6 +257,8 @@ public class SettingsActivity extends Activity {
         addChoice("Composition grid", "Choose a guide overlay inside the viewfinder frame", AppSettings.GRID_STYLE,
                 new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");
         addSwitch("Visual level & flat-lay crosshair", "Horizon bar and top-down concentric crosshairs that illuminate gold when level", AppSettings.VISUAL_LEVEL, true);
+        addChoice("Horizon visibility", "Display horizon line only near level to keep viewfinder clean, or always show", AppSettings.HORIZON_MODE,
+                new String[]{"Smart (near level only)", "Always visible"}, "Smart (near level only)");
         addChoice("Horizon sensitivity", "Deadband tolerance for level detection", AppSettings.HORIZON_SENSITIVITY,
                 new String[]{"Normal (±1.0°)", "Precise (±0.5°)"}, "Normal (±1.0°)");
         addSwitch("Live luminance histogram", "Real-time tonal distribution graph in the viewfinder corner", AppSettings.HISTOGRAM, false);
@@ -634,8 +636,13 @@ public class SettingsActivity extends Activity {
             dialog.dismiss();
         });
         box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
-        dialog.setContentView(box);
+        box.setMinimumWidth(Math.round(getResources().getDisplayMetrics().widthPixels * 0.86f));
+        dialog.setContentView(box, new android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
         dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(Math.round(getResources().getDisplayMetrics().widthPixels * 0.88f), WindowManager.LayoutParams.WRAP_CONTENT);
+            dialog.getWindow().setGravity(Gravity.CENTER);
+        }
     }
 
     private void showChoiceDialog(String title, String key, String[] options, String defaultValue, TextView valueView) {
@@ -723,8 +730,13 @@ public class SettingsActivity extends Activity {
         sheet.addView(cancel, cancelLp);
         cancel.setOnClickListener(v -> dialog.dismiss());
 
-        dialog.setContentView(sheet);
+        sheet.setMinimumWidth(getResources().getDisplayMetrics().widthPixels);
+        dialog.setContentView(sheet, new android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
         dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT);
+            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        }
     }
 
     private String shortValue(String value) {

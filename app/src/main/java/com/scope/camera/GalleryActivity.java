@@ -203,8 +203,13 @@ public class GalleryActivity extends Activity {
             loadPhotos();
         });
         sheet.addView(actions);
-        dialog.setContentView(sheet);
+        sheet.setMinimumWidth(getResources().getDisplayMetrics().widthPixels);
+        dialog.setContentView(sheet, new android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
         dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(android.view.WindowManager.LayoutParams.MATCH_PARENT, android.view.WindowManager.LayoutParams.WRAP_CONTENT);
+            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        }
     }
 
     private void completeRow(LinearLayout row) {

@@ -98,6 +98,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Lika Lens: Camera2 framing preview plus RAW_SENSOR/DNG capture and app-side development. */
 public class MainActivity extends Activity implements TextureView.SurfaceTextureListener {
@@ -203,11 +204,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     ? (Math.hypot(smoothTiltX, smoothTiltY) <= (deadband * 0.025f))
                     : (Math.abs(smoothRollAngle) <= deadband);
             if (isLevel && !wasHorizonLevel) {
-                if (captureButton != null) {
-                    captureButton.performHapticFeedback(HapticFeedbackConstants.CONFIRM);
+                View target = gridOverlay != null ? gridOverlay : captureButton;
+                if (target != null) {
+                    target.performHapticFeedback(HapticFeedbackConstants.CONFIRM, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
                 }
                 wasHorizonLevel = true;
-            } else if (!isLevel && (isFlatLay ? Math.hypot(smoothTiltX, smoothTiltY) > (deadband * 0.038f) : Math.abs(smoothRollAngle) > (deadband + 0.4f))) {
+            } else if (!isLevel && (isFlatLay ? Math.hypot(smoothTiltX, smoothTiltY) > (deadband * 0.038f) : Math.abs(smoothRollAngle) > (deadband + 0.45f))) {
                 wasHorizonLevel = false;
             }
         }
@@ -295,7 +297,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private final Object captureLock = new Object();
     private Image pendingImage;
     private TotalCaptureResult pendingResult;
-    private volatile boolean processingCapture;
+    private final AtomicInteger pendingRenders = new AtomicInteger(0);
     private volatile boolean captureInFlight;
     private ValueAnimator zoomAnimator;
     private boolean openingCamera;
@@ -2324,14 +2326,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         closeReader(rawReader); rawReader = null;
         closeReader(jpegReader); jpegReader = null;
         if (useRawForThisCamera && rawSize != null) {
-            rawReader = ImageReader.newInstance(rawSize.getWidth(), rawSize.getHeight(), ImageFormat.RAW_SENSOR, 2);
+            rawReader = ImageReader.newInstance(rawSize.getWidth(), rawSize.getHeight(), ImageFormat.RAW_SENSOR, 4);
             rawReader.setOnImageAvailableListener(this::onImageAvailable, cameraHandler);
             cameraState.setText("RAW SENSOR READY  ·  " + Math.round(rawSize.getWidth() * rawSize.getHeight() / 1000000f) + " MP");
             outputModeText.setText("RAW SENSOR  ·  DNG ORIGINAL + LIKA LENS JPEG");
         } else {
             Size jpegSize = chooseJpegSize(map.getOutputSizes(ImageFormat.JPEG));
             if (jpegSize == null) jpegSize = new Size(1920, 1080);
-            jpegReader = ImageReader.newInstance(jpegSize.getWidth(), jpegSize.getHeight(), ImageFormat.JPEG, 2);
+            jpegReader = ImageReader.newInstance(jpegSize.getWidth(), jpegSize.getHeight(), ImageFormat.JPEG, 4);
             jpegReader.setOnImageAvailableListener(this::onImageAvailable, cameraHandler);
             if (forceJpegForWide && rawSupported) {
                 cameraState.setText("WIDE FOV READY  ·  JPEG INPUT");
@@ -2510,19 +2512,20 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void processPairIfReady() {
-        if (pendingImage == null || processingCapture || (useRawForThisCamera && pendingResult == null)) return;
+        if (pendingImage == null || (useRawForThisCamera && pendingResult == null)) return;
         Image image = pendingImage;
         TotalCaptureResult result = pendingResult;
         pendingImage = null;
         pendingResult = null;
-        processingCapture = true;
         captureInFlight = false;
+        runOnUiThread(() -> captureButton.setAlpha(1f));
         CameraCharacteristics capturedCharacteristics = characteristics;
         int capturedOrientation = jpegOrientation();
         String capturedAspect = AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3");
         boolean mirrorSelfie = isFrontCamera() && AppSettings.getBoolean(this, AppSettings.MIRROR_FRONT, true);
         RawDeveloper.Look captureLook = RawDeveloper.Look.fromPreferences(this);
         if (mirrorSelfie) captureLook.flipHorizontal = true;
+        pendingRenders.incrementAndGet();
         processor.execute(() -> {
             boolean raw = image.getFormat() == ImageFormat.RAW_SENSOR;
             String archiveKey = null;
@@ -2605,7 +2608,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         : dngSaved ? "DNG original + Lika Lens render saved" : "Lika Lens RAW render saved";
                 runOnUiThread(() -> {
                     showMessage(resultMessage);
-                    captureButton.setAlpha(1f);
                     updateGalleryButton();
                 });
             } catch (Exception e) {
@@ -2619,25 +2621,31 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 runOnUiThread(() -> {
                     showMessage("Photo render failed: " + e.getClass().getSimpleName()
                             + (errorDetail == null || errorDetail.isEmpty() ? "" : " · " + errorDetail));
-                    captureButton.setAlpha(1f);
                 });
             } finally {
                 image.close();
                 if (raw && !keepEditableSource && archiveKey != null) RawArchive.delete(this, archiveKey);
-                synchronized (captureLock) { processingCapture = false; }
+                pendingRenders.decrementAndGet();
             }
         });
     }
 
     private void capturePhoto() {
-        if (captureSession == null || cameraDevice == null || processingCapture || captureInFlight) {
-            showMessage("Camera is warming up.");
+        if (cameraDevice == null || !started) {
+            showMessage("Camera is starting up…");
+            return;
+        }
+        if (captureSession == null || captureInFlight) {
+            return;
+        }
+        if (pendingRenders.get() >= 3) {
+            showMessage("Developing previous frames…");
             return;
         }
         captureInFlight = true;
         if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
         int timer = parseTimer(AppSettings.get(this, AppSettings.TIMER, "Off"));
-        captureButton.setAlpha(.55f);
+        captureButton.setAlpha(.65f);
         if (timer > 0) {
             showMessage("Capturing in " + timer + "…");
             cameraHandler.postDelayed(this::triggerCaptureWithScreenFlashIfNeeded, timer * 1000L);
@@ -2986,10 +2994,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(-1, dp(38));
         cancelLp.topMargin = dp(12);
         sheet.addView(cancel, cancelLp);
-        cancel.setOnClickListener(v -> dialog.dismiss());
-
-        dialog.setContentView(sheet);
+        sheet.setMinimumWidth(getResources().getDisplayMetrics().widthPixels);
+        dialog.setContentView(sheet, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT);
+            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        }
     }
 
     private interface BottomSheetCallback {
@@ -3990,6 +4001,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 float cy = frame.centerY();
                 String sens = AppSettings.get(MainActivity.this, AppSettings.HORIZON_SENSITIVITY, "Normal (±1.0°)");
                 float deadband = sens.contains("0.5") ? 0.5f : 1.0f;
+                String horizonMode = AppSettings.get(MainActivity.this, AppSettings.HORIZON_MODE, "Smart (near level only)");
+                boolean smartNearOnly = horizonMode.startsWith("Smart");
 
                 Paint levelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
                 levelPaint.setStyle(Paint.Style.STROKE);
@@ -4001,44 +4014,54 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     float offsetX = smoothTiltX * density * 90f;
                     float offsetY = smoothTiltY * density * 90f;
                     float dist = (float) Math.hypot(offsetX, offsetY);
-                    boolean aligned = dist <= density * (deadband * 2.2f);
+                    float maxFlatDist = smartNearOnly ? density * 26f : Float.MAX_VALUE;
+                    if (dist <= maxFlatDist) {
+                        float flatAlpha = smartNearOnly ? Math.max(0f, Math.min(1f, (maxFlatDist - dist) / (density * 10f))) : 1f;
+                        boolean aligned = dist <= density * (deadband * 2.2f);
 
-                    levelPaint.setColor(aligned ? ACCENT : 0x66FFFFFF);
-                    levelPaint.setStrokeWidth(aligned ? density * 2.0f : density * 1.3f);
-                    float crossSize = density * 12f;
-                    // Fixed center crosshair
-                    canvas.drawLine(cx - crossSize, cy, cx + crossSize, cy, levelPaint);
-                    canvas.drawLine(cx, cy - crossSize, cx, cy + crossSize, levelPaint);
-                    canvas.drawCircle(cx, cy, density * 16f, levelPaint);
+                        levelPaint.setColor(aligned ? ACCENT : (0x00FFFFFF | (Math.min(0x66, Math.round(0x66 * flatAlpha)) << 24)));
+                        levelPaint.setStrokeWidth(aligned ? density * 2.0f : density * 1.3f);
+                        float crossSize = density * 12f;
+                        // Fixed center crosshair
+                        canvas.drawLine(cx - crossSize, cy, cx + crossSize, cy, levelPaint);
+                        canvas.drawLine(cx, cy - crossSize, cx, cy + crossSize, levelPaint);
+                        canvas.drawCircle(cx, cy, density * 16f, levelPaint);
 
-                    // Floating gravity crosshair
-                    float fx = aligned ? cx : cx + offsetX;
-                    float fy = aligned ? cy : cy + offsetY;
-                    levelPaint.setColor(aligned ? ACCENT : 0xCCDFBE7F);
-                    canvas.drawLine(fx - crossSize * 0.8f, fy, fx + crossSize * 0.8f, fy, levelPaint);
-                    canvas.drawLine(fx, fy - crossSize * 0.8f, fx, fy + crossSize * 0.8f, levelPaint);
-                    canvas.drawCircle(fx, fy, density * 8f, levelPaint);
-                } else {
-                    boolean isLevel = Math.abs(smoothRollAngle) <= deadband;
-
-                    // Fixed center reference reticle
-                    levelPaint.setColor(0x55ffffff);
-                    canvas.drawLine(cx - density * 44, cy, cx - density * 14, cy, levelPaint);
-                    canvas.drawLine(cx + density * 14, cy, cx + density * 44, cy, levelPaint);
-                    canvas.drawCircle(cx, cy, density * 2.5f, levelPaint);
-
-                    // Rotating horizon bar
-                    canvas.save();
-                    canvas.rotate(-smoothRollAngle, cx, cy);
-                    levelPaint.setColor(isLevel ? ACCENT : 0x99ffffff);
-                    levelPaint.setStrokeWidth(isLevel ? density * 2.2f : density * 1.5f);
-                    canvas.drawLine(cx - density * 56, cy, cx - density * 20, cy, levelPaint);
-                    canvas.drawLine(cx + density * 20, cy, cx + density * 56, cy, levelPaint);
-                    if (isLevel) {
-                        levelPaint.setStyle(Paint.Style.FILL);
-                        canvas.drawCircle(cx, cy, density * 3.5f, levelPaint);
+                        // Floating gravity crosshair
+                        float fx = aligned ? cx : cx + offsetX;
+                        float fy = aligned ? cy : cy + offsetY;
+                        levelPaint.setColor(aligned ? ACCENT : (0x00DFBE7F | (Math.min(0xCC, Math.round(0xCC * flatAlpha)) << 24)));
+                        canvas.drawLine(fx - crossSize * 0.8f, fy, fx + crossSize * 0.8f, fy, levelPaint);
+                        canvas.drawLine(fx, fy - crossSize * 0.8f, fx, fy + crossSize * 0.8f, levelPaint);
+                        canvas.drawCircle(fx, fy, density * 8f, levelPaint);
                     }
-                    canvas.restore();
+                } else {
+                    float absRoll = Math.abs(smoothRollAngle);
+                    float maxVisibleRoll = smartNearOnly ? 12.0f : Float.MAX_VALUE;
+                    if (absRoll <= maxVisibleRoll) {
+                        float rollAlpha = smartNearOnly ? Math.max(0f, Math.min(1f, (maxVisibleRoll - absRoll) / 5.0f)) : 1f;
+                        boolean isLevel = absRoll <= deadband;
+
+                        // Fixed center reference reticle
+                        levelPaint.setColor(0x00FFFFFF | (Math.min(0x55, Math.round(0x55 * rollAlpha)) << 24));
+                        canvas.drawLine(cx - density * 44, cy, cx - density * 14, cy, levelPaint);
+                        canvas.drawLine(cx + density * 14, cy, cx + density * 44, cy, levelPaint);
+                        canvas.drawCircle(cx, cy, density * 2.5f, levelPaint);
+
+                        // Rotating horizon bar
+                        canvas.save();
+                        canvas.rotate(-smoothRollAngle, cx, cy);
+                        int barColor = isLevel ? ACCENT : (0x00FFFFFF | (Math.min(0x99, Math.round(0x99 * rollAlpha)) << 24));
+                        levelPaint.setColor(barColor);
+                        levelPaint.setStrokeWidth(isLevel ? density * 2.2f : density * 1.5f);
+                        canvas.drawLine(cx - density * 56, cy, cx - density * 20, cy, levelPaint);
+                        canvas.drawLine(cx + density * 20, cy, cx + density * 56, cy, levelPaint);
+                        if (isLevel) {
+                            levelPaint.setStyle(Paint.Style.FILL);
+                            canvas.drawCircle(cx, cy, density * 3.5f, levelPaint);
+                        }
+                        canvas.restore();
+                    }
                 }
             }
         }

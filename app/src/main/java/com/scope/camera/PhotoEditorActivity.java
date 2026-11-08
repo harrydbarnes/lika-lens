@@ -717,10 +717,20 @@ public class PhotoEditorActivity extends Activity {
                 neutralLook.colorRollOff = 0.5f;
                 neutralLook.exposureEv = 0f;
                 neutralLook.warmth = 0f;
-                neutralLook.aspectRatio = loaded.aspectRatio;
-                neutralLook.flipHorizontal = false;
-                Bitmap neutralBmp = RawDeveloper.develop(loaded, neutralLook, 1400);
+                neutralLook.aspectRatio = look.aspectRatio != null ? look.aspectRatio : loaded.aspectRatio;
+                neutralLook.flipHorizontal = look.flipHorizontal;
                 Bitmap bitmap = RawDeveloper.develop(loaded, look.copy(), 1400);
+                int targetW = bitmap != null ? bitmap.getWidth() : 1400;
+                int targetH = bitmap != null ? bitmap.getHeight() : 1400;
+                int targetDim = Math.max(targetW, targetH);
+                Bitmap neutralBmp = RawDeveloper.develop(loaded, neutralLook, targetDim);
+                if (neutralBmp != null && bitmap != null && (neutralBmp.getWidth() != targetW || neutralBmp.getHeight() != targetH)) {
+                    Bitmap scaled = Bitmap.createScaledBitmap(neutralBmp, targetW, targetH, true);
+                    if (scaled != neutralBmp) {
+                        neutralBmp.recycle();
+                        neutralBmp = scaled;
+                    }
+                }
                 mainHandler.post(() -> {
                     frame = loaded;
                     rawOriginalBitmap = neutralBmp;

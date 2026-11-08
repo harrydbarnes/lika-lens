@@ -246,9 +246,21 @@ public class PhotoViewerActivity extends Activity {
                     neutral.exposureEv = 0f;
                     neutral.warmth = 0f;
                     neutral.aspectRatio = frame.aspectRatio;
-                    Bitmap rawBmp = RawDeveloper.develop(frame, neutral, 2000);
+
+                    int targetW = developedBitmap != null ? developedBitmap.getWidth() : 2000;
+                    int targetH = developedBitmap != null ? developedBitmap.getHeight() : 2000;
+                    int targetDim = Math.max(targetW, targetH);
+                    Bitmap rawBmp = RawDeveloper.develop(frame, neutral, targetDim);
+                    if (rawBmp != null && developedBitmap != null && (rawBmp.getWidth() != targetW || rawBmp.getHeight() != targetH)) {
+                        Bitmap scaled = Bitmap.createScaledBitmap(rawBmp, targetW, targetH, true);
+                        if (scaled != rawBmp) {
+                            rawBmp.recycle();
+                            rawBmp = scaled;
+                        }
+                    }
+                    final Bitmap finalRaw = rawBmp;
                     mainHandler.post(() -> {
-                        rawOriginalBitmap = rawBmp;
+                        rawOriginalBitmap = finalRaw;
                         if (compareBadge != null) compareBadge.setText("ORIGINAL SENSOR RAW");
                         if (isComparing && rawOriginalBitmap != null) {
                             photoView.setImageBitmap(rawOriginalBitmap);
@@ -478,8 +490,13 @@ public class PhotoViewerActivity extends Activity {
         });
 
         sheet.addView(actions, new LinearLayout.LayoutParams(-1, -2));
-        dialog.setContentView(sheet);
+        sheet.setMinimumWidth(getResources().getDisplayMetrics().widthPixels);
+        dialog.setContentView(sheet, new android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
         dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(android.view.WindowManager.LayoutParams.MATCH_PARENT, android.view.WindowManager.LayoutParams.WRAP_CONTENT);
+            dialog.getWindow().setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        }
     }
 
     private void clampMatrix() {
@@ -621,8 +638,6 @@ public class PhotoViewerActivity extends Activity {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
             BitmapFactory.decodeStream(boundsStream, null, bounds);
-            imageWidth = bounds.outWidth;
-            imageHeight = bounds.outHeight;
             int sample = 1;
             int maxWidth = getResources().getDisplayMetrics().widthPixels * 2;
             int maxHeight = getResources().getDisplayMetrics().heightPixels * 2;
@@ -637,6 +652,8 @@ public class PhotoViewerActivity extends Activity {
                         developedBitmap.recycle();
                     }
                     developedBitmap = bitmap;
+                    imageWidth = bitmap.getWidth();
+                    imageHeight = bitmap.getHeight();
                     currentScale = 1.0f;
                     photoView.setImageBitmap(bitmap);
                     photoView.post(this::fitImageToView);

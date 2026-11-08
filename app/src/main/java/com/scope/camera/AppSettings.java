@@ -90,6 +90,7 @@ final class AppSettings {
     static final String VIEWFINDER_DOUBLE_TAP = "viewfinder_double_tap";
     static final String RETICLE_METERING = "reticle_metering";
     static final String HORIZON_SENSITIVITY = "horizon_sensitivity";
+    static final String HORIZON_MODE = "horizon_mode";
     static final String VOLUME_ROCKER = "volume_rocker";
     static final String SHUTTER_WINK = "shutter_wink";
 
