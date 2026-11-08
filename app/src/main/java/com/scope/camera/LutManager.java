@@ -376,7 +376,7 @@ final class LutManager {
         return rawData.get(i0)[ch] * (1f - d) + rawData.get(i1)[ch] * d;
     }
 
-    private static Lut3D generateBuiltIn(String name, int size) {
+    static Lut3D generateBuiltIn(String name, int size) {
         float[] table = new float[size * size * size * 3];
         for (int b = 0; b < size; b++) {
             float inB = b / (size - 1f);

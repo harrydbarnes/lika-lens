@@ -112,7 +112,7 @@ public class SettingsActivity extends Activity {
 
         categoryBar = new LinearLayout(this);
         categoryBar.setGravity(Gravity.CENTER_VERTICAL);
-        categoryBar.setPadding(dp(18), 0, dp(18), dp(8));
+        updateCategoryBarPadding();
         page.addView(categoryBar);
         refreshCategoryBar();
 
@@ -121,10 +121,34 @@ public class SettingsActivity extends Activity {
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(16), dp(5), dp(16), dp(26));
-        scroll.addView(content);
+        FrameLayout wrapper = new FrameLayout(this);
+        wrapper.addView(content, getContentLayoutParams());
+        scroll.addView(wrapper, new FrameLayout.LayoutParams(-1, -2));
         page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(page);
         populateContent();
+    }
+
+    private FrameLayout.LayoutParams getContentLayoutParams() {
+        WindowMetricsHelper.WindowSizeInfo info = WindowMetricsHelper.computeWindowSizeInfo(this);
+        int maxW = info.widthDp >= 760 ? dp(720) : ViewGroup.LayoutParams.MATCH_PARENT;
+        return new FrameLayout.LayoutParams(maxW, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL);
+    }
+
+    private void updateCategoryBarPadding() {
+        if (categoryBar == null) return;
+        WindowMetricsHelper.WindowSizeInfo info = WindowMetricsHelper.computeWindowSizeInfo(this);
+        int extraPad = info.widthDp >= 760 ? dp((info.widthDp - 720) / 2) : 0;
+        categoryBar.setPadding(dp(18) + extraPad, 0, dp(18) + extraPad, dp(8));
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (content != null) {
+            content.setLayoutParams(getContentLayoutParams());
+        }
+        updateCategoryBarPadding();
     }
 
     private void rebuildContent() {

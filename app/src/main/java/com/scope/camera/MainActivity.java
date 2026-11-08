@@ -288,6 +288,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private FrameLayout root;
     private FrameLayout shutterFrame;
     private FrameLayout videoLockOverlay;
+    private GestureOverlay overlay;
+    private LinearLayout header;
+    private LinearLayout telemetry;
+    private ZoomPresetRow lensRow;
+    private LinearLayout modeRow;
+    private LinearLayout lookRow;
+    private LinearLayout shootRow;
+    private View deckSpacer;
     private CameraManager cameraManager;
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
@@ -664,15 +672,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         focusReticle.setFocusable(false);
         root.addView(focusReticle, new FrameLayout.LayoutParams(-1, -1));
 
-        GestureOverlay overlay = new GestureOverlay();
-        overlay.setOrientation(LinearLayout.VERTICAL);
-        overlay.setPadding(dp(12), dp(16), dp(12), dp(24));
-        overlay.setBackground(new android.graphics.drawable.GradientDrawable(
-                android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{0x98080b0c, 0x00080b0c, 0x10080b0c, 0xd8080b0c}));
+        overlay = new GestureOverlay();
         root.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
 
-        LinearLayout header = row();
+        header = row();
         flashButton = pill("ϟ  OFF", false);
         header.addView(flashButton, new LinearLayout.LayoutParams(dp(60), dp(38)));
         flashButton.setOnClickListener(v -> { hapticClick(v); cycleFlash(); });
@@ -713,10 +716,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         settingsLp.leftMargin = dp(6);
         header.addView(settingsButton, settingsLp);
         settingsButton.setOnClickListener(v -> { hapticClick(v); startActivity(new Intent(this, SettingsActivity.class)); });
-        overlay.addView(header);
 
         viewfinderSpacer = new LinearLayout(this);
-        overlay.addView(viewfinderSpacer, new LinearLayout.LayoutParams(-1, dp(380)));
 
         GestureDetector tapDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onSingleTapConfirmed(MotionEvent e) {
@@ -799,9 +800,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         cameraState = label("CHECKING CAMERA SUPPORT…", 8, 0xffe2e7de, true);
         cameraState.setLetterSpacing(.09f);
         cameraState.setGravity(Gravity.CENTER);
-        overlay.addView(cameraState);
 
-        LinearLayout telemetry = row();
+        telemetry = row();
         telemetry.setPadding(dp(3), dp(6), dp(3), dp(8));
         telemetry.addView(readoutView("SHUTTER", "AUTO"), new LinearLayout.LayoutParams(0, -2, 1));
         telemetry.addView(readoutView("ISO", "AUTO"), new LinearLayout.LayoutParams(0, -2, 1));
@@ -809,9 +809,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         telemetry.setClickable(true);
         telemetry.setContentDescription("Exposure telemetry. Tap to lock or unlock exposure.");
         telemetry.setOnClickListener(v -> toggleAeLock());
-        overlay.addView(telemetry);
 
-        ZoomPresetRow lensRow = new ZoomPresetRow();
+        lensRow = new ZoomPresetRow();
         lensRow.setGravity(Gravity.CENTER);
         lensRow.setPadding(dp(4), dp(3), dp(4), dp(3));
         lensRow.setBackground(round(0xd016191a, 21, 0, 0));
@@ -841,9 +840,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             lensRow.addView(lens, lp);
             lens.setOnClickListener(v -> chooseLens(zoom));
         }
-        LinearLayout.LayoutParams lensRowLp = new LinearLayout.LayoutParams(-2, dp(42));
-        lensRowLp.gravity = Gravity.CENTER_HORIZONTAL;
-        overlay.addView(lensRow, lensRowLp);
 
         zoomSliderPanel = row();
         zoomSliderPanel.setGravity(Gravity.CENTER_VERTICAL);
@@ -859,9 +855,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         zoomSlider.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
         zoomSliderPanel.addView(zoomSlider, new LinearLayout.LayoutParams(0, dp(32), 1f));
         zoomSliderPanel.setVisibility(View.GONE);
-        LinearLayout.LayoutParams zoomSliderLp = new LinearLayout.LayoutParams(-1, -2);
-        zoomSliderLp.topMargin = dp(4);
-        overlay.addView(zoomSliderPanel, zoomSliderLp);
         final float[] lastDetentZoom = {1.0f};
         zoomSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
@@ -891,7 +884,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
         });
 
-        LinearLayout modeRow = row();
+        modeRow = row();
         modeRow.setGravity(Gravity.CENTER);
         modeRow.setPadding(0, dp(2), 0, 0);
         photoModeButton = pill("PHOTO", true);
@@ -904,11 +897,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         modeRow.addView(videoModeButton, modeLp);
         photoModeButton.setOnClickListener(v -> { hapticClick(v); setVideoMode(false); });
         videoModeButton.setOnClickListener(v -> { hapticClick(v); setVideoMode(true); });
-        LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(-1, -2);
-        modeRowLp.topMargin = dp(8);
-        overlay.addView(modeRow, modeRowLp);
 
-        LinearLayout lookRow = row();
+        lookRow = row();
         modeNote = label("RAW DEVELOPED AFTER CAPTURE", 7, 0xffc9d0c8, false);
         modeNote.setLetterSpacing(.055f);
         LinearLayout.LayoutParams noteTextLp = new LinearLayout.LayoutParams(0, -2, 1f);
@@ -945,15 +935,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         recordingLockButton.setOnClickListener(v -> { hapticClick(v); setVideoScreenLocked(true); });
         lookRow.addView(recordingLockButton, new LinearLayout.LayoutParams(dp(54), dp(30)));
         recordingLockButton.setVisibility(View.GONE);
-        LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
-        noteLp.topMargin = dp(8);
         lookRow.setPadding(0, 0, 0, dp(2));
-        overlay.addView(lookRow, noteLp);
 
-        View deckSpacer = new View(this);
-        overlay.addView(deckSpacer, new LinearLayout.LayoutParams(-1, 0, 1f));
+        deckSpacer = new View(this);
 
-        LinearLayout shootRow = row();
+        shootRow = row();
         shootRow.setGravity(Gravity.CENTER_VERTICAL);
         shootRow.setPadding(0, dp(2), 0, 0);
         galleryButton = new ImageView(this);
@@ -1034,21 +1020,20 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
         });
 
-        shootRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
         TextView flip = pill("⟳", false);
         flip.setTextSize(20f);
         flip.setContentDescription("Switch front and rear camera");
-        shootRow.addView(flip, new LinearLayout.LayoutParams(dp(52), dp(52)));
         flip.setOnClickListener(v -> { hapticClick(v); toggleCameraFacing(); });
         flipButton = flip;
-        overlay.addView(shootRow);
 
         outputModeText = label("WAITING FOR CAMERA SUPPORT", 7, 0xffd9dfd6, true);
         outputModeText.setGravity(Gravity.CENTER);
         outputModeText.setLetterSpacing(.12f);
-        LinearLayout.LayoutParams formatLp = new LinearLayout.LayoutParams(-1, -2);
-        formatLp.topMargin = dp(7);
-        overlay.addView(outputModeText, formatLp);
+
+        restoreShootRow();
+        WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
+        boolean isWide = windowInfo.isLandscape || (windowInfo.widthDp >= windowInfo.heightDp);
+        assembleCameraLayout(isWide);
 
         buildQuickAdjustPanel();
 
@@ -1078,6 +1063,238 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         updateVideoModeUi();
         setContentView(root);
+    }
+
+    private void restoreShootRow() {
+        if (shootRow == null) return;
+        shootRow.removeAllViews();
+        if (galleryButton != null) {
+            if (galleryButton.getParent() != null) ((ViewGroup) galleryButton.getParent()).removeView(galleryButton);
+            shootRow.addView(galleryButton, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        }
+        shootRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        if (shutterFrame != null) {
+            if (shutterFrame.getParent() != null) ((ViewGroup) shutterFrame.getParent()).removeView(shutterFrame);
+            shootRow.addView(shutterFrame, new LinearLayout.LayoutParams(dp(78), dp(78)));
+        }
+        shootRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        if (flipButton != null) {
+            if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
+            shootRow.addView(flipButton, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        }
+    }
+
+    private void assembleCameraLayout(boolean isWide) {
+        if (overlay == null) return;
+        overlay.removeAllViews();
+        Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
+
+        if (!isWide) {
+            overlay.setOrientation(LinearLayout.VERTICAL);
+            overlay.setPadding(dp(12) + safeInsets.left, dp(16) + safeInsets.top, dp(12) + safeInsets.right, dp(24) + safeInsets.bottom);
+            overlay.setBackground(new android.graphics.drawable.GradientDrawable(
+                    android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                    new int[]{0x98080b0c, 0x00080b0c, 0x10080b0c, 0xd8080b0c}));
+
+            if (header != null) {
+                if (header.getParent() != null) ((ViewGroup) header.getParent()).removeView(header);
+                overlay.addView(header);
+            }
+            if (viewfinderSpacer != null) {
+                if (viewfinderSpacer.getParent() != null) ((ViewGroup) viewfinderSpacer.getParent()).removeView(viewfinderSpacer);
+                overlay.addView(viewfinderSpacer, new LinearLayout.LayoutParams(-1, dp(380)));
+            }
+            if (cameraState != null) {
+                if (cameraState.getParent() != null) ((ViewGroup) cameraState.getParent()).removeView(cameraState);
+                overlay.addView(cameraState);
+            }
+            if (telemetry != null) {
+                if (telemetry.getParent() != null) ((ViewGroup) telemetry.getParent()).removeView(telemetry);
+                overlay.addView(telemetry);
+            }
+            if (lensRow != null) {
+                if (lensRow.getParent() != null) ((ViewGroup) lensRow.getParent()).removeView(lensRow);
+                LinearLayout.LayoutParams lensRowLp = new LinearLayout.LayoutParams(-2, dp(42));
+                lensRowLp.gravity = Gravity.CENTER_HORIZONTAL;
+                overlay.addView(lensRow, lensRowLp);
+            }
+            if (zoomSliderPanel != null) {
+                if (zoomSliderPanel.getParent() != null) ((ViewGroup) zoomSliderPanel.getParent()).removeView(zoomSliderPanel);
+                LinearLayout.LayoutParams zoomSliderLp = new LinearLayout.LayoutParams(-1, -2);
+                zoomSliderLp.topMargin = dp(4);
+                overlay.addView(zoomSliderPanel, zoomSliderLp);
+            }
+            if (modeRow != null) {
+                if (modeRow.getParent() != null) ((ViewGroup) modeRow.getParent()).removeView(modeRow);
+                LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(-1, -2);
+                modeRowLp.topMargin = dp(8);
+                overlay.addView(modeRow, modeRowLp);
+            }
+            if (lookRow != null) {
+                if (lookRow.getParent() != null) ((ViewGroup) lookRow.getParent()).removeView(lookRow);
+                LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
+                noteLp.topMargin = dp(8);
+                overlay.addView(lookRow, noteLp);
+            }
+            if (deckSpacer != null) {
+                if (deckSpacer.getParent() != null) ((ViewGroup) deckSpacer.getParent()).removeView(deckSpacer);
+                overlay.addView(deckSpacer, new LinearLayout.LayoutParams(-1, 0, 1f));
+            }
+            restoreShootRow();
+            if (shootRow != null) {
+                if (shootRow.getParent() != null) ((ViewGroup) shootRow.getParent()).removeView(shootRow);
+                overlay.addView(shootRow);
+            }
+            if (outputModeText != null) {
+                if (outputModeText.getParent() != null) ((ViewGroup) outputModeText.getParent()).removeView(outputModeText);
+                LinearLayout.LayoutParams formatLp = new LinearLayout.LayoutParams(-1, -2);
+                formatLp.topMargin = dp(7);
+                overlay.addView(outputModeText, formatLp);
+            }
+        } else {
+            // Landscape, Tablet, and Foldable Pro Camera Side-Grip layout
+            overlay.setOrientation(LinearLayout.VERTICAL);
+            overlay.setPadding(dp(12) + safeInsets.left, dp(10) + safeInsets.top, dp(12) + safeInsets.right, dp(12) + safeInsets.bottom);
+            overlay.setBackground(new android.graphics.drawable.GradientDrawable(
+                    android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+                    new int[]{0x78080b0c, 0x00080b0c, 0x00080b0c, 0xb8080b0c}));
+
+            if (header != null) {
+                if (header.getParent() != null) ((ViewGroup) header.getParent()).removeView(header);
+                overlay.addView(header);
+            }
+
+            LinearLayout wideBody = new LinearLayout(this);
+            wideBody.setOrientation(LinearLayout.HORIZONTAL);
+
+            LinearLayout leftCanvas = new LinearLayout(this);
+            leftCanvas.setOrientation(LinearLayout.VERTICAL);
+
+            if (viewfinderSpacer != null) {
+                if (viewfinderSpacer.getParent() != null) ((ViewGroup) viewfinderSpacer.getParent()).removeView(viewfinderSpacer);
+                leftCanvas.addView(viewfinderSpacer, new LinearLayout.LayoutParams(-1, 0, 1f));
+            }
+            if (cameraState != null) {
+                if (cameraState.getParent() != null) ((ViewGroup) cameraState.getParent()).removeView(cameraState);
+                leftCanvas.addView(cameraState);
+            }
+            if (telemetry != null) {
+                if (telemetry.getParent() != null) ((ViewGroup) telemetry.getParent()).removeView(telemetry);
+                LinearLayout.LayoutParams telLp = new LinearLayout.LayoutParams(dp(340), -2);
+                telLp.gravity = Gravity.CENTER_HORIZONTAL;
+                leftCanvas.addView(telemetry, telLp);
+            }
+            if (zoomSliderPanel != null) {
+                if (zoomSliderPanel.getParent() != null) ((ViewGroup) zoomSliderPanel.getParent()).removeView(zoomSliderPanel);
+                LinearLayout.LayoutParams zoomSliderLp = new LinearLayout.LayoutParams(dp(320), -2);
+                zoomSliderLp.gravity = Gravity.CENTER_HORIZONTAL;
+                zoomSliderLp.topMargin = dp(4);
+                leftCanvas.addView(zoomSliderPanel, zoomSliderLp);
+            }
+            wideBody.addView(leftCanvas, new LinearLayout.LayoutParams(0, -1, 1f));
+
+            LinearLayout sideGrip = new LinearLayout(this);
+            sideGrip.setOrientation(LinearLayout.VERTICAL);
+            sideGrip.setGravity(Gravity.CENTER_HORIZONTAL);
+            sideGrip.setPadding(dp(8), dp(6), dp(8), dp(8));
+            sideGrip.setBackground(round(0xb0121617, 16, 0x55454d49, dp(1)));
+
+            if (modeRow != null) {
+                if (modeRow.getParent() != null) ((ViewGroup) modeRow.getParent()).removeView(modeRow);
+                sideGrip.addView(modeRow, new LinearLayout.LayoutParams(-2, -2));
+            }
+            if (lensRow != null) {
+                if (lensRow.getParent() != null) ((ViewGroup) lensRow.getParent()).removeView(lensRow);
+                LinearLayout.LayoutParams lensRowLp = new LinearLayout.LayoutParams(-2, dp(38));
+                lensRowLp.topMargin = dp(6);
+                sideGrip.addView(lensRow, lensRowLp);
+            }
+            if (lookRow != null) {
+                if (lookRow.getParent() != null) ((ViewGroup) lookRow.getParent()).removeView(lookRow);
+                LinearLayout.LayoutParams lookRowLp = new LinearLayout.LayoutParams(-2, -2);
+                lookRowLp.topMargin = dp(6);
+                sideGrip.addView(lookRow, lookRowLp);
+            }
+
+            View upperGripSpacer = new View(this);
+            sideGrip.addView(upperGripSpacer, new LinearLayout.LayoutParams(1, 0, 1f));
+
+            if (shutterFrame != null) {
+                if (shutterFrame.getParent() != null) ((ViewGroup) shutterFrame.getParent()).removeView(shutterFrame);
+                sideGrip.addView(shutterFrame, new LinearLayout.LayoutParams(dp(76), dp(76)));
+            }
+
+            View lowerGripSpacer = new View(this);
+            sideGrip.addView(lowerGripSpacer, new LinearLayout.LayoutParams(1, 0, 1f));
+
+            LinearLayout gripBottomRow = new LinearLayout(this);
+            gripBottomRow.setOrientation(LinearLayout.HORIZONTAL);
+            gripBottomRow.setGravity(Gravity.CENTER);
+            if (galleryButton != null) {
+                if (galleryButton.getParent() != null) ((ViewGroup) galleryButton.getParent()).removeView(galleryButton);
+                gripBottomRow.addView(galleryButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+            }
+            if (flipButton != null) {
+                if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
+                LinearLayout.LayoutParams flipLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+                flipLp.leftMargin = dp(8);
+                gripBottomRow.addView(flipButton, flipLp);
+            }
+            sideGrip.addView(gripBottomRow, new LinearLayout.LayoutParams(-2, -2));
+
+            if (outputModeText != null) {
+                if (outputModeText.getParent() != null) ((ViewGroup) outputModeText.getParent()).removeView(outputModeText);
+                LinearLayout.LayoutParams formatLp = new LinearLayout.LayoutParams(-2, -2);
+                formatLp.topMargin = dp(6);
+                sideGrip.addView(outputModeText, formatLp);
+            }
+
+            wideBody.addView(sideGrip, new LinearLayout.LayoutParams(dp(110), -1));
+            overlay.addView(wideBody, new LinearLayout.LayoutParams(-1, 0, 1f));
+        }
+    }
+
+    private FrameLayout.LayoutParams getQuickAdjustLayoutParams() {
+        WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
+        boolean isWide = windowInfo.isLandscape || (windowInfo.widthDp >= windowInfo.heightDp);
+        if (isWide) {
+            FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(dp(380), dp(320), Gravity.BOTTOM | Gravity.START);
+            panelLp.leftMargin = dp(24);
+            panelLp.bottomMargin = dp(24);
+            return panelLp;
+        } else {
+            FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(-1, dp(340), Gravity.BOTTOM);
+            panelLp.leftMargin = dp(8);
+            panelLp.rightMargin = dp(8);
+            panelLp.bottomMargin = dp(118);
+            return panelLp;
+        }
+    }
+
+    private void rebuildCameraUiLayout() {
+        WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
+        boolean isWide = windowInfo.isLandscape || (windowInfo.widthDp >= windowInfo.heightDp);
+        assembleCameraLayout(isWide);
+        if (quickAdjustPanel != null) {
+            quickAdjustPanel.setLayoutParams(getQuickAdjustLayoutParams());
+        }
+        root.post(() -> {
+            if (textureView != null) {
+                configureTransform(textureView.getWidth(), textureView.getHeight());
+            }
+            if (gridOverlay != null) {
+                gridOverlay.invalidate();
+            }
+            updateVideoModeUi();
+            updateLensButtons(requestedZoom);
+            updateReadouts();
+        });
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        rebuildCameraUiLayout();
     }
 
     private void buildVideoLockOverlay() {
@@ -1903,11 +2120,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         sheet.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
         populateQuickControls();
 
-        FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(-1, dp(340), Gravity.BOTTOM);
-        panelLp.leftMargin = dp(8);
-        panelLp.rightMargin = dp(8);
-        panelLp.bottomMargin = dp(118);
-        root.addView(quickAdjustPanel, panelLp);
+        root.addView(quickAdjustPanel, getQuickAdjustLayoutParams());
         quickAdjustPanel.setVisibility(View.GONE);
     }
 
@@ -2523,10 +2736,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private RectF framingRect(float width, float height) {
         if (width <= 0 || height <= 0) return new RectF(0, 0, 0, 0);
         float ratio = aspectRatioSetting();
-        if (width < height) ratio = 1f / ratio;
-        float frameWidth = width;
-        float frameHeight = frameWidth / ratio;
-        if (width < height) {
+        WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
+        boolean isWide = windowInfo.isLandscape || (width >= height);
+        if (!isWide) {
+            ratio = 1f / ratio;
+            float frameWidth = width;
+            float frameHeight = frameWidth / ratio;
             float topOffset = dp(56);
             float maxFrameHeight = Math.max(dp(100), height - topOffset - dp(185));
             if (frameHeight > maxFrameHeight) {
@@ -2537,12 +2752,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             float top = topOffset;
             return new RectF(left, top, left + frameWidth, top + frameHeight);
         } else {
-            if (frameHeight > height) {
-                frameHeight = height;
+            float gripWidth = dp(112);
+            float topOffset = dp(52);
+            float availableWidth = Math.max(dp(200), width - gripWidth - dp(24));
+            float availableHeight = Math.max(dp(200), height - topOffset - dp(16));
+            float frameWidth = availableWidth;
+            float frameHeight = frameWidth / ratio;
+            if (frameHeight > availableHeight) {
+                frameHeight = availableHeight;
                 frameWidth = frameHeight * ratio;
             }
-            float left = (width - frameWidth) * .5f;
-            float top = (height - frameHeight) * .5f;
+            float left = dp(12) + (availableWidth - frameWidth) * 0.5f;
+            float top = topOffset + (availableHeight - frameHeight) * 0.5f;
             return new RectF(left, top, left + frameWidth, top + frameHeight);
         }
     }
@@ -2884,10 +3105,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private int jpegOrientation() {
+        if (characteristics == null) return 0;
         Integer sensor = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
+        Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
+        int sensorOrientation = sensor == null ? 90 : sensor;
         int rotation = getWindowManager().getDefaultDisplay().getRotation();
-        int degrees = rotation == Surface.ROTATION_90 ? 90 : rotation == Surface.ROTATION_180 ? 180 : rotation == Surface.ROTATION_270 ? 270 : 0;
-        return ((sensor == null ? 90 : sensor) + degrees + 360) % 360;
+        int deviceDegrees = rotation == Surface.ROTATION_90 ? 90 : rotation == Surface.ROTATION_180 ? 180 : rotation == Surface.ROTATION_270 ? 270 : 0;
+        if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
+            return (sensorOrientation + deviceDegrees) % 360;
+        } else {
+            return (sensorOrientation - deviceDegrees + 360) % 360;
+        }
     }
 
     private Bitmap rotateForDisplay(Bitmap bitmap) {
@@ -3755,14 +3983,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private int zoomProgressFor(float zoom) {
-        float t = (float) (Math.log(Math.max(MIN_INTERACTIVE_ZOOM, Math.min(MAX_INTERACTIVE_ZOOM, zoom)) / MIN_INTERACTIVE_ZOOM)
-                / Math.log(MAX_INTERACTIVE_ZOOM / MIN_INTERACTIVE_ZOOM));
-        return Math.max(0, Math.min(1000, Math.round(t * 1000f)));
+        return CameraExposureHelper.zoomProgressFor(zoom);
     }
 
     private float zoomForProgress(int progress) {
-        float t = Math.max(0, Math.min(1000, progress)) / 1000f;
-        return MIN_INTERACTIVE_ZOOM * (float) Math.pow(MAX_INTERACTIVE_ZOOM / MIN_INTERACTIVE_ZOOM, t);
+        return CameraExposureHelper.zoomForProgress(progress);
     }
 
     private void animateZoomTo(float targetZoom) {
@@ -4033,17 +4258,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private long shutterNanoseconds(String value) {
-        if (value.startsWith("1/30")) return 33_333_333L;
-        if (value.startsWith("1/60")) return 16_666_667L;
-        if (value.startsWith("1/240")) return 4_166_667L;
-        if (value.startsWith("1/500")) return 2_000_000L;
-        if (value.startsWith("1/1000")) return 1_000_000L;
-        return 8_333_333L;
+        return CameraExposureHelper.shutterNanoseconds(value);
     }
 
     private int parseIso(String value) {
-        try { return Integer.parseInt(value.replace("ISO", "").trim()); }
-        catch (NumberFormatException ignored) { return 100; }
+        return CameraExposureHelper.parseIso(value);
     }
 
     private void updateReadouts() {

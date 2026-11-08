@@ -335,7 +335,6 @@ public class PhotoEditorActivity extends Activity {
         status = text("READING SENSOR ORIGINAL", 8, 0xff9ba59e, false);
         status.setGravity(Gravity.CENTER);
         status.setPadding(dp(8), dp(6), dp(8), dp(2));
-        page.addView(status);
 
         HorizontalScrollView brainScroll = new HorizontalScrollView(this);
         brainScroll.setHorizontalScrollBarEnabled(false);
@@ -344,24 +343,81 @@ public class PhotoEditorActivity extends Activity {
         brainBar.setGravity(Gravity.CENTER_VERTICAL);
         brainBar.setPadding(dp(14), dp(2), dp(14), dp(4));
         brainScroll.addView(brainBar, new FrameLayout.LayoutParams(-2, -2));
-        page.addView(brainScroll);
-        refreshBrainBar();
 
         tabBar = new LinearLayout(this);
         tabBar.setGravity(Gravity.CENTER_VERTICAL);
         tabBar.setPadding(dp(14), dp(2), dp(14), dp(6));
-        page.addView(tabBar);
-        refreshTabs();
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.setVerticalScrollBarEnabled(false);
-        controlsList = new LinearLayout(this);
-        controlsList.setOrientation(LinearLayout.VERTICAL);
-        controlsList.setPadding(dp(14), dp(2), dp(14), dp(12));
-        scroll.addView(controlsList);
-        page.addView(scroll, new LinearLayout.LayoutParams(-1, dp(300)));
+        WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
+        boolean twoPane = windowInfo.isTwoPaneRecommended;
+
+        if (twoPane) {
+            LinearLayout splitBody = new LinearLayout(this);
+            splitBody.setOrientation(LinearLayout.HORIZONTAL);
+
+            LinearLayout leftPane = new LinearLayout(this);
+            leftPane.setOrientation(LinearLayout.VERTICAL);
+            leftPane.addView(previewContainer, new LinearLayout.LayoutParams(-1, 0, 1f));
+            leftPane.addView(status);
+            splitBody.addView(leftPane, new LinearLayout.LayoutParams(0, -1, 1f));
+
+            LinearLayout rightPane = new LinearLayout(this);
+            rightPane.setOrientation(LinearLayout.VERTICAL);
+            rightPane.setBackground(round(0xff0e1314, 0, 0x33454d49, dp(1)));
+            rightPane.setPadding(0, dp(4), 0, 0);
+
+            rightPane.addView(brainScroll);
+            refreshBrainBar();
+            rightPane.addView(tabBar);
+            refreshTabs();
+
+            ScrollView scroll = new ScrollView(this);
+            scroll.setVerticalScrollBarEnabled(false);
+            controlsList = new LinearLayout(this);
+            controlsList.setOrientation(LinearLayout.VERTICAL);
+            controlsList.setPadding(dp(16), dp(4), dp(16), dp(16));
+            scroll.addView(controlsList);
+            rightPane.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+            int paneWidth = Math.min(dp(440), (int) (windowInfo.widthDp * getResources().getDisplayMetrics().density * 0.42f));
+            if (paneWidth < dp(360)) paneWidth = dp(360);
+            splitBody.addView(rightPane, new LinearLayout.LayoutParams(paneWidth, -1));
+
+            page.addView(splitBody, new LinearLayout.LayoutParams(-1, 0, 1f));
+        } else {
+            page.addView(previewContainer, new LinearLayout.LayoutParams(-1, 0, 1));
+            page.addView(status);
+            page.addView(brainScroll);
+            refreshBrainBar();
+            page.addView(tabBar);
+            refreshTabs();
+
+            ScrollView scroll = new ScrollView(this);
+            scroll.setVerticalScrollBarEnabled(false);
+            controlsList = new LinearLayout(this);
+            controlsList.setOrientation(LinearLayout.VERTICAL);
+            controlsList.setPadding(dp(14), dp(2), dp(14), dp(12));
+            scroll.addView(controlsList);
+            page.addView(scroll, new LinearLayout.LayoutParams(-1, dp(300)));
+        }
+
         populateControls();
+        if (currentGradedBitmap != null) {
+            preview.setImageBitmap(currentGradedBitmap);
+        } else if (rawOriginalBitmap != null) {
+            preview.setImageBitmap(rawOriginalBitmap);
+        }
+        if (isLoupe1to1) {
+            preview.setScaleType(ImageView.ScaleType.CENTER);
+            if (loupeBadge != null) loupeBadge.setVisibility(View.VISIBLE);
+        }
         setContentView(page);
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        build();
     }
 
     private void refreshTabs() {

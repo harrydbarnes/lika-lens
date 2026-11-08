@@ -141,12 +141,15 @@ public class GalleryActivity extends Activity {
             return;
         }
 
+        WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
+        int columns = WindowMetricsHelper.calculateGalleryColumns(windowInfo.widthDp);
+        int rowHeight = columns >= 5 ? dp(130) : dp(112);
         String currentDay = "";
         LinearLayout row = null;
         for (PhotoRepository.Photo photo : photos) {
             String day = new SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(new Date(photo.timestampMillis));
             if (!day.equals(currentDay)) {
-                completeRow(row);
+                completeRow(row, columns);
                 currentDay = day;
                 TextView heading = text(day.toUpperCase(Locale.getDefault()), 8, 0xffbbc1ba, true);
                 heading.setLetterSpacing(.12f);
@@ -155,17 +158,28 @@ public class GalleryActivity extends Activity {
                 list.addView(heading, headingLp);
                 row = null;
             }
-            if (row == null || row.getChildCount() == 3) {
+            if (row == null || row.getChildCount() == columns) {
                 row = new LinearLayout(this);
                 row.setOrientation(LinearLayout.HORIZONTAL);
-                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, dp(112));
+                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, rowHeight);
                 rowLp.bottomMargin = dp(3);
                 list.addView(row, rowLp);
             }
             addPhotoTile(row, photo);
         }
-        completeRow(row);
+        completeRow(row, columns);
         scroll.post(() -> scroll.scrollTo(0, savedScrollY));
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (list != null) {
+            WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
+            int horizontalPad = Math.max(dp(14), windowInfo.widthDp >= 840 ? dp(48) : dp(14));
+            list.setPadding(horizontalPad, dp(3), horizontalPad, dp(25));
+        }
+        loadPhotos();
     }
 
     private void addPhotoTile(LinearLayout row, PhotoRepository.Photo photo) {
@@ -236,19 +250,20 @@ public class GalleryActivity extends Activity {
         });
         sheet.addView(actions);
 
+        int maxSheetWidth = Math.min(dp(440), getResources().getDisplayMetrics().widthPixels);
         FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
+                maxSheetWidth,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
         );
         scrim.addView(sheet, sheetLp);
         dialog.setContentView(scrim);
         dialog.show();
     }
 
-    private void completeRow(LinearLayout row) {
+    private void completeRow(LinearLayout row, int columns) {
         if (row == null) return;
-        while (row.getChildCount() < 3) {
+        while (row.getChildCount() < columns) {
             View spacer = new View(this);
             row.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
         }

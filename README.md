@@ -105,6 +105,32 @@ Open this folder as a project. Use JDK 17, Android Gradle Plugin 9.5.0, Gradle 9
 
 The **Build Android APK** GitHub Actions workflow runs on pushes to `main`, pull requests and manual dispatch. It installs Android SDK Platform 35 and Build Tools 36.0.0, runs `assembleDebug`, and publishes `lika-lens-debug-apk` as a downloadable workflow artifact for 14 days.
 
+## Adaptive Layouts & Form-Factor Compatibility
+
+Lika Lens is fully optimized according to Google's Android Adaptive Layouts and Large Screen Quality guidelines:
+
+| Form Factor / Posture | Window Size Class | Layout Architecture & Ergonomics |
+| :--- | :--- | :--- |
+| **Phones (Portrait)** | `Compact` ($< 600\,\text{dp}$) | Classic Leica M vertical rangefinder: top header, central framed viewfinder, HUD telemetry, tactile zoom presets, and bottom shutter deck. |
+| **Tablets & Large Foldables** | `Medium` / `Expanded` ($\ge 600\,\text{dp}$) | **Pro Rangefinder Side-Grip Rail**: Natural right-hand camera grip with thumb shutter button, mode switch, and lens presets. Viewfinder expands on the main canvas with centered golden brightline framing. |
+| **Foldables (Fold/Unfold/Posture)** | Dynamic transition | Instant reflow between compact single-column and pro side-grip without restarting camera sessions or losing recording state. Seamlessly adapts to tabletop half-folded orientations. |
+| **Darkroom Photo Editor** | All form factors | **Dual-Pane Professional Darkroom** on tablets, landscape, and unfolded screens: left pane features full-height zoomable preview with 1:1 loupe and RAW compare; right pane docks the complete grading and 3D LUT controls. Retains compact bottom drawer on portrait phones. |
+| **Gallery & Library** | All form factors | **Adaptive Column Grid**: Dynamically scales columns based on available display width ($2$–$3$ on phones, $4$ on foldables, $5$–$6$ on tablets), eliminating stretched cards. |
+| **Settings & Viewer** | All form factors | Centered max-width constraints ($720\,\text{dp}$) prevent stretched cards on wide screens, and floating EXIF inspection cards preserve photo visibility. |
+| **System Insets & Cutouts** | API 26–35 | Dynamic display cutout and notch detection ensures controls never collide with camera punch-holes, rounded display corners, or gesture navigation bars. |
+
+## Modular Architecture & Test Suite
+
+- **`WindowMetricsHelper`**: Computes Android Window Size Classes (Compact, Medium, Expanded), orientation, and safe display cutouts across API 26–35.
+- **`CameraExposureHelper`**: Encapsulates exposure time conversions, ISO clamping, logarithmic zoom interpolation, and sensor crop mathematics.
+- **`LutManager`**: Zero-allocation trilinear 3D LUT engine supporting Adobe `.CUBE` formats and built-in film stocks.
+- **Automated Unit Tests**:
+  - `LutManagerTest`: Validates 3D and 1D `.CUBE` parsing, corner-case trilinear interpolation, intensity blending, and built-in profiles.
+  - `RawDeveloperTest`: Validates `Look` JSON serialization round-trips (including LUT settings), deep cloning, and tone grading math.
+  - `CameraExposureHelperTest`: Validates shutter nanosecond conversions, ISO parsing, and sensor crop rects.
+  - `WindowMetricsHelperTest`: Validates window size class mappings, two-pane recommendations, and responsive gallery column calculations.
+
 ## Current limits
 
 RAW support varies by device, camera and stream combination. Lika Lens tries the selected RAW size with the live preview and falls back to a phone-rendered JPEG if the combination is unsupported. Location metadata is intentionally excluded for privacy preservation.
+

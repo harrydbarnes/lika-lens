@@ -207,13 +207,33 @@ public class PhotoViewerActivity extends Activity {
         // EXIF Metadata bottom overlay card
         infoCard = buildInfoCard();
         infoCard.setVisibility(View.GONE);
-        FrameLayout.LayoutParams infoCardLp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
-        infoCardLp.setMargins(dp(16), 0, dp(16), dp(20));
-        root.addView(infoCard, infoCardLp);
+        root.addView(infoCard, getInfoCardLayoutParams());
 
         setContentView(root);
         refreshPhotoList();
         loadPhoto();
+    }
+
+    private FrameLayout.LayoutParams getInfoCardLayoutParams() {
+        WindowMetricsHelper.WindowSizeInfo info = WindowMetricsHelper.computeWindowSizeInfo(this);
+        int cardWidth = info.widthDp >= 600 ? dp(420) : ViewGroup.LayoutParams.MATCH_PARENT;
+        int gravity = (info.widthDp >= 600 && info.isLandscape)
+                ? (Gravity.BOTTOM | Gravity.END)
+                : (Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(cardWidth, ViewGroup.LayoutParams.WRAP_CONTENT, gravity);
+        lp.setMargins(dp(16), 0, dp(16), dp(20));
+        return lp;
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (infoCard != null) {
+            infoCard.setLayoutParams(getInfoCardLayoutParams());
+        }
+        if (photoView != null) {
+            photoView.post(this::fitImageToView);
+        }
     }
 
     private void startComparing() {
