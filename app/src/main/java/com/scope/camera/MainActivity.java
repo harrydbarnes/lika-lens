@@ -1678,13 +1678,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             mediaRecorder.setVideoSize(videoSize.getWidth(), videoSize.getHeight());
             String fpsChoice = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
-            int targetFps = fpsChoice.startsWith("60") ? 60 : fpsChoice.startsWith("30") ? 30 : 24;
+            int targetFps = VideoRecordingCoordinator.computeTargetFps(fpsChoice);
             mediaRecorder.setVideoFrameRate(targetFps);
 
             String bitrateChoice = AppSettings.get(this, AppSettings.VIDEO_BITRATE, "High · 24 Mbps");
-            int bitrate = bitrateChoice.startsWith("Ultra") ? 35_000_000
-                    : bitrateChoice.startsWith("Standard") ? 14_000_000
-                    : 24_000_000;
+            int bitrate = VideoRecordingCoordinator.computeBitrate(bitrateChoice);
             mediaRecorder.setVideoEncodingBitRate(bitrate);
             if (recordAudio) mediaRecorder.setAudioEncodingBitRate(160_000);
             int orientHint = lockedVideoOrientation >= 0 ? lockedVideoOrientation : jpegOrientation();
@@ -1773,24 +1771,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private Size chooseVideoSize(Size[] sizes) {
-        if (sizes == null || sizes.length == 0) return null;
-        return Arrays.stream(sizes)
-                .filter(s -> s.getWidth() >= s.getHeight() && s.getWidth() <= 1920 && s.getHeight() <= 1080)
-                .max(Comparator.comparingLong(s -> (long) s.getWidth() * s.getHeight()))
-                .orElseGet(() -> Arrays.stream(sizes)
-                        .filter(s -> s.getWidth() >= s.getHeight())
-                        .min(Comparator.comparingLong(s -> Math.abs((long) s.getWidth() * s.getHeight() - 1920L * 1080L)))
-                        .orElse(sizes[0]));
+        return VideoRecordingCoordinator.chooseVideoSize(sizes);
     }
 
     private String videoProfileLabel() {
-        String fpsSetting = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
-        String fpsLabel = fpsSetting.startsWith("60") ? "60 FPS" : fpsSetting.startsWith("30") ? "30 FPS" : "24 FPS CINEMATIC";
-        String vAspect = AppSettings.get(this, AppSettings.VIDEO_ASPECT, "16:9 Widescreen");
-        String aspectLabel = vAspect.contains("2.39") ? " · 2.39:1 SCOPE" : "";
-        if (videoSize == null) return "1080P / " + fpsLabel + aspectLabel;
-        int vertical = Math.min(videoSize.getWidth(), videoSize.getHeight());
-        return vertical + "P / " + fpsLabel + aspectLabel;
+        return VideoRecordingCoordinator.formatProfileLabel(videoSize,
+                AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)"),
+                AppSettings.get(this, AppSettings.VIDEO_ASPECT, "16:9 Widescreen"));
     }
 
     private void failVideoStart(String message) {
@@ -1880,27 +1867,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void releaseMediaRecorder() {
-        if (mediaRecorder == null) return;
-        try {
-            mediaRecorder.reset();
-        } catch (RuntimeException e) {
-            Log.w(TAG, "Failed to reset media recorder", e);
-        }
-        try {
-            mediaRecorder.release();
-        } catch (RuntimeException e) {
-            Log.w(TAG, "Failed to release media recorder", e);
-        }
+        VideoRecordingCoordinator.releaseMediaRecorder(mediaRecorder);
         mediaRecorder = null;
     }
 
     private void releaseRecordingPreviewSurface() {
-        if (recordingPreviewSurface == null) return;
-        try {
-            recordingPreviewSurface.release();
-        } catch (RuntimeException e) {
-            Log.w(TAG, "Failed to release recording preview surface", e);
-        }
+        VideoRecordingCoordinator.releaseRecordingPreviewSurface(recordingPreviewSurface);
         recordingPreviewSurface = null;
     }
 
@@ -1989,134 +1961,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     /** Seamlessly stitches multiple MP4 segments recorded across camera/lens switches into one continuous MP4. */
     private boolean stitchVideoSegments(List<File> segments, File outputFile) {
-        MediaMuxer muxer = null;
-        try {
-            muxer = new MediaMuxer(outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-            int outVideoTrack = -1;
-            int outAudioTrack = -1;
-            boolean muxerStarted = false;
-
-            // Read orientation hint from first segment
-            try {
-                MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-                retriever.setDataSource(segments.get(0).getAbsolutePath());
-                String rot = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
-                if (rot != null) {
-                    muxer.setOrientationHint(Integer.parseInt(rot));
-                }
-                retriever.release();
-            } catch (Throwable t) {
-                Log.w(TAG, "Failed to read orientation hint from video segment", t);
-            }
-
-            // Discover tracks from first valid segment
-            for (File seg : segments) {
-                if (seg == null || !seg.exists() || seg.length() == 0) continue;
-                MediaExtractor extractor = new MediaExtractor();
-                try {
-                    extractor.setDataSource(seg.getAbsolutePath());
-                    for (int i = 0; i < extractor.getTrackCount(); i++) {
-                        MediaFormat fmt = extractor.getTrackFormat(i);
-                        String mime = fmt.getString(MediaFormat.KEY_MIME);
-                        if (mime == null) continue;
-                        if (mime.startsWith("video/") && outVideoTrack < 0) {
-                            outVideoTrack = muxer.addTrack(fmt);
-                        } else if (mime.startsWith("audio/") && outAudioTrack < 0) {
-                            outAudioTrack = muxer.addTrack(fmt);
-                        }
-                    }
-                    if (outVideoTrack >= 0) break;
-                } finally {
-                    extractor.release();
-                }
-            }
-
-            if (outVideoTrack < 0) return false;
-            muxer.start();
-            muxerStarted = true;
-
-            ByteBuffer buffer = ByteBuffer.allocateDirect(2 * 1024 * 1024);
-            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-            long timelineOffsetUs = 0L;
-
-            for (File seg : segments) {
-                if (seg == null || !seg.exists() || seg.length() == 0) continue;
-                MediaExtractor extractor = new MediaExtractor();
-                try {
-                    extractor.setDataSource(seg.getAbsolutePath());
-                    int segVideoTrack = -1;
-                    int segAudioTrack = -1;
-                    for (int i = 0; i < extractor.getTrackCount(); i++) {
-                        MediaFormat fmt = extractor.getTrackFormat(i);
-                        String mime = fmt.getString(MediaFormat.KEY_MIME);
-                        if (mime == null) continue;
-                        if (mime.startsWith("video/") && segVideoTrack < 0) segVideoTrack = i;
-                        else if (mime.startsWith("audio/") && segAudioTrack < 0) segAudioTrack = i;
-                    }
-
-                    long maxSegPtsUs = 0L;
-                    if (segVideoTrack >= 0) {
-                        extractor.selectTrack(segVideoTrack);
-                        long firstVideoPts = -1L;
-                        while (true) {
-                            buffer.clear();
-                            int sampleSize = extractor.readSampleData(buffer, 0);
-                            if (sampleSize < 0) break;
-                            long rawPts = extractor.getSampleTime();
-                            if (firstVideoPts < 0) firstVideoPts = Math.max(0L, rawPts);
-                            long relPts = Math.max(0L, rawPts - firstVideoPts);
-                            info.offset = 0;
-                            info.size = sampleSize;
-                            info.presentationTimeUs = timelineOffsetUs + relPts;
-                            info.flags = extractor.getSampleFlags();
-                            muxer.writeSampleData(outVideoTrack, buffer, info);
-                            if (relPts > maxSegPtsUs) maxSegPtsUs = relPts;
-                            extractor.advance();
-                        }
-                        extractor.unselectTrack(segVideoTrack);
-                    }
-
-                    if (segAudioTrack >= 0 && outAudioTrack >= 0) {
-                        extractor.selectTrack(segAudioTrack);
-                        long firstAudioPts = -1L;
-                        while (true) {
-                            buffer.clear();
-                            int sampleSize = extractor.readSampleData(buffer, 0);
-                            if (sampleSize < 0) break;
-                            long rawPts = extractor.getSampleTime();
-                            if (firstAudioPts < 0) firstAudioPts = Math.max(0L, rawPts);
-                            long relPts = Math.max(0L, rawPts - firstAudioPts);
-                            info.offset = 0;
-                            info.size = sampleSize;
-                            info.presentationTimeUs = timelineOffsetUs + relPts;
-                            info.flags = extractor.getSampleFlags();
-                            muxer.writeSampleData(outAudioTrack, buffer, info);
-                            if (relPts > maxSegPtsUs) maxSegPtsUs = relPts;
-                            extractor.advance();
-                        }
-                        extractor.unselectTrack(segAudioTrack);
-                    }
-
-                    timelineOffsetUs += maxSegPtsUs + 33_333L;
-                } finally {
-                    extractor.release();
-                }
-            }
-
-            if (muxerStarted) muxer.stop();
-            return outputFile.exists() && outputFile.length() > 1024;
-        } catch (Exception e) {
-            Log.e(TAG, "Stitching video segments failed", e);
-            return false;
-        } finally {
-            if (muxer != null) {
-                try {
-                    muxer.release();
-                } catch (RuntimeException re) {
-                    Log.w(TAG, "Failed to release media muxer", re);
-                }
-            }
-        }
+        return VideoRecordingCoordinator.stitchVideoSegments(segments, outputFile);
     }
 
     private void buildQuickAdjustPanel() {
