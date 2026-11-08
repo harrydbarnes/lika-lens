@@ -453,6 +453,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         AppSettings.migrateBranding(this);
         Window window = getWindow();
         if (window != null) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
             window.setStatusBarColor(0x00000000);
             window.setNavigationBarColor(0xff0b0d0e);
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -494,22 +496,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         try {
             Window window = getWindow();
             if (window == null) return;
+            window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+
+            View decor = window.getDecorView();
+            if (decor != null) {
+                decor.setSystemUiVisibility(
+                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                | View.SYSTEM_UI_FLAG_FULLSCREEN
+                                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                );
+            }
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 window.setDecorFitsSystemWindows(false);
                 WindowInsetsController controller = window.getInsetsController();
                 if (controller != null) {
                     controller.hide(WindowInsets.Type.statusBars());
                     controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-                }
-            } else {
-                View decor = window.getDecorView();
-                if (decor != null) {
-                    decor.setSystemUiVisibility(
-                            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                                    | View.SYSTEM_UI_FLAG_FULLSCREEN
-                                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                    );
                 }
             }
         } catch (Throwable t) {
@@ -635,7 +640,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         GestureOverlay overlay = new GestureOverlay();
         overlay.setOrientation(LinearLayout.VERTICAL);
-        overlay.setPadding(dp(12), dp(8), dp(12), dp(10));
+        overlay.setPadding(dp(12), dp(16), dp(12), dp(24));
         overlay.setBackground(new android.graphics.drawable.GradientDrawable(
                 android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
                 new int[]{0x98080b0c, 0x00080b0c, 0x10080b0c, 0xd8080b0c}));
@@ -858,12 +863,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
         });
 
-        View deckSpacer = new View(this);
-        overlay.addView(deckSpacer, new LinearLayout.LayoutParams(-1, 0, 1f));
-
         LinearLayout modeRow = row();
         modeRow.setGravity(Gravity.CENTER);
-        modeRow.setPadding(0, dp(6), 0, 0);
+        modeRow.setPadding(0, dp(2), 0, 0);
         photoModeButton = pill("PHOTO", true);
         videoModeButton = pill("VIDEO", false);
         photoModeButton.setContentDescription("Photo mode");
@@ -874,7 +876,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         modeRow.addView(videoModeButton, modeLp);
         photoModeButton.setOnClickListener(v -> { hapticClick(v); setVideoMode(false); });
         videoModeButton.setOnClickListener(v -> { hapticClick(v); setVideoMode(true); });
-        overlay.addView(modeRow);
+        LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(-1, -2);
+        modeRowLp.topMargin = dp(8);
+        overlay.addView(modeRow, modeRowLp);
 
         LinearLayout lookRow = row();
         modeNote = label("RAW DEVELOPED AFTER CAPTURE", 7, 0xffc9d0c8, false);
@@ -914,13 +918,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         lookRow.addView(recordingLockButton, new LinearLayout.LayoutParams(dp(54), dp(30)));
         recordingLockButton.setVisibility(View.GONE);
         LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
-        noteLp.topMargin = dp(13);
-        lookRow.setPadding(0, 0, 0, dp(3));
+        noteLp.topMargin = dp(8);
+        lookRow.setPadding(0, 0, 0, dp(2));
         overlay.addView(lookRow, noteLp);
+
+        View deckSpacer = new View(this);
+        overlay.addView(deckSpacer, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         LinearLayout shootRow = row();
         shootRow.setGravity(Gravity.CENTER_VERTICAL);
-        shootRow.setPadding(0, dp(4), 0, 0);
+        shootRow.setPadding(0, dp(2), 0, 0);
         galleryButton = new ImageView(this);
         galleryButton.setScaleType(ImageView.ScaleType.CENTER_CROP);
         galleryButton.setBackground(round(0xff202626, 14, 0x777d8580, dp(1)));
@@ -2476,7 +2483,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         float frameWidth = width;
         float frameHeight = frameWidth / ratio;
         if (width < height) {
-            float topOffset = dp(48);
+            float topOffset = dp(56);
             float maxFrameHeight = Math.max(dp(100), height - topOffset - dp(185));
             if (frameHeight > maxFrameHeight) {
                 frameHeight = maxFrameHeight;
