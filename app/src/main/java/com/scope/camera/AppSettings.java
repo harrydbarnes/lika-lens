@@ -108,6 +108,11 @@ final class AppSettings {
     static final String RECIPE_3_NAME = "recipe_3_name";
     static final String RECIPE_3_DATA = "recipe_3_data";
 
+    // 3D LUT (Color Lookup Table) Keys
+    static final String LUT_NAME = "lut_name";
+    static final String LUT_INTENSITY = "lut_intensity";
+    static final int DEFAULT_LUT_INTENSITY = 100;
+
     // File Management & Output Keys
     static final String DNG_POLICY = "dng_policy";
     static final String FOLDER_ORG = "folder_organization";

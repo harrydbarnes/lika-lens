@@ -475,6 +475,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         AppSettings.migrateBranding(this);
+        LutManager.init(this);
         Window window = getWindow();
         if (window != null) {
             window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
@@ -3075,6 +3076,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         brainList.add("+ SAVE CURRENT AS RECIPE");
         descList.add("Store current quick adjust parameters into recipe slot");
+        brainList.add("+ 3D LUT COLOR GRADE...");
+        String curLut = AppSettings.get(this, AppSettings.LUT_NAME, "None");
+        descList.add("Current: " + curLut + " · Select 3D film lookup table");
 
         String[] brains = brainList.toArray(new String[0]);
         String[] descriptions = descList.toArray(new String[0]);
@@ -3083,6 +3087,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         showCustomBottomSheet("PROCESSING BRAIN & RECIPES", brains, descriptions, checked, index -> {
             String picked = brains[index];
+            if (picked.startsWith("+ 3D LUT")) {
+                showLutDialog();
+                return;
+            }
             if (picked.startsWith("+ SAVE CURRENT")) {
                 promptSaveCurrentLookAsRecipe();
                 return;
@@ -3107,7 +3115,29 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         });
     }
 
+    private void showLutDialog() {
+        List<String> luts = LutManager.getAvailableLutNames(this);
+        String current = AppSettings.get(this, AppSettings.LUT_NAME, "None");
+        String[] items = luts.toArray(new String[0]);
+        int checked = Math.max(0, luts.indexOf(current));
+        new AlertDialog.Builder(this)
+                .setTitle("3D LUT COLOR GRADE")
+                .setSingleChoiceItems(items, checked, (dialog, which) -> {
+                    String picked = items[which];
+                    AppSettings.prefs(this).edit().putString(AppSettings.LUT_NAME, picked).apply();
+                    showMessage("LUT: " + picked);
+                    applyLiveFilmPreview();
+                    updateBrainButton();
+                    dialog.dismiss();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     private void applyCustomRecipeToPreferences(RawDeveloper.Look look) {
+        if (look.lutName != null) {
+            AppSettings.prefs(this).edit().putString(AppSettings.LUT_NAME, look.lutName).apply();
+        }
         AppSettings.prefs(this).edit()
                 .putInt(AppSettings.WARMTH, Math.round(look.warmth * 50f + 50f))
                 .putInt(AppSettings.CONTRAST, Math.round(look.contrast * 100f))
@@ -3303,6 +3333,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void updateBrainButton() {
         if (brainButton != null) {
             String brain = AppSettings.brain(this);
+            String lut = AppSettings.get(this, AppSettings.LUT_NAME, "None");
             String label;
             if (brain.startsWith("[RECIPE")) label = "RCP" + brain.charAt(8);
             else if (brain.startsWith("KODACHROME")) label = "KODA";
@@ -3311,6 +3342,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             else if (brain.startsWith("MONO")) label = "MONO";
             else if (brain.startsWith("NEUTRAL")) label = "RAW";
             else label = "FILM";
+            if (!"None".equalsIgnoreCase(lut)) {
+                label += " · LUT";
+            }
             brainButton.setText(label + "  ⌄");
         }
         applyLiveFilmPreview();
@@ -3320,7 +3354,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (textureView == null) return;
         boolean livePreview = AppSettings.getBoolean(this, AppSettings.LIVE_FILM_PREVIEW, true);
         String brain = AppSettings.brain(this);
-        if (!livePreview || AppSettings.BRAIN_NEUTRAL_RAW.equals(brain)) {
+        String activeLut = AppSettings.get(this, AppSettings.LUT_NAME, "None");
+        if (!livePreview || (AppSettings.BRAIN_NEUTRAL_RAW.equals(brain) && "None".equalsIgnoreCase(activeLut))) {
             textureView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
             textureView.invalidate();
             return;
@@ -3368,7 +3403,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 0, 0, 0, 1, 0
             });
             cm.postConcat(contrast);
-        } else {
+        } else if (!AppSettings.BRAIN_NEUTRAL_RAW.equals(brain)) {
             ColorMatrix film = new ColorMatrix(new float[] {
                 1.09f,  0.02f, -0.02f, 0,  5f,
                 0.00f,  1.02f,  0.00f, 0,  1f,
@@ -3377,6 +3412,70 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             });
             cm.postConcat(film);
         }
+
+        // Apply active 3D LUT matrix in viewfinder
+        if (LutManager.LUT_PORTRA.equalsIgnoreCase(activeLut)) {
+            ColorMatrix portra = new ColorMatrix(new float[] {
+                1.12f,  0.03f, -0.04f, 0,  6f,
+               -0.01f,  1.05f, -0.01f, 0,  3f,
+               -0.06f, -0.03f,  0.94f, 0, -4f,
+                0,      0,      0,     1,  0
+            });
+            cm.postConcat(portra);
+        } else if (LutManager.LUT_FUJI.equalsIgnoreCase(activeLut)) {
+            ColorMatrix fuji = new ColorMatrix(new float[] {
+                0.96f, -0.01f,  0.03f, 0, -2f,
+                0.01f,  1.04f,  0.02f, 0,  5f,
+                0.03f,  0.02f,  1.06f, 0,  8f,
+                0,      0,      0,     1,  0
+            });
+            cm.postConcat(fuji);
+        } else if (LutManager.LUT_TEAL_ORANGE.equalsIgnoreCase(activeLut)) {
+            ColorMatrix tealOrange = new ColorMatrix(new float[] {
+                1.22f, -0.04f, -0.08f, 0,  8f,
+               -0.02f,  1.02f, -0.04f, 0,  2f,
+               -0.12f,  0.06f,  1.18f, 0, -6f,
+                0,      0,      0,     1,  0
+            });
+            cm.postConcat(tealOrange);
+        } else if (LutManager.LUT_ANSEL_BW.equalsIgnoreCase(activeLut)) {
+            ColorMatrix ansel = new ColorMatrix();
+            ansel.setSaturation(0f);
+            ColorMatrix sc = new ColorMatrix();
+            float scale = 1.30f;
+            float tr = (-0.5f * scale + 0.5f) * 255f;
+            sc.set(new float[] {
+                scale, 0, 0, 0, tr,
+                0, scale, 0, 0, tr,
+                0, 0, scale, 0, tr,
+                0, 0, 0, 1, 0
+            });
+            ansel.postConcat(sc);
+            cm.postConcat(ansel);
+        } else if (LutManager.LUT_AMBER_70S.equalsIgnoreCase(activeLut)) {
+            ColorMatrix amber = new ColorMatrix(new float[] {
+                1.20f,  0.04f, -0.04f, 0, 10f,
+                0.02f,  1.06f, -0.02f, 0,  4f,
+               -0.10f, -0.06f,  0.80f, 0, -8f,
+                0,      0,      0,     1,  0
+            });
+            cm.postConcat(amber);
+        } else if (LutManager.LUT_BLEACH.equalsIgnoreCase(activeLut)) {
+            ColorMatrix bleach = new ColorMatrix();
+            bleach.setSaturation(0.32f);
+            ColorMatrix sc = new ColorMatrix();
+            float scale = 1.35f;
+            float tr = (-0.5f * scale + 0.5f) * 255f;
+            sc.set(new float[] {
+                scale, 0, 0, 0, tr,
+                0, scale, 0, 0, tr,
+                0, 0, scale, 0, tr,
+                0, 0, 0, 1, 0
+            });
+            bleach.postConcat(sc);
+            cm.postConcat(bleach);
+        }
+
         paint.setColorFilter(new ColorMatrixColorFilter(cm));
         textureView.setLayerType(View.LAYER_TYPE_HARDWARE, paint);
         textureView.invalidate();

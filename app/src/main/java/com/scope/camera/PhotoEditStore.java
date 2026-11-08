@@ -35,6 +35,8 @@ final class PhotoEditStore {
         look.smartVibrance = prefs.getBoolean(prefix + "smart_vibrance", look.smartVibrance);
         look.opticalCorrection = prefs.getBoolean(prefix + "optical_correction", look.opticalCorrection);
         look.frameBorder = prefs.getString(prefix + "frame_border", look.frameBorder);
+        look.lutName = prefs.getString(prefix + "lut_name", look.lutName);
+        look.lutIntensity = prefs.getFloat(prefix + "lut_intensity", look.lutIntensity);
         return look;
     }
 
@@ -61,7 +63,9 @@ final class PhotoEditStore {
                 .putBoolean(p + "skin_protection", look.skinProtection)
                 .putBoolean(p + "smart_vibrance", look.smartVibrance)
                 .putBoolean(p + "optical_correction", look.opticalCorrection)
-                .putString(p + "frame_border", look.frameBorder == null ? "None" : look.frameBorder);
+                .putString(p + "frame_border", look.frameBorder == null ? "None" : look.frameBorder)
+                .putString(p + "lut_name", look.lutName == null ? "None" : look.lutName)
+                .putFloat(p + "lut_intensity", look.lutIntensity);
         if (look.aspectRatio != null) editor.putString(p + "aspect_ratio", look.aspectRatio);
         else editor.remove(p + "aspect_ratio");
         editor.putBoolean(p + "flip_h", look.flipHorizontal);
@@ -79,6 +83,7 @@ final class PhotoEditStore {
                 .remove(p + "vignette").remove(p + "white_balance")
                 .remove(p + "easy_mode").remove(p + "skin_protection").remove(p + "smart_vibrance")
                 .remove(p + "optical_correction").remove(p + "frame_border")
+                .remove(p + "lut_name").remove(p + "lut_intensity")
                 .remove(p + "aspect_ratio").remove(p + "flip_h").apply();
     }
 

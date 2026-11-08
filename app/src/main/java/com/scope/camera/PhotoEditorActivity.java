@@ -1,6 +1,7 @@
 package com.scope.camera;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -70,6 +71,7 @@ public class PhotoEditorActivity extends Activity {
         archiveKey = getIntent().getStringExtra(EXTRA_KEY);
         String uri = getIntent().getStringExtra(PhotoViewerActivity.EXTRA_URI);
         photoUri = uri == null ? null : Uri.parse(uri);
+        LutManager.init(this);
         look = PhotoEditStore.load(this, archiveKey);
         build();
         loadSource();
@@ -365,11 +367,11 @@ public class PhotoEditorActivity extends Activity {
     private void refreshTabs() {
         if (tabBar == null) return;
         tabBar.removeAllViews();
-        String[] tabs = {"TONE", "COLOR", "TEXTURE", "CROP"};
+        String[] tabs = {"TONE", "COLOR", "LUT", "TEXTURE", "CROP"};
         for (String tab : tabs) {
             TextView pill = pill(tab, tab.equals(activeTab));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(32), 1f);
-            if (!tab.equals("TONE")) lp.leftMargin = dp(6);
+            if (!tab.equals("TONE")) lp.leftMargin = dp(4);
             tabBar.addView(pill, lp);
             pill.setOnClickListener(v -> {
                 hapticClick(v);
@@ -394,6 +396,8 @@ public class PhotoEditorActivity extends Activity {
             addControl("Warmth shift", "", 12, 0, 100, Math.round(look.warmth * 50f + 50f));
             addControl("Colour intensity", "", 3, 50, 160, Math.round(look.saturation * 100));
             addControl("Saturated colour roll-off", "", 13, 0, 100, Math.round(look.colorRollOff * 100));
+        } else if ("LUT".equals(activeTab)) {
+            addLutControls();
         } else if ("TEXTURE".equals(activeTab)) {
             addControl("Film grain", "", 6, 0, 100, Math.round(look.grain * 100));
             addGrainStructureChoice();
@@ -440,6 +444,152 @@ public class PhotoEditorActivity extends Activity {
                 populateControls();
                 queuePreview();
             });
+        }
+    }
+
+    private static final int REQUEST_CODE_PICK_LUT = 1055;
+
+    private void addLutControls() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        card.setBackground(round(0xff121617, 12, 0xff293031, dp(1)));
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(-1, -2);
+        cardLp.bottomMargin = dp(10);
+        controlsList.addView(card, cardLp);
+
+        TextView title = text("3D COLOR LOOKUP TABLE (LUT)", 10, ACCENT, true);
+        card.addView(title);
+
+        TextView subtitle = text("Select an authentic film stock 3D LUT or import custom .CUBE grading files.", 9, 0xff8e9690, false);
+        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(-1, -2);
+        subLp.topMargin = dp(2);
+        subLp.bottomMargin = dp(8);
+        card.addView(subtitle, subLp);
+
+        HorizontalScrollView scroll = new HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout lutPills = new LinearLayout(this);
+        lutPills.setOrientation(LinearLayout.HORIZONTAL);
+        lutPills.setPadding(0, dp(2), 0, dp(4));
+
+        List<String> available = LutManager.getAvailableLutNames(this);
+        String currentLut = look.lutName == null ? "None" : look.lutName;
+
+        for (int i = 0; i < available.size(); i++) {
+            String name = available.get(i);
+            boolean active = name.equalsIgnoreCase(currentLut);
+            TextView pill = pill(name.toUpperCase(Locale.US), active);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(32));
+            if (i > 0) lp.leftMargin = dp(6);
+            lutPills.addView(pill, lp);
+            pill.setOnClickListener(v -> {
+                hapticClick(v);
+                look.lutName = name;
+                if (!name.equals("None") && look.lutIntensity <= 0.05f) {
+                    look.lutIntensity = 1.0f;
+                }
+                populateControls();
+                queuePreview();
+            });
+        }
+
+        TextView importBtn = pill("+ IMPORT .CUBE", false);
+        LinearLayout.LayoutParams impLp = new LinearLayout.LayoutParams(-2, dp(32));
+        impLp.leftMargin = dp(6);
+        lutPills.addView(importBtn, impLp);
+        importBtn.setOnClickListener(v -> {
+            hapticClick(v);
+            launchLutPicker();
+        });
+
+        scroll.addView(lutPills);
+        card.addView(scroll);
+
+        if (look.lutName != null && !"None".equalsIgnoreCase(look.lutName)) {
+            addControl("LUT Intensity", "%", 14, 0, 100, Math.round(look.lutIntensity * 100f));
+
+            LinearLayout infoCard = new LinearLayout(this);
+            infoCard.setOrientation(LinearLayout.VERTICAL);
+            infoCard.setPadding(dp(12), dp(8), dp(12), dp(8));
+            infoCard.setBackground(round(0xff161b1c, 10, 0xff2e3636, dp(1)));
+            LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(-1, -2);
+            infoLp.topMargin = dp(6);
+
+            LutManager.Lut3D activeLut = LutManager.get(look.lutName);
+            String lutDesc = getLutDescription(look.lutName, activeLut);
+            TextView descView = text(lutDesc, 9, 0xffc4cbc3, false);
+            infoCard.addView(descView);
+
+            if (activeLut != null && activeLut.isCustom) {
+                TextView delBtn = pill("DELETE IMPORTED LUT", false);
+                LinearLayout.LayoutParams delLp = new LinearLayout.LayoutParams(-2, dp(28));
+                delLp.topMargin = dp(8);
+                infoCard.addView(delBtn, delLp);
+                delBtn.setOnClickListener(v -> {
+                    hapticClick(v);
+                    LutManager.deleteCustomLut(this, look.lutName);
+                    look.lutName = "None";
+                    Toast.makeText(this, "LUT deleted", Toast.LENGTH_SHORT).show();
+                    populateControls();
+                    queuePreview();
+                });
+            }
+            controlsList.addView(infoCard, infoLp);
+        }
+    }
+
+    private String getLutDescription(String name, LutManager.Lut3D lut) {
+        if (LutManager.LUT_PORTRA.equalsIgnoreCase(name)) {
+            return "Kodak Portra 400 · Warm golden skin tones, creamy highlight roll-off & gentle pastel shadows.";
+        } else if (LutManager.LUT_FUJI.equalsIgnoreCase(name)) {
+            return "Fujifilm Pro 400H · Luminous minty foliage greens, airy highlights & soft lavender shadows.";
+        } else if (LutManager.LUT_TEAL_ORANGE.equalsIgnoreCase(name)) {
+            return "Cine Teal & Orange · Hollywood split-tone with cool cyan shadows & golden amber highlights.";
+        } else if (LutManager.LUT_ANSEL_BW.equalsIgnoreCase(name)) {
+            return "Ansel Silver B&W · Zone System silver monochrome with deep carbon blacks & luminous highlights.";
+        } else if (LutManager.LUT_AMBER_70S.equalsIgnoreCase(name)) {
+            return "Warm Amber 70s · Vintage 1970s color slide emulation with honey highlights & faded warm shadows.";
+        } else if (LutManager.LUT_BLEACH.equalsIgnoreCase(name)) {
+            return "Bleach Bypass · Retained silver emulsion with high contrast, crushed blacks & metallic highlights.";
+        } else if (lut != null && lut.isCustom) {
+            return "Custom 3D CUBE · " + lut.size + "×" + lut.size + "×" + lut.size + " Grid · " + lut.title;
+        }
+        return "3D Color Lookup Table applied with trilinear interpolation.";
+    }
+
+    private void launchLutPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        try {
+            startActivityForResult(intent, REQUEST_CODE_PICK_LUT);
+        } catch (Exception e) {
+            try {
+                Intent fallback = new Intent(Intent.ACTION_GET_CONTENT);
+                fallback.setType("*/*");
+                startActivityForResult(fallback, REQUEST_CODE_PICK_LUT);
+            } catch (Exception ex) {
+                Toast.makeText(this, "File picker unavailable: " + ex.getMessage(), Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_PICK_LUT && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            Uri uri = data.getData();
+            String importedName = LutManager.importLut(this, uri);
+            if (importedName != null) {
+                look.lutName = importedName;
+                look.lutIntensity = 1.0f;
+                Toast.makeText(this, "Imported 3D LUT: " + importedName, Toast.LENGTH_SHORT).show();
+                populateControls();
+                queuePreview();
+            } else {
+                Toast.makeText(this, "Could not import LUT. Ensure file is a valid .cube format.", Toast.LENGTH_LONG).show();
+            }
         }
     }
 
@@ -577,6 +727,7 @@ public class PhotoEditorActivity extends Activity {
             case 11: defaultVal = 0; break;
             case 12: defaultVal = 50; break;
             case 13: defaultVal = 50; break;
+            case 14: defaultVal = 100; break;
             default: defaultVal = 0; break;
         }
         updateLook(type, defaultVal);
@@ -663,6 +814,7 @@ public class PhotoEditorActivity extends Activity {
                         else if (type == 11 && selected == 0) isLandmark = true;
                         else if (type == 12 && selected == 50) isLandmark = true;
                         else if (type == 13 && selected == 50) isLandmark = true;
+                        else if (type == 14 && selected == 100) isLandmark = true;
 
                         if (isLandmark) {
                             bar.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
@@ -701,6 +853,7 @@ public class PhotoEditorActivity extends Activity {
             case 11: look.vignette = value / 100f; break;
             case 12: look.warmth = (value - 50) / 50f; break;
             case 13: look.colorRollOff = value / 100f; break;
+            case 14: look.lutIntensity = value / 100f; break;
         }
     }
 

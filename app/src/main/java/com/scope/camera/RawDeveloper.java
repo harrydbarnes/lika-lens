@@ -49,6 +49,8 @@ final class RawDeveloper {
         boolean smartVibrance = true;
         boolean opticalCorrection = true;
         String frameBorder = "None";
+        String lutName = "None";
+        float lutIntensity = 1.0f;
 
         static Look fromPreferences(Context context) {
             Look look = new Look();
@@ -78,6 +80,8 @@ final class RawDeveloper {
             look.smartVibrance = AppSettings.getBoolean(context, AppSettings.SMART_VIBRANCE, true);
             look.opticalCorrection = AppSettings.getBoolean(context, AppSettings.OPTICAL_CORRECTION, true);
             look.frameBorder = AppSettings.get(context, AppSettings.FRAME_BORDER, "None");
+            look.lutName = AppSettings.get(context, AppSettings.LUT_NAME, "None");
+            look.lutIntensity = AppSettings.getInt(context, AppSettings.LUT_INTENSITY, AppSettings.DEFAULT_LUT_INTENSITY) / 100f;
             return look;
         }
 
@@ -100,6 +104,8 @@ final class RawDeveloper {
             c.smartVibrance = smartVibrance;
             c.opticalCorrection = opticalCorrection;
             c.frameBorder = frameBorder;
+            c.lutName = lutName;
+            c.lutIntensity = lutIntensity;
             return c;
         }
 
@@ -133,6 +139,8 @@ final class RawDeveloper {
                 o.put("smartVibrance", smartVibrance);
                 o.put("opticalCorrection", opticalCorrection);
                 o.put("frameBorder", frameBorder);
+                o.put("lutName", lutName != null ? lutName : "None");
+                o.put("lutIntensity", (double) lutIntensity);
                 return o.toString();
             } catch (JSONException e) {
                 return null;
@@ -171,6 +179,8 @@ final class RawDeveloper {
                 if (o.has("smartVibrance")) look.smartVibrance = o.getBoolean("smartVibrance");
                 if (o.has("opticalCorrection")) look.opticalCorrection = o.getBoolean("opticalCorrection");
                 if (o.has("frameBorder")) look.frameBorder = o.getString("frameBorder");
+                if (o.has("lutName")) look.lutName = o.getString("lutName");
+                if (o.has("lutIntensity")) look.lutIntensity = (float) o.getDouble("lutIntensity");
                 return look;
             } catch (JSONException e) {
                 return null;
@@ -218,6 +228,8 @@ final class RawDeveloper {
         boolean applyLsm = look.opticalCorrection && frame.lsmGains != null && frame.lsmCols > 1 && frame.lsmRows > 1;
         int[] allPixels = new int[outW * outH];
         int seed = frame.key == null ? width * 31 + height : frame.key.hashCode();
+        LutManager.Lut3D lut = (look.lutName != null && !look.lutName.equals("None") && look.lutIntensity > 0.001f)
+                ? LutManager.get(look.lutName) : null;
 
         java.util.stream.IntStream.range(0, outH).parallel().forEach(oy -> {
             float dy = Math.min(crop[1] + cropHeight - .5f,
@@ -255,7 +267,7 @@ final class RawDeveloper {
                 float lr = 3.1339f * x - 1.6169f * y - .4906f * z;
                 float lg = -.9785f * x + 1.9160f * y + .0333f * z;
                 float lb = .0720f * x - .2290f * y + 1.4057f * z;
-                int color = renderLook(lr, lg, lb, look, ox, oy, seed, frame);
+                int color = renderLook(lr, lg, lb, look, ox, oy, seed, frame, lut);
                 if (look.vignette > 0f) {
                     float nx = outW <= 1 ? 0f : ox / (float) (outW - 1) * 2f - 1f;
                     float ny = outH <= 1 ? 0f : oy / (float) (outH - 1) * 2f - 1f;
@@ -302,6 +314,8 @@ final class RawDeveloper {
         int w = bitmap.getWidth(), h = bitmap.getHeight();
         int[] pixels = new int[w * h];
         bitmap.getPixels(pixels, 0, w, 0, 0, w, h);
+        LutManager.Lut3D lut = (look.lutName != null && !look.lutName.equals("None") && look.lutIntensity > 0.001f)
+                ? LutManager.get(look.lutName) : null;
         java.util.stream.IntStream.range(0, h).parallel().forEach(y -> {
             int rowOffset = y * w;
             for (int x = 0; x < w; x++) {
@@ -310,7 +324,7 @@ final class RawDeveloper {
                 float r = srgbToLinear(Color.red(c) / 255f) * exposureScale * wbShift;
                 float g = srgbToLinear(Color.green(c) / 255f) * exposureScale;
                 float b = srgbToLinear(Color.blue(c) / 255f) * exposureScale / wbShift;
-                int rendered = renderLook(r, g, b, look, x, y, 0x53434f50, null);
+                int rendered = renderLook(r, g, b, look, x, y, 0x53434f50, null, lut);
                 if (look.vignette > 0f) {
                     float nx = w <= 1 ? 0f : x / (float) (w - 1) * 2f - 1f;
                     float ny = h <= 1 ? 0f : y / (float) (h - 1) * 2f - 1f;
@@ -545,10 +559,14 @@ final class RawDeveloper {
 
     /** A coupled display transform: tonal response, hue, chroma and gamut are shaped together. */
     private static int renderLook(float r, float g, float b, Look look, int x, int y, int seed) {
-        return renderLook(r, g, b, look, x, y, seed, null);
+        return renderLook(r, g, b, look, x, y, seed, null, null);
     }
 
     private static int renderLook(float r, float g, float b, Look look, int x, int y, int seed, RawArchive.Frame frame) {
+        return renderLook(r, g, b, look, x, y, seed, frame, null);
+    }
+
+    private static int renderLook(float r, float g, float b, Look look, int x, int y, int seed, RawArchive.Frame frame, LutManager.Lut3D lut) {
         String brain = look.brain == null ? "LIKA / FILM" : look.brain;
 
         if (brain.startsWith("MONO")) {
@@ -759,6 +777,12 @@ final class RawDeveloper {
                 texture *= .38f + .62f * 4f * lightness * (1f - lightness);
             }
             outR += texture; outG += texture; outB += texture;
+        }
+        if (lut != null) {
+            float sR = toSrgb(outR) / 255f;
+            float sG = toSrgb(outG) / 255f;
+            float sB = toSrgb(outB) / 255f;
+            return lut.applyToRgb(sR, sG, sB, look.lutIntensity);
         }
         return Color.rgb(toSrgb(outR), toSrgb(outG), toSrgb(outB));
     }

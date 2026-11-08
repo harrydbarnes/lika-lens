@@ -30,6 +30,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
+import android.content.Intent;
 import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -38,6 +39,7 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -64,6 +66,7 @@ public class SettingsActivity extends Activity {
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         AppSettings.migrateBranding(this);
+        LutManager.init(this);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         build();
@@ -217,6 +220,23 @@ public class SettingsActivity extends Activity {
             String name = AppSettings.getCustomRecipeName(this, slot);
             String desc = name != null ? ("Active: " + name + " (saved)") : "Empty preset slot (save from Camera or Develop)";
             addInfo("Recipe Slot " + slot, desc, name != null ? ACCENT : 0xff89948e);
+        }
+
+        beginSection("3D LUT (COLOR LOOKUP TABLES)", "Cinematic 3D film profiles and custom .CUBE grading tables.");
+        List<String> luts = LutManager.getAvailableLutNames(this);
+        String currentLut = AppSettings.get(this, AppSettings.LUT_NAME, "None");
+        addChoice("Default 3D LUT", "Select primary 3D LUT applied during RAW development", AppSettings.LUT_NAME,
+                luts.toArray(new String[0]), currentLut);
+        addSlider("Default LUT intensity", "Blend strength between film brain and 3D LUT", AppSettings.LUT_INTENSITY,
+                0, 100, AppSettings.getInt(this, AppSettings.LUT_INTENSITY, AppSettings.DEFAULT_LUT_INTENSITY));
+        addInfo("Import .CUBE LUT...", "Tap to browse and import custom 3D LUT (.cube) files from storage", ACCENT, this::launchLutPicker);
+
+        for (String lutName : luts) {
+            if (!LutManager.isBuiltIn(lutName)) {
+                LutManager.Lut3D lut3d = LutManager.get(this, lutName);
+                String desc = "Custom imported .cube" + (lut3d != null ? (" (" + lut3d.size + "³ grid)") : "");
+                addInfo(lutName, desc, ACCENT);
+            }
         }
         finishSection();
     }
@@ -872,6 +892,10 @@ public class SettingsActivity extends Activity {
     }
 
     private void addInfo(String title, String detailText, int color) {
+        addInfo(title, detailText, color, null);
+    }
+
+    private void addInfo(String title, String detailText, int color, Runnable onClick) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setPadding(dp(14), dp(10), dp(14), dp(10));
@@ -879,7 +903,45 @@ public class SettingsActivity extends Activity {
         TextView detail = text(detailText, 8, color, false);
         detail.setPadding(0, dp(4), 0, 0);
         row.addView(detail);
+        if (onClick != null) {
+            row.setOnClickListener(v -> onClick.run());
+        }
         addRowToCurrentCard(row);
+    }
+
+    private static final int REQUEST_CODE_PICK_LUT = 2055;
+
+    private void launchLutPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        try {
+            startActivityForResult(intent, REQUEST_CODE_PICK_LUT);
+        } catch (Exception e) {
+            try {
+                Intent fallback = new Intent(Intent.ACTION_GET_CONTENT);
+                fallback.setType("*/*");
+                startActivityForResult(fallback, REQUEST_CODE_PICK_LUT);
+            } catch (Exception ex) {
+                Toast.makeText(this, "File picker unavailable", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_PICK_LUT && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            Uri uri = data.getData();
+            String name = LutManager.importLut(this, uri);
+            if (name != null) {
+                AppSettings.prefs(this).edit().putString(AppSettings.LUT_NAME, name).apply();
+                Toast.makeText(this, "Imported 3D LUT: " + name, Toast.LENGTH_SHORT).show();
+                populateContent();
+            } else {
+                Toast.makeText(this, "Could not import LUT. Ensure valid .cube format.", Toast.LENGTH_LONG).show();
+            }
+        }
     }
 
     private TextView text(String value, float size, int color, boolean bold) {
