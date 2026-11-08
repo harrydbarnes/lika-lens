@@ -21,6 +21,7 @@ import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
+import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.Sensor;
@@ -137,7 +138,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private TextView whiteBalanceValueText;
     private TextView zoomSliderValue;
     private final List<TextView> lensButtons = new ArrayList<>();
-    private View gridOverlay;
+    private CompositionGrid gridOverlay;
     private View viewfinderSpacer;
     private SensorManager sensorManager;
     private Sensor orientationSensor;
@@ -4665,8 +4666,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 float tickLen = density * 7f;
                 canvas.drawLine(frame.centerX(), frame.top, frame.centerX(), frame.top + tickLen, brightlinePaint);
                 canvas.drawLine(frame.centerX(), frame.bottom, frame.centerX(), frame.bottom - tickLen, brightlinePaint);
-                canvas.drawLine(frame.left, frame.centerY(), frame.left + tickLen, frame.centerY, brightlinePaint);
-                canvas.drawLine(frame.right, frame.centerY(), frame.right - tickLen, frame.centerY, brightlinePaint);
+                canvas.drawLine(frame.left, frame.centerY(), frame.left + tickLen, frame.centerY(), brightlinePaint);
+                canvas.drawLine(frame.right, frame.centerY(), frame.right - tickLen, frame.centerY(), brightlinePaint);
 
                 Paint tagPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
                 tagPaint.setColor(ACCENT);

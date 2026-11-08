@@ -44,6 +44,7 @@ import android.util.Log;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
+import java.util.List;
 import java.util.Locale;
 
 /** Native settings for capture, RAW development and the viewfinder. */

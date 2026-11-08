@@ -2,6 +2,7 @@ package com.scope.camera;
 
 import android.content.Context;
 import android.database.Cursor;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.provider.OpenableColumns;
 import android.util.Log;
@@ -155,6 +156,34 @@ final class LutManager {
             int ib = (int) (Math.max(0f, Math.min(1f, outB)) * 255f + 0.5f);
             return 0xff000000 | (ir << 16) | (ig << 8) | ib;
         }
+    }
+
+    /**
+     * Applies a 3D LUT to all pixels in a Bitmap with the specified intensity.
+     */
+    public static Bitmap applyToBitmap(Bitmap src, Lut3D lut, float intensity) {
+        if (src == null || lut == null || intensity <= 0.001f) {
+            return src;
+        }
+        int width = src.getWidth();
+        int height = src.getHeight();
+        int[] pixels = new int[width * height];
+        src.getPixels(pixels, 0, width, 0, 0, width, height);
+
+        for (int i = 0; i < pixels.length; i++) {
+            int p = pixels[i];
+            int a = (p >>> 24) & 0xff;
+            float r = ((p >>> 16) & 0xff) / 255.0f;
+            float g = ((p >>> 8) & 0xff) / 255.0f;
+            float b = (p & 0xff) / 255.0f;
+
+            int graded = lut.applyToRgb(r, g, b, intensity);
+            pixels[i] = (a << 24) | (graded & 0x00ffffff);
+        }
+
+        Bitmap out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        out.setPixels(pixels, 0, width, 0, 0, width, height);
+        return out;
     }
 
     public static void init(Context context) {
