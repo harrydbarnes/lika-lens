@@ -73,6 +73,8 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
@@ -453,9 +455,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         });
         AppSettings.migrateBranding(this);
         Window window = getWindow();
-        window.setStatusBarColor(0xff0b0d0e);
+        window.setStatusBarColor(0x00000000);
         window.setNavigationBarColor(0xff0b0d0e);
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            WindowManager.LayoutParams lp = window.getAttributes();
+            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            window.setAttributes(lp);
+        }
+        applyFullScreenImmersive();
         buildCameraUi();
         cameraManager = (CameraManager) getSystemService(CAMERA_SERVICE);
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
@@ -471,8 +479,36 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            applyFullScreenImmersive();
+        }
+    }
+
+    private void applyFullScreenImmersive() {
+        Window window = getWindow();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.hide(WindowInsets.Type.statusBars());
+                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            View decor = window.getDecorView();
+            decor.setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            );
+        }
+    }
+
     @Override protected void onResume() {
         super.onResume();
+        applyFullScreenImmersive();
         if (sensorManager != null && orientationSensor != null) {
             sensorManager.registerListener(sensorEventListener, orientationSensor, SensorManager.SENSOR_DELAY_UI);
         }
@@ -556,7 +592,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void buildCameraUi() {
         root = new FrameLayout(this);
         root.setBackgroundColor(BG);
-        root.setFitsSystemWindows(true);
+        root.setFitsSystemWindows(false);
         textureView = new TextureView(this);
         textureView.setSurfaceTextureListener(this);
         scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -588,7 +624,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         GestureOverlay overlay = new GestureOverlay();
         overlay.setOrientation(LinearLayout.VERTICAL);
-        overlay.setPadding(dp(12), dp(14), dp(12), dp(14));
+        overlay.setPadding(dp(12), dp(8), dp(12), dp(10));
         overlay.setBackground(new android.graphics.drawable.GradientDrawable(
                 android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
                 new int[]{0x98080b0c, 0x00080b0c, 0x10080b0c, 0xd8080b0c}));
@@ -873,13 +909,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         LinearLayout shootRow = row();
         shootRow.setGravity(Gravity.CENTER_VERTICAL);
-        shootRow.setPadding(0, dp(8), 0, 0);
+        shootRow.setPadding(0, dp(4), 0, 0);
         galleryButton = new ImageView(this);
         galleryButton.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        galleryButton.setBackground(round(0xff202626, 12, 0x777d8580, dp(1)));
+        galleryButton.setBackground(round(0xff202626, 14, 0x777d8580, dp(1)));
         galleryButton.setClipToOutline(true);
         galleryButton.setContentDescription("Open the latest frame. Long press for the library.");
-        LinearLayout.LayoutParams sideLp = new LinearLayout.LayoutParams(dp(48), dp(48));
+        LinearLayout.LayoutParams sideLp = new LinearLayout.LayoutParams(dp(52), dp(52));
         shootRow.addView(galleryButton, sideLp);
         galleryButton.setImageResource(R.drawable.ic_lika_lens);
         galleryButton.setOnClickListener(v -> { hapticClick(v); openLatestFrame(); });
@@ -895,8 +931,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         shutterFrame = new FrameLayout(this);
         shutterFrame.setBackground(round(0x00202020, 100, 0xfffaf9f5, dp(2)));
-        shutterFrame.addView(captureButton, new FrameLayout.LayoutParams(dp(54), dp(54), Gravity.CENTER));
-        shootRow.addView(shutterFrame, new LinearLayout.LayoutParams(dp(68), dp(68)));
+        shutterFrame.addView(captureButton, new FrameLayout.LayoutParams(dp(64), dp(64), Gravity.CENTER));
+        shootRow.addView(shutterFrame, new LinearLayout.LayoutParams(dp(78), dp(78)));
         shutterFrame.setClickable(true);
         shutterFrame.setFocusable(true);
         shutterFrame.setOnTouchListener(new View.OnTouchListener() {
@@ -954,9 +990,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         shootRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
         TextView flip = pill("⟳", false);
-        flip.setTextSize(18f);
+        flip.setTextSize(20f);
         flip.setContentDescription("Switch front and rear camera");
-        shootRow.addView(flip, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        shootRow.addView(flip, new LinearLayout.LayoutParams(dp(52), dp(52)));
         flip.setOnClickListener(v -> { hapticClick(v); toggleCameraFacing(); });
         flipButton = flip;
         overlay.addView(shootRow);
@@ -2429,8 +2465,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         float frameWidth = width;
         float frameHeight = frameWidth / ratio;
         if (width < height) {
-            float topOffset = dp(56);
-            float maxFrameHeight = Math.max(dp(100), height - topOffset - dp(175));
+            float topOffset = dp(48);
+            float maxFrameHeight = Math.max(dp(100), height - topOffset - dp(185));
             if (frameHeight > maxFrameHeight) {
                 frameHeight = maxFrameHeight;
                 frameWidth = frameHeight * ratio;
