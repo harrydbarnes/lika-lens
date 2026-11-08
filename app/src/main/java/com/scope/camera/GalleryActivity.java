@@ -40,6 +40,11 @@ public class GalleryActivity extends Activity {
     private ScrollView scroll;
     private int savedScrollY;
 
+    private final List<Uri> selectedUris = new ArrayList<>();
+    private boolean isSelectionMode = false;
+    private LinearLayout selectionBar;
+    private TextView selectionCountView;
+
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         getWindow().setStatusBarColor(BG);
@@ -57,6 +62,15 @@ public class GalleryActivity extends Activity {
         super.onPause();
     }
 
+    @Override
+    public void onBackPressed() {
+        if (isSelectionMode) {
+            exitSelectionMode();
+            return;
+        }
+        super.onBackPressed();
+    }
+
     private void hapticClick(View v) {
         if (v != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
             v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
@@ -64,6 +78,9 @@ public class GalleryActivity extends Activity {
     }
 
     private void build() {
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(BG);
+
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setBackgroundColor(BG);
@@ -75,7 +92,11 @@ public class GalleryActivity extends Activity {
         TextView back = text("‹", 29, 0xffedf0e9, false);
         back.setGravity(Gravity.CENTER);
         header.addView(back, new LinearLayout.LayoutParams(dp(34), dp(40)));
-        back.setOnClickListener(v -> { hapticClick(v); finishAfterTransition(); });
+        back.setOnClickListener(v -> {
+            hapticClick(v);
+            if (isSelectionMode) exitSelectionMode();
+            else finishAfterTransition();
+        });
 
         LinearLayout title = new LinearLayout(this);
         title.setOrientation(LinearLayout.VERTICAL);
@@ -85,6 +106,13 @@ public class GalleryActivity extends Activity {
         countView.setPadding(0, dp(3), 0, 0);
         title.addView(countView);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+
+        TextView gifButton = pill("GIF", false);
+        gifButton.setPadding(dp(8), 0, dp(8), 0);
+        LinearLayout.LayoutParams gifLp = new LinearLayout.LayoutParams(-2, dp(30));
+        gifLp.leftMargin = dp(4);
+        header.addView(gifButton, gifLp);
+        gifButton.setOnClickListener(v -> { hapticClick(v); handleGifButtonClick(); });
 
         TextView pasteButton = pill("PASTE", false);
         pasteButton.setPadding(dp(8), 0, dp(8), 0);
@@ -116,7 +144,36 @@ public class GalleryActivity extends Activity {
         list.setPadding(dp(14), dp(3), dp(14), dp(25));
         scroll.addView(list);
         page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
-        setContentView(page);
+        root.addView(page, new FrameLayout.LayoutParams(-1, -1));
+
+        // Floating Selection Bar
+        selectionBar = new LinearLayout(this);
+        selectionBar.setOrientation(LinearLayout.HORIZONTAL);
+        selectionBar.setGravity(Gravity.CENTER_VERTICAL);
+        selectionBar.setBackground(round(0xf0141819, 22, 0xffd7b574, dp(1)));
+        selectionBar.setPadding(dp(16), dp(10), dp(16), dp(10));
+        selectionBar.setVisibility(View.GONE);
+
+        selectionCountView = text("0 FRAMES SELECTED", 9, 0xffedf0e9, true);
+        selectionCountView.setLetterSpacing(0.08f);
+        selectionBar.addView(selectionCountView, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView cancelBtn = pill("CANCEL", false);
+        selectionBar.addView(cancelBtn, new LinearLayout.LayoutParams(-2, dp(32)));
+        cancelBtn.setOnClickListener(v -> { hapticClick(v); exitSelectionMode(); });
+
+        TextView createGifBtn = pill("CREATE GIF ➔", true);
+        LinearLayout.LayoutParams cgLp = new LinearLayout.LayoutParams(-2, dp(32));
+        cgLp.leftMargin = dp(8);
+        selectionBar.addView(createGifBtn, cgLp);
+        createGifBtn.setOnClickListener(v -> { hapticClick(v); launchGifStudioWithSelection(); });
+
+        int maxBarW = Math.min(dp(440), getResources().getDisplayMetrics().widthPixels - dp(32));
+        FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(maxBarW, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        barLp.bottomMargin = dp(16);
+        root.addView(selectionBar, barLp);
+
+        setContentView(root);
     }
 
     private void loadPhotos() {
@@ -184,23 +241,175 @@ public class GalleryActivity extends Activity {
 
     private void addPhotoTile(LinearLayout row, PhotoRepository.Photo photo) {
         FrameLayout tile = new FrameLayout(this);
-        tile.setBackground(round(0xff202626, 9, 0xff293031, dp(1)));
+        boolean isSelected = isSelectionMode && selectedUris.contains(photo.uri);
+        tile.setBackground(round(0xff202626, 9, isSelected ? 0xffd7b574 : 0xff293031, isSelected ? dp(2) : dp(1)));
         tile.setClipToOutline(true);
+
         ImageView image = new ImageView(this);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
         image.setTransitionName("scope_photo");
         Bitmap thumbnail = decodeThumbnail(photo.uri);
         if (thumbnail != null) image.setImageBitmap(thumbnail);
         tile.addView(image, new FrameLayout.LayoutParams(-1, -1));
+
+        if (photo.isGif) {
+            TextView gifBadge = text("GIF", 7, 0xffd7b574, true);
+            gifBadge.setBackground(round(0xdd0b0d0e, 6, 0xffd7b574, dp(1)));
+            gifBadge.setPadding(dp(5), dp(2), dp(5), dp(2));
+            FrameLayout.LayoutParams gLp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.RIGHT);
+            gLp.setMargins(0, dp(4), dp(4), 0);
+            tile.addView(gifBadge, gLp);
+        }
+
+        if (isSelectionMode && isSelected) {
+            int seqNum = selectedUris.indexOf(photo.uri) + 1;
+            TextView numBadge = text(String.valueOf(seqNum), 8, 0xff0b0d0e, true);
+            numBadge.setBackground(round(0xffd7b574, 8, 0xffd7b574, 0));
+            numBadge.setGravity(Gravity.CENTER);
+            FrameLayout.LayoutParams nLp = new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP | Gravity.LEFT);
+            nLp.setMargins(dp(4), dp(4), 0, 0);
+            tile.addView(numBadge, nLp);
+        }
+
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
         lp.rightMargin = dp(3);
         row.addView(tile, lp);
-        tile.setOnClickListener(v -> { hapticClick(v); openPhoto(photo, image); });
+
+        tile.setOnClickListener(v -> {
+            hapticClick(v);
+            if (isSelectionMode) {
+                if (selectedUris.contains(photo.uri)) {
+                    selectedUris.remove(photo.uri);
+                } else {
+                    selectedUris.add(photo.uri);
+                }
+                updateSelectionBar();
+                loadPhotos();
+            } else {
+                openPhoto(photo, image);
+            }
+        });
+
         tile.setOnLongClickListener(v -> {
             hapticClick(v);
-            confirmDeleteTile(photo);
+            if (!isSelectionMode) {
+                isSelectionMode = true;
+                selectedUris.add(photo.uri);
+                updateSelectionBar();
+                loadPhotos();
+                Toast.makeText(this, "Selected frame 1. Tap more frames to create a GIF.", Toast.LENGTH_SHORT).show();
+            } else {
+                confirmDeleteTile(photo);
+            }
             return true;
         });
+    }
+
+    private void handleGifButtonClick() {
+        if (isSelectionMode && selectedUris.size() >= 2) {
+            launchGifStudioWithSelection();
+            return;
+        }
+
+        android.app.Dialog dialog = new android.app.Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        FrameLayout scrim = new FrameLayout(this);
+        scrim.setBackgroundColor(0x77000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setClickable(true);
+        sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
+        sheet.setPadding(dp(20), dp(18), dp(20), dp(20));
+
+        TextView title = text("ANIMATED GIF CREATOR", 11, 0xffd7b574, true);
+        title.setLetterSpacing(.12f);
+        sheet.addView(title);
+
+        TextView sub = text("Create stop-motion, burst loops, or video GIFs with Leica film grading.", 9, 0xff9aa49e, false);
+        sub.setPadding(0, dp(6), 0, dp(14));
+        sheet.addView(sub);
+
+        TextView fromPhotos = pill("SELECT FRAMES FROM LIBRARY", true);
+        sheet.addView(fromPhotos, new LinearLayout.LayoutParams(-1, dp(40)));
+        fromPhotos.setOnClickListener(v -> {
+            hapticClick(v);
+            dialog.dismiss();
+            enterSelectionMode();
+        });
+
+        TextView fromVideo = pill("CONVERT VIDEO TO GIF", false);
+        LinearLayout.LayoutParams fvLp = new LinearLayout.LayoutParams(-1, dp(40));
+        fvLp.topMargin = dp(8);
+        sheet.addView(fromVideo, fvLp);
+        fromVideo.setOnClickListener(v -> {
+            hapticClick(v);
+            dialog.dismiss();
+            Intent intent = new Intent(this, GifStudioActivity.class);
+            intent.putExtra(GifStudioActivity.EXTRA_VIDEO_URI, "");
+            startActivity(intent);
+        });
+
+        TextView openStudio = pill("OPEN GIF STUDIO", false);
+        LinearLayout.LayoutParams osLp = new LinearLayout.LayoutParams(-1, dp(40));
+        osLp.topMargin = dp(8);
+        sheet.addView(openStudio, osLp);
+        openStudio.setOnClickListener(v -> {
+            hapticClick(v);
+            dialog.dismiss();
+            startActivity(new Intent(this, GifStudioActivity.class));
+        });
+
+        int maxSheetWidth = Math.min(dp(440), getResources().getDisplayMetrics().widthPixels);
+        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
+                maxSheetWidth,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
+        );
+        scrim.addView(sheet, sheetLp);
+        dialog.setContentView(scrim);
+        dialog.show();
+    }
+
+    private void enterSelectionMode() {
+        isSelectionMode = true;
+        selectedUris.clear();
+        updateSelectionBar();
+        loadPhotos();
+        Toast.makeText(this, "Tap frames in sequence to select them for your GIF", Toast.LENGTH_SHORT).show();
+    }
+
+    private void exitSelectionMode() {
+        isSelectionMode = false;
+        selectedUris.clear();
+        updateSelectionBar();
+        loadPhotos();
+    }
+
+    private void updateSelectionBar() {
+        if (selectionBar == null) return;
+        if (isSelectionMode && !selectedUris.isEmpty()) {
+            selectionBar.setVisibility(View.VISIBLE);
+            selectionCountView.setText(String.format(Locale.US, "%d FRAMES SELECTED", selectedUris.size()));
+        } else if (isSelectionMode) {
+            selectionBar.setVisibility(View.VISIBLE);
+            selectionCountView.setText("SELECT 2+ FRAMES FOR GIF");
+        } else {
+            selectionBar.setVisibility(View.GONE);
+        }
+    }
+
+    private void launchGifStudioWithSelection() {
+        if (selectedUris.size() < 2) {
+            Toast.makeText(this, "Please select at least 2 frames for GIF", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        ArrayList<String> uriStrings = new ArrayList<>();
+        for (Uri u : selectedUris) uriStrings.add(u.toString());
+        Intent intent = new Intent(this, GifStudioActivity.class);
+        intent.putStringArrayListExtra(GifStudioActivity.EXTRA_PHOTO_URIS, uriStrings);
+        startActivity(intent);
+        exitSelectionMode();
     }
 
     private void confirmDeleteTile(PhotoRepository.Photo photo) {

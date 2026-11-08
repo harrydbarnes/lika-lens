@@ -130,6 +130,11 @@ final class AppSettings {
     static final String VIDEO_CODEC = "video_codec";
     static final String VIDEO_AUDIO = "video_audio";
 
+    // Animated GIF Keys
+    static final String GIF_FPS = "gif_fps";
+    static final String GIF_RESOLUTION = "gif_resolution";
+    static final String GIF_BOOMERANG = "gif_boomerang";
+
     static final String[] ASPECT_RATIOS = {
             "2.39:1",
             "1.85:1",

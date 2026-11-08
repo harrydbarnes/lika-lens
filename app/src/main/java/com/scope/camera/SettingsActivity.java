@@ -359,6 +359,13 @@ public class SettingsActivity extends Activity {
         addSwitch("Save rendered JPEG to Photos", "Add the developed still to Pictures/Lika Lens", AppSettings.AUTO_EXPORT, true);
         addSwitch("Write location metadata", "Location permission and metadata support are not enabled in this build", AppSettings.LOCATION, false);
 
+        beginSection("ANIMATED GIF CREATOR", "Stop-motion loops and video to animated GIF export.");
+        addChoice("Default GIF frame rate", "Playback speed for exported animated GIFs", AppSettings.GIF_FPS,
+                new String[]{"2 fps · Stop Motion", "5 fps · Retro Cinematic", "10 fps · Smooth (Recommended)", "15 fps · High Fluidity"}, "10 fps · Smooth (Recommended)");
+        addChoice("Default GIF resolution", "Output dimension for GIF generation", AppSettings.GIF_RESOLUTION,
+                new String[]{"320px · Compact & Light", "480px · Standard (Recommended)", "640px · Pro HD"}, "480px · Standard (Recommended)");
+        addSwitch("Boomerang forward/reverse loop", "Ping-pong sequence for burst animations", AppSettings.GIF_BOOMERANG, false);
+
         beginSection("APP", "About the current image pipeline.");
         addInfo("Viewfinder", "The device's live feed is only for framing. Lika Lens develops the final look from RAW after capture.", 0xffaab3ad);
         finishSection();

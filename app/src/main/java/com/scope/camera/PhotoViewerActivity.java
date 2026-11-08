@@ -178,6 +178,12 @@ public class PhotoViewerActivity extends Activity {
         header.addView(editButton, editLp);
         editButton.setOnClickListener(v -> { hapticClick(v); openEditor(); });
 
+        TextView gifBtn = pill("GIF", false);
+        LinearLayout.LayoutParams gifLp = new LinearLayout.LayoutParams(dp(44), dp(32));
+        gifLp.leftMargin = dp(4);
+        header.addView(gifBtn, gifLp);
+        gifBtn.setOnClickListener(v -> { hapticClick(v); openGifFromViewer(); });
+
         if (!getIntent().getBooleanExtra(EXTRA_FROM_LIBRARY, false)) {
             TextView library = pill("GRID", false);
             LinearLayout.LayoutParams gridLp = new LinearLayout.LayoutParams(dp(44), dp(32));
@@ -632,14 +638,41 @@ public class PhotoViewerActivity extends Activity {
     private void sharePhoto() {
         if (photoUri == null) return;
         try {
+            boolean isGif = photoName != null && photoName.toLowerCase(Locale.US).endsWith(".gif");
             Intent share = new Intent(Intent.ACTION_SEND);
-            share.setType("image/jpeg");
+            share.setType(isGif ? "image/gif" : "image/jpeg");
             share.putExtra(Intent.EXTRA_STREAM, photoUri);
             share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(share, "Share Lika Lens Photo"));
+            startActivity(Intent.createChooser(share, isGif ? "Share Lika Lens GIF" : "Share Lika Lens Photo"));
         } catch (Exception e) {
             Toast.makeText(this, "Could not share this photo.", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private void openGifFromViewer() {
+        if (photoUri == null) return;
+        boolean isGif = photoName != null && photoName.toLowerCase(Locale.US).endsWith(".gif");
+        if (isGif) {
+            sharePhoto();
+            return;
+        }
+
+        ArrayList<String> burstUris = new ArrayList<>();
+        burstUris.add(photoUri.toString());
+        if (currentIndex >= 0 && !allPhotos.isEmpty()) {
+            PhotoRepository.Photo current = allPhotos.get(currentIndex);
+            for (int i = 0; i < allPhotos.size(); i++) {
+                if (i == currentIndex) continue;
+                PhotoRepository.Photo other = allPhotos.get(i);
+                if (!other.isGif && Math.abs(other.timestampMillis - current.timestampMillis) <= 15000L) {
+                    burstUris.add(other.uri.toString());
+                }
+            }
+        }
+
+        Intent intent = new Intent(this, GifStudioActivity.class);
+        intent.putStringArrayListExtra(GifStudioActivity.EXTRA_PHOTO_URIS, burstUris);
+        startActivity(intent);
     }
 
     private void openEditor() {
@@ -662,6 +695,20 @@ public class PhotoViewerActivity extends Activity {
         boolean hasRaw = archiveKey != null && RawArchive.exists(this, archiveKey);
         if (compareButton != null) compareButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
         if (editButton != null) editButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
+
+        boolean isGif = photoName != null && photoName.toLowerCase(Locale.US).endsWith(".gif");
+        if (isGif && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                android.graphics.ImageDecoder.Source source = android.graphics.ImageDecoder.createSource(getContentResolver(), photoUri);
+                android.graphics.drawable.Drawable drawable = android.graphics.ImageDecoder.decodeDrawable(source);
+                photoView.setImageDrawable(drawable);
+                if (drawable instanceof android.graphics.drawable.AnimatedImageDrawable) {
+                    ((android.graphics.drawable.AnimatedImageDrawable) drawable).start();
+                }
+                photoView.post(this::fitImageToView);
+                return;
+            } catch (Exception ignored) {}
+        }
 
         try (InputStream boundsStream = getContentResolver().openInputStream(photoUri)) {
             BitmapFactory.Options bounds = new BitmapFactory.Options();

@@ -1937,9 +1937,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     MediaScannerConnection.scanFile(this, new String[]{legacyFile.getAbsolutePath()}, new String[]{"video/mp4"}, null);
                 }
                 final int countSegs = segments.size();
-                runOnUiThread(() -> showMessage(countSegs > 1
-                        ? ("Stitched " + countSegs + "-camera video saved to Movies / Lika Lens.")
-                        : "Video saved to Movies / Lika Lens."));
+                final Uri finalVideoUri = destination;
+                runOnUiThread(() -> {
+                    showMessage(countSegs > 1
+                            ? ("Stitched " + countSegs + "-camera video saved. Tap to create GIF.")
+                            : "Video saved. Tap to create GIF.");
+                    if (finalVideoUri != null && messageView != null) {
+                        messageView.setOnClickListener(v -> {
+                            Intent gifIntent = new Intent(MainActivity.this, GifStudioActivity.class);
+                            gifIntent.putExtra(GifStudioActivity.EXTRA_VIDEO_URI, finalVideoUri.toString());
+                            startActivity(gifIntent);
+                        });
+                    }
+                });
             } catch (Exception e) {
                 Log.e(TAG, "Failed to publish video", e);
                 if (destination != null) {

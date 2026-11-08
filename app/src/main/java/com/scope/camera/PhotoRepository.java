@@ -23,11 +23,13 @@ final class PhotoRepository {
         final Uri uri;
         final String name;
         final long timestampMillis;
+        final boolean isGif;
 
         Photo(Uri uri, String name, long timestampMillis) {
             this.uri = uri;
             this.name = name;
             this.timestampMillis = timestampMillis;
+            this.isGif = name != null && name.toLowerCase(java.util.Locale.US).endsWith(".gif");
         }
     }
 
@@ -48,10 +50,11 @@ final class PhotoRepository {
             try (Cursor cursor = context.getContentResolver().query(
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI, columns,
                     "(" + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ? OR "
-                            + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ?) AND "
-                            + MediaStore.Images.Media.MIME_TYPE + "=?",
+                            + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ?) AND ("
+                            + MediaStore.Images.Media.MIME_TYPE + "=? OR "
+                            + MediaStore.Images.Media.MIME_TYPE + "=?)",
                     new String[]{Environment.DIRECTORY_PICTURES + "/Lika Lens/%",
-                            Environment.DIRECTORY_PICTURES + "/SCOPE/%", "image/jpeg"},
+                            Environment.DIRECTORY_PICTURES + "/SCOPE/%", "image/jpeg", "image/gif"},
                     MediaStore.Images.Media.DATE_ADDED + " DESC LIMIT 1")) {
                 if (cursor != null && cursor.moveToFirst()) {
                     long id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID));
@@ -110,6 +113,39 @@ final class PhotoRepository {
         }
     }
 
+    static Uri saveGif(Context context, byte[] gifBytes, String name) {
+        if (gifBytes == null || gifBytes.length == 0) return null;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, "image/gif");
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Lika Lens");
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                Uri uri = context.getContentResolver().insert(
+                        MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values);
+                if (uri != null) {
+                    try (OutputStream out = context.getContentResolver().openOutputStream(uri)) {
+                        if (out != null) out.write(gifBytes);
+                    }
+                    values.clear();
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                    context.getContentResolver().update(uri, values, null, null);
+                    return uri;
+                }
+            }
+            File parent = new File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "Lika Lens");
+            if (!parent.exists()) parent.mkdirs();
+            File file = new File(parent, name);
+            try (OutputStream out = new FileOutputStream(file)) {
+                out.write(gifBytes);
+            }
+            return Uri.fromFile(file);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private static List<Photo> queryMediaStore(Context context) {
         List<Photo> photos = new ArrayList<>();
         String[] columns = {MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME,
@@ -117,10 +153,11 @@ final class PhotoRepository {
         try (Cursor cursor = context.getContentResolver().query(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI, columns,
                 "(" + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ? OR "
-                        + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ?) AND "
-                        + MediaStore.Images.Media.MIME_TYPE + "=?",
+                        + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ?) AND ("
+                        + MediaStore.Images.Media.MIME_TYPE + "=? OR "
+                        + MediaStore.Images.Media.MIME_TYPE + "=?)",
                 new String[]{Environment.DIRECTORY_PICTURES + "/Lika Lens/%",
-                        Environment.DIRECTORY_PICTURES + "/SCOPE/%", "image/jpeg"},
+                        Environment.DIRECTORY_PICTURES + "/SCOPE/%", "image/jpeg", "image/gif"},
                 MediaStore.Images.Media.DATE_ADDED + " DESC")) {
             if (cursor == null) return photos;
             int idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID);
@@ -144,7 +181,10 @@ final class PhotoRepository {
         File pictures = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
         for (String folderName : new String[]{"Lika Lens", "SCOPE"}) {
             File folder = new File(pictures, folderName);
-            File[] files = folder.listFiles((dir, name) -> name.toLowerCase(java.util.Locale.US).endsWith(".jpg"));
+            File[] files = folder.listFiles((dir, name) -> {
+                String lower = name.toLowerCase(java.util.Locale.US);
+                return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif");
+            });
             if (files == null) continue;
             for (File file : files) photos.add(new Photo(Uri.fromFile(file), file.getName(), file.lastModified()));
         }
