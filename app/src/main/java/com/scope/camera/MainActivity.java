@@ -448,6 +448,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            Log.e("LikaLens", "Uncaught exception on thread " + thread.getName(), throwable);
+        });
         AppSettings.migrateBranding(this);
         Window window = getWindow();
         window.setStatusBarColor(0xff0b0d0e);
@@ -555,14 +558,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         root.setBackgroundColor(BG);
         root.setFitsSystemWindows(true);
         textureView = new TextureView(this);
-        textureView.setClipToOutline(true);
-        textureView.setOutlineProvider(new ViewOutlineProvider() {
-            @Override public void getOutline(View view, Outline outline) {
-                if (view.getWidth() == 0 || view.getHeight() == 0) return;
-                RectF frame = framingRect(view.getWidth(), view.getHeight());
-                outline.setRoundRect((int) frame.left, (int) frame.top, (int) frame.right, (int) frame.bottom, dp(24));
-            }
-        });
         textureView.setSurfaceTextureListener(this);
         scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override public boolean onScaleBegin(ScaleGestureDetector detector) {
@@ -2305,10 +2300,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             prepareReader(map);
             openingCamera = true;
             cameraManager.openCamera(cameraId, cameraStateCallback, cameraHandler);
-        } catch (SecurityException | CameraAccessException e) {
+        } catch (Throwable e) {
+            Log.e("LikaLens", "Could not open camera", e);
             openingCamera = false;
-            cameraState.setText("CAMERA UNAVAILABLE");
-            showMessage("Could not open this camera.");
+            runOnUiThread(() -> {
+                cameraState.setText("CAMERA UNAVAILABLE");
+                showMessage("Could not open this camera.");
+            });
         }
     }
 
@@ -2425,13 +2423,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private RectF framingRect(float width, float height) {
+        if (width <= 0 || height <= 0) return new RectF(0, 0, 0, 0);
         float ratio = aspectRatioSetting();
         if (width < height) ratio = 1f / ratio;
         float frameWidth = width;
         float frameHeight = frameWidth / ratio;
         if (width < height) {
             float topOffset = dp(56);
-            float maxFrameHeight = height - topOffset - dp(175);
+            float maxFrameHeight = Math.max(dp(100), height - topOffset - dp(175));
             if (frameHeight > maxFrameHeight) {
                 frameHeight = maxFrameHeight;
                 frameWidth = frameHeight * ratio;
@@ -2510,8 +2509,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         applyOpticalSettings(previewRequest, false);
                         applyZoom(previewRequest);
                         captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
-                        configureTransform(textureView.getWidth(), textureView.getHeight());
-                        textureView.animate().alpha(1f).setDuration(160).start();
+                        runOnUiThread(() -> {
+                            if (textureView != null) {
+                                configureTransform(textureView.getWidth(), textureView.getHeight());
+                                textureView.animate().alpha(1f).setDuration(160).start();
+                            }
+                        });
                     } catch (CameraAccessException e) {
                         runOnUiThread(() -> showMessage("Preview session failed."));
                     }
@@ -3700,7 +3703,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void configureTransform(int viewWidth, int viewHeight) {
-        if (textureView == null || previewSize == null || characteristics == null || viewWidth == 0 || viewHeight == 0) return;
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            runOnUiThread(() -> configureTransform(viewWidth, viewHeight));
+            return;
+        }
+        if (textureView == null || previewSize == null || characteristics == null || viewWidth <= 0 || viewHeight <= 0) return;
         Integer sensorValue = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
         Integer facingValue = characteristics.get(CameraCharacteristics.LENS_FACING);
         int sensorOrientation = sensorValue == null ? 0 : sensorValue;
@@ -3752,9 +3759,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         matrix.postScale(frameScale, frameScale, centerX, centerY);
         matrix.postTranslate(frame.centerX() - centerX, frame.centerY() - centerY);
         textureView.setTransform(matrix);
-        textureView.invalidateOutline();
 
-        if (viewfinderSpacer != null) {
+        if (viewfinderSpacer != null && frame.height() > 0) {
             int desiredH = Math.max(dp(80), (int) (frame.height() - dp(120)));
             ViewGroup.LayoutParams lp = viewfinderSpacer.getLayoutParams();
             if (lp != null && lp.height != desiredH) {
@@ -4006,9 +4012,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             float w = getWidth(), h = getHeight();
+            if (w <= 0 || h <= 0) return;
             RectF frame = framingRect(w, h);
+            if (frame.width() <= 0 || frame.height() <= 0) return;
             float density = getResources().getDisplayMetrics().density;
-            float cornerRadius = density * 24f;
+            float cornerRadius = Math.min(density * 24f, Math.min(frame.width(), frame.height()) * 0.5f);
 
             // Mask everything outside the curved viewfinder card
             Path maskPath = new Path();
