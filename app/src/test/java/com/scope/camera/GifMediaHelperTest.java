@@ -2,7 +2,8 @@ package com.scope.camera;
 
 import org.junit.Test;
 
-import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
 /**
@@ -13,25 +14,33 @@ public class GifMediaHelperTest {
     @Test
     public void testCalculateTargetDimensionsWithinBounds() {
         int[] result = GifMediaHelper.calculateTargetDimensions(320, 240, 480);
-        assertArrayEquals(new int[]{320, 240}, result);
+        assertNotNull(result);
+        assertEquals(320, result[0]);
+        assertEquals(240, result[1]);
     }
 
     @Test
     public void testCalculateTargetDimensionsScalingDownLandscape() {
         int[] result = GifMediaHelper.calculateTargetDimensions(1920, 1080, 480);
-        assertArrayEquals(new int[]{480, 270}, result);
+        assertNotNull(result);
+        assertEquals(480, result[0]);
+        assertEquals(270, result[1]);
     }
 
     @Test
     public void testCalculateTargetDimensionsScalingDownPortrait() {
         int[] result = GifMediaHelper.calculateTargetDimensions(1080, 1920, 480);
-        assertArrayEquals(new int[]{270, 480}, result);
+        assertNotNull(result);
+        assertEquals(270, result[0]);
+        assertEquals(480, result[1]);
     }
 
     @Test
     public void testCalculateTargetDimensionsSquare() {
         int[] result = GifMediaHelper.calculateTargetDimensions(1000, 1000, 500);
-        assertArrayEquals(new int[]{500, 500}, result);
+        assertNotNull(result);
+        assertEquals(500, result[0]);
+        assertEquals(500, result[1]);
     }
 
     @Test
