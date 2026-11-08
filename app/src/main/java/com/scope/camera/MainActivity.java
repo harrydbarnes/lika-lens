@@ -2167,7 +2167,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     }
                     Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
                     if (iso != null && iso > 0) {
-                        exif.setAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, String.valueOf(iso));
+                        exif.setAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS, String.valueOf(iso));
                     }
                     Float focal = result.get(CaptureResult.LENS_FOCAL_LENGTH);
                     if (focal != null && focal > 0) {

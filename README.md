@@ -29,7 +29,7 @@ The default **Lika / Film** rendering is intentionally opinionated. It is design
 - **Subtractive highlight roll-off & ambient warmth**: Eliminates fluorescent/indoor greenish-yellow casts by adaptively balancing color gains and smoothly desaturating highlights toward luminance white.
 - **4-Tab post-capture editor**: Reorganized into `TONE` (exposure, contrast, pivot, shadows, highlights), `COLOR` (warmth, white balance, saturation, colour roll-off, colour NR), `TEXTURE` (grain intensity, grain structure 35mm/16mm/8mm, halation, vignette, sharpening), and `CROP` (aspect ratio pills and horizontal flip).
 - **Interactive photo viewer with zoom HUD**: Pinch-to-zoom (1.0× to 5.0×) with fluid pan tracking, double-tap 2.5× loupe zoom, dynamic magnification HUD (`100% · FIT`, `250% · DETAIL`), downward swipe-to-dismiss gesture, system photo sharing (`Intent.ACTION_SEND`), and an animated photographic EXIF metadata inspection card.
-- **Photographic EXIF metadata**: All saved JPEGs include standard EXIF tags (`TAG_EXPOSURE_TIME`, `TAG_PHOTOGRAPHIC_SENSITIVITY`, `TAG_FOCAL_LENGTH`, `TAG_F_NUMBER`, `TAG_MAKE`, `TAG_MODEL`, `TAG_SOFTWARE`).
+- **Photographic EXIF metadata**: All saved JPEGs include standard EXIF tags (`TAG_EXPOSURE_TIME`, `TAG_ISO_SPEED_RATINGS`, `TAG_FOCAL_LENGTH`, `TAG_F_NUMBER`, `TAG_MAKE`, `TAG_MODEL`, `TAG_SOFTWARE`).
 - **Lens memory**: Restores the user's preferred default lens (`Auto / Wide 1×`, `Ultra-wide .5×`, `Telephoto 2×/5×`, or `Last used`).
 - **Quick look panel**: Tap **ADJUST** on the camera screen for quick-access sliders that apply to subsequent captures.
 - **Clean point-and-shoot camera screen**: One-tap RAW, Mono or Lika / Film mode switching, haptic shutter, self-timer, and flash controls.

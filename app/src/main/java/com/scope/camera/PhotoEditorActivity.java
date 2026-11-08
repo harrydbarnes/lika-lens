@@ -703,7 +703,7 @@ public class PhotoEditorActivity extends Activity {
                             exif.setAttribute(android.media.ExifInterface.TAG_EXPOSURE_TIME, String.valueOf(source.exposureTimeNs / 1_000_000_000.0));
                         }
                         if (source.sensitivityIso > 0) {
-                            exif.setAttribute(android.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, String.valueOf(source.sensitivityIso));
+                            exif.setAttribute(android.media.ExifInterface.TAG_ISO_SPEED_RATINGS, String.valueOf(source.sensitivityIso));
                         }
                         exif.saveAttributes();
                     }

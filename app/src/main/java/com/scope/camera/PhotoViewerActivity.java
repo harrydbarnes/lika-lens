@@ -444,7 +444,8 @@ public class PhotoViewerActivity extends Activity {
                         shutter = sec < 1.0 ? String.format(Locale.US, "1/%ds", Math.round(1.0 / sec)) : String.format(Locale.US, "%.1fs", sec);
                     } catch (Exception ignored) { shutter = expTime + "s"; }
                 }
-                String isoVal = exif.getAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY);
+                String isoVal = exif.getAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS);
+                if ((isoVal == null || isoVal.isEmpty())) isoVal = exif.getAttribute("PhotographicSensitivity");
                 if (isoVal != null && !isoVal.isEmpty()) iso = "ISO " + isoVal;
                 String fLen = exif.getAttribute(ExifInterface.TAG_FOCAL_LENGTH);
                 if (fLen != null && !fLen.isEmpty()) focal = fLen + "mm";
