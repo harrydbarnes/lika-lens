@@ -206,7 +206,7 @@ public class PhotoViewerActivity extends Activity {
         root.addView(zoomHud, zhLp);
 
         // EXIF Metadata bottom overlay card
-        infoCard = buildInfoCard();
+        infoCard = PhotoViewerMetadataSheet.build(this);
         infoCard.setVisibility(View.GONE);
         root.addView(infoCard, getInfoCardLayoutParams());
 
@@ -530,22 +530,9 @@ public class PhotoViewerActivity extends Activity {
     }
 
     private void clampMatrix() {
-        if (imageWidth == 0 || imageHeight == 0 || photoView.getWidth() == 0 || photoView.getHeight() == 0) return;
-        RectF rect = new RectF(0, 0, imageWidth, imageHeight);
-        matrix.mapRect(rect);
-        float viewW = photoView.getWidth();
-        float viewH = photoView.getHeight();
-        float deltaX = 0f, deltaY = 0f;
-
-        if (rect.width() < viewW) deltaX = (viewW - rect.width()) * 0.5f - rect.left;
-        else if (rect.left > 0) deltaX = -rect.left;
-        else if (rect.right < viewW) deltaX = viewW - rect.right;
-
-        if (rect.height() < viewH) deltaY = (viewH - rect.height()) * 0.5f - rect.top;
-        else if (rect.top > 0) deltaY = -rect.top;
-        else if (rect.bottom < viewH) deltaY = viewH - rect.bottom;
-
-        matrix.postTranslate(deltaX, deltaY);
+        if (photoView != null) {
+            PhotoViewerGestureHelper.clampMatrix(matrix, imageWidth, imageHeight, photoView.getWidth(), photoView.getHeight());
+        }
     }
 
     private void resetZoom() {
@@ -558,35 +545,12 @@ public class PhotoViewerActivity extends Activity {
         matrix.reset();
         float viewW = photoView.getWidth();
         float viewH = photoView.getHeight();
-        float scale = Math.min(viewW / (float) imageWidth, viewH / (float) imageHeight);
+        float scale = PhotoViewerGestureHelper.computeFitScale(imageWidth, imageHeight, viewW, viewH);
         float dx = (viewW - imageWidth * scale) * 0.5f;
         float dy = (viewH - imageHeight * scale) * 0.5f;
         matrix.setScale(scale, scale);
         matrix.postTranslate(dx, dy);
         photoView.setImageMatrix(matrix);
-    }
-
-    private LinearLayout buildInfoCard() {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(16), dp(14), dp(16), dp(14));
-        card.setBackground(round(0xdd121617, 14, 0x99d7b574, dp(1)));
-
-        TextView header = text("FRAME DETAILS & EXIF", 9, ACCENT, true);
-        header.setLetterSpacing(.12f);
-        card.addView(header);
-
-        TextView dataLine1 = text("READING METADATA…", 9, 0xfff0f2eb, false);
-        dataLine1.setPadding(0, dp(6), 0, 0);
-        dataLine1.setTag("exif_line1");
-        card.addView(dataLine1);
-
-        TextView dataLine2 = text("", 8, 0xff9ba59e, false);
-        dataLine2.setPadding(0, dp(3), 0, 0);
-        dataLine2.setTag("exif_line2");
-        card.addView(dataLine2);
-
-        return card;
     }
 
     private void toggleInfo() {
@@ -597,39 +561,7 @@ public class PhotoViewerActivity extends Activity {
     }
 
     private void populateInfoData() {
-        TextView line1 = infoCard.findViewWithTag("exif_line1");
-        TextView line2 = infoCard.findViewWithTag("exif_line2");
-        if (line1 == null || line2 == null || photoUri == null) return;
-
-        String shutter = "1/120s";
-        String iso = "ISO 100";
-        String focal = "Wide";
-        String dimensions = imageWidth > 0 ? (imageWidth + " × " + imageHeight) : "";
-
-        try (InputStream stream = getContentResolver().openInputStream(photoUri)) {
-            if (stream != null) {
-                ExifInterface exif = new ExifInterface(stream);
-                String expTime = exif.getAttribute(ExifInterface.TAG_EXPOSURE_TIME);
-                if (expTime != null) {
-                    try {
-                        double sec = Double.parseDouble(expTime);
-                        shutter = sec < 1.0 ? String.format(Locale.US, "1/%ds", Math.round(1.0 / sec)) : String.format(Locale.US, "%.1fs", sec);
-                    } catch (Exception ignored) { shutter = expTime + "s"; }
-                }
-                String isoVal = exif.getAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS);
-                if ((isoVal == null || isoVal.isEmpty())) isoVal = exif.getAttribute("PhotographicSensitivity");
-                if (isoVal != null && !isoVal.isEmpty()) iso = "ISO " + isoVal;
-                String fLen = exif.getAttribute(ExifInterface.TAG_FOCAL_LENGTH);
-                if (fLen != null && !fLen.isEmpty()) focal = fLen + "mm";
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "Failed to parse EXIF metadata", t);
-        }
-
-        boolean hasRaw = archiveKey != null && RawArchive.exists(this, archiveKey);
-        line1.setText(shutter + "  ·  " + iso + "  ·  " + focal + (dimensions.isEmpty() ? "" : "  ·  " + dimensions));
-        line2.setText(hasRaw ? "RAW SENSOR ORIGINAL PRESERVED  ·  CHROMAGRAPH MOVIE LOOK"
-                : "PROCESSED JPEG  ·  DIRECT CAMERA RENDER");
+        PhotoViewerMetadataSheet.populate(this, infoCard, photoUri, archiveKey, imageWidth, imageHeight);
     }
 
     private void sharePhoto() {
