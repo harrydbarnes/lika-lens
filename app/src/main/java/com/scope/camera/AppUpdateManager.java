@@ -454,6 +454,7 @@ public final class AppUpdateManager {
         int dp16 = Math.round(16 * density);
         int dp14 = Math.round(14 * density);
         int dp12 = Math.round(12 * density);
+        int dp10 = Math.round(10 * density);
         int dp8 = Math.round(8 * density);
         int dp6 = Math.round(6 * density);
         int dp4 = Math.round(4 * density);
