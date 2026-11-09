@@ -316,14 +316,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private int lastActiveLensIndex = -1;
     private boolean volumeKeyHolding;
     private final Handler volumeKeyHandler = new Handler(Looper.getMainLooper());
-    private final Runnable volumeQuickTakeRunnable = () -> {
-        if (!volumeKeyHolding || videoRecording || videoStarting || switchingVideoCamera) return;
-        isQuickTake = true;
-        if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true) && captureButton != null) {
-            captureButton.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-        }
-        startVideoRecording();
-    };
+    private Runnable volumeQuickTakeRunnable;
     private boolean openingCamera;
     private boolean rawSupported;
     private boolean manualSupported;
@@ -493,6 +486,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        volumeQuickTakeRunnable = () -> {
+            if (!volumeKeyHolding || videoRecording || videoStarting || switchingVideoCamera) return;
+            isQuickTake = true;
+            if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true) && captureButton != null) {
+                captureButton.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            }
+            startVideoRecording();
+        };
         AppSettings.migrateBranding(this);
         LutManager.init(this);
         Window window = getWindow();
