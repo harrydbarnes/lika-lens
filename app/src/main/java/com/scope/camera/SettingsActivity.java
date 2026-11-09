@@ -311,7 +311,7 @@ public class SettingsActivity extends Activity {
 
         beginSection("VIEWFINDER & SHOOTING ERGONOMICS", "Framing aids, exposure telemetry, gesture shortcuts and tactile controls.");
         addSwitch("Live film stock viewfinder preview", "Real-time film color science simulation in the live viewfinder", AppSettings.LIVE_FILM_PREVIEW, true);
-        addSwitch("Rangefinder frame lines", "Translucent outside-the-frame context with Leica illuminated brightlines and corner brackets", AppSettings.RANGEFINDER_LINES, true);
+        addSwitch("Rangefinder frame lines", "Translucent outside-the-frame context with Leica illuminated brightlines and corner brackets", AppSettings.RANGEFINDER_LINES, false);
         addSwitch("Pro optical loupe (5×)", "High-magnification focus assist loupe with gold bezel during reticle adjustment", AppSettings.OPTICAL_LOUPE, true);
         addChoice("Composition grid", "Choose a guide overlay inside the viewfinder frame", AppSettings.GRID_STYLE,
                 new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");

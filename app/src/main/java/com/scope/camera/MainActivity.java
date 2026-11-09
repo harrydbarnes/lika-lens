@@ -17,6 +17,8 @@ import android.graphics.ColorMatrixColorFilter;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RadialGradient;
+import android.graphics.Shader;
 import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
@@ -738,6 +740,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         settingsButton = pill("⚙", false);
         LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(dp(36), dp(38));
         settingsLp.leftMargin = dp(6);
+        settingsLp.rightMargin = dp(24);
         header.addView(settingsButton, settingsLp);
         settingsButton.setOnClickListener(v -> { hapticClick(v); startActivity(new Intent(this, SettingsActivity.class)); });
 
@@ -910,13 +913,24 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         modeRow = row();
         modeRow.setGravity(Gravity.CENTER);
-        modeRow.setPadding(0, dp(2), 0, 0);
-        photoModeButton = pill("PHOTO", true);
-        videoModeButton = pill("VIDEO", false);
+        modeRow.setPadding(dp(3), dp(3), dp(3), dp(3));
+        modeRow.setBackground(round(0xd016191a, 20, 0, 0));
+        photoModeButton = new TextView(this);
+        photoModeButton.setText("PHOTO");
+        photoModeButton.setGravity(Gravity.CENTER);
+        photoModeButton.setTextSize(12f);
+        photoModeButton.setTypeface(Typeface.DEFAULT_BOLD);
         photoModeButton.setContentDescription("Photo mode");
+
+        videoModeButton = new TextView(this);
+        videoModeButton.setText("VIDEO");
+        videoModeButton.setGravity(Gravity.CENTER);
+        videoModeButton.setTextSize(12f);
+        videoModeButton.setTypeface(Typeface.DEFAULT_BOLD);
         videoModeButton.setContentDescription("Video mode");
-        LinearLayout.LayoutParams modeLp = new LinearLayout.LayoutParams(dp(68), dp(30));
-        modeLp.setMargins(dp(3), 0, dp(3), 0);
+
+        LinearLayout.LayoutParams modeLp = new LinearLayout.LayoutParams(dp(72), dp(32));
+        modeLp.setMargins(dp(1), 0, dp(1), 0);
         modeRow.addView(photoModeButton, modeLp);
         modeRow.addView(videoModeButton, modeLp);
         photoModeButton.setOnClickListener(v -> { hapticClick(v); setVideoMode(false); });
@@ -971,7 +985,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         galleryButton.setBackground(round(0xff202626, 14, 0x777d8580, dp(1)));
         galleryButton.setClipToOutline(true);
         galleryButton.setContentDescription("Open the latest frame. Long press for the library.");
-        LinearLayout.LayoutParams sideLp = new LinearLayout.LayoutParams(dp(52), dp(52));
+        LinearLayout.LayoutParams sideLp = new LinearLayout.LayoutParams(dp(54), dp(54));
         shootRow.addView(galleryButton, sideLp);
         galleryButton.setImageResource(R.drawable.ic_lika_lens);
         galleryButton.setOnClickListener(v -> { hapticClick(v); openLatestFrame(); });
@@ -986,9 +1000,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         captureButton.setFocusable(false);
 
         shutterFrame = new FrameLayout(this);
-        shutterFrame.setBackground(round(0x00202020, 100, 0xfffaf9f5, dp(2)));
-        shutterFrame.addView(captureButton, new FrameLayout.LayoutParams(dp(64), dp(64), Gravity.CENTER));
-        shootRow.addView(shutterFrame, new LinearLayout.LayoutParams(dp(78), dp(78)));
+        shutterFrame.setBackground(round(0x00202020, 100, 0xfffaf9f5, dp(3)));
+        shutterFrame.addView(captureButton, new FrameLayout.LayoutParams(dp(74), dp(74), Gravity.CENTER));
+        shootRow.addView(shutterFrame, new LinearLayout.LayoutParams(dp(88), dp(88)));
         shutterFrame.setClickable(true);
         shutterFrame.setFocusable(true);
         shutterFrame.setOnTouchListener(new ShutterTouchListener());
@@ -1040,17 +1054,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         shootRow.removeAllViews();
         if (galleryButton != null) {
             if (galleryButton.getParent() != null) ((ViewGroup) galleryButton.getParent()).removeView(galleryButton);
-            shootRow.addView(galleryButton, new LinearLayout.LayoutParams(dp(52), dp(52)));
+            shootRow.addView(galleryButton, new LinearLayout.LayoutParams(dp(54), dp(54)));
         }
         shootRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
         if (shutterFrame != null) {
             if (shutterFrame.getParent() != null) ((ViewGroup) shutterFrame.getParent()).removeView(shutterFrame);
-            shootRow.addView(shutterFrame, new LinearLayout.LayoutParams(dp(78), dp(78)));
+            shootRow.addView(shutterFrame, new LinearLayout.LayoutParams(dp(88), dp(88)));
         }
         shootRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
         if (flipButton != null) {
             if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
-            shootRow.addView(flipButton, new LinearLayout.LayoutParams(dp(52), dp(52)));
+            shootRow.addView(flipButton, new LinearLayout.LayoutParams(dp(54), dp(54)));
         }
     }
 
@@ -1094,31 +1108,39 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 zoomSliderLp.topMargin = dp(4);
                 overlay.addView(zoomSliderPanel, zoomSliderLp);
             }
-            if (modeRow != null) {
-                if (modeRow.getParent() != null) ((ViewGroup) modeRow.getParent()).removeView(modeRow);
-                LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(-1, -2);
-                modeRowLp.topMargin = dp(8);
-                overlay.addView(modeRow, modeRowLp);
-            }
             if (lookRow != null) {
                 if (lookRow.getParent() != null) ((ViewGroup) lookRow.getParent()).removeView(lookRow);
                 LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
                 noteLp.topMargin = dp(8);
                 overlay.addView(lookRow, noteLp);
             }
-            if (deckSpacer != null) {
-                if (deckSpacer.getParent() != null) ((ViewGroup) deckSpacer.getParent()).removeView(deckSpacer);
-                overlay.addView(deckSpacer, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+            View preModeSpacer = new View(this);
+            overlay.addView(preModeSpacer, new LinearLayout.LayoutParams(-1, 0, 0.45f));
+
+            if (modeRow != null) {
+                if (modeRow.getParent() != null) ((ViewGroup) modeRow.getParent()).removeView(modeRow);
+                LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(-2, -2);
+                modeRowLp.gravity = Gravity.CENTER_HORIZONTAL;
+                overlay.addView(modeRow, modeRowLp);
             }
+
+            View preShootSpacer = new View(this);
+            overlay.addView(preShootSpacer, new LinearLayout.LayoutParams(-1, 0, 0.65f));
+
             restoreShootRow();
             if (shootRow != null) {
                 if (shootRow.getParent() != null) ((ViewGroup) shootRow.getParent()).removeView(shootRow);
                 overlay.addView(shootRow);
             }
+
+            View postShootSpacer = new View(this);
+            overlay.addView(postShootSpacer, new LinearLayout.LayoutParams(-1, 0, 1.0f));
+
             if (outputModeText != null) {
                 if (outputModeText.getParent() != null) ((ViewGroup) outputModeText.getParent()).removeView(outputModeText);
                 LinearLayout.LayoutParams formatLp = new LinearLayout.LayoutParams(-1, -2);
-                formatLp.topMargin = dp(7);
+                formatLp.bottomMargin = dp(4);
                 overlay.addView(outputModeText, formatLp);
             }
         } else {
@@ -1191,7 +1213,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
             if (shutterFrame != null) {
                 if (shutterFrame.getParent() != null) ((ViewGroup) shutterFrame.getParent()).removeView(shutterFrame);
-                sideGrip.addView(shutterFrame, new LinearLayout.LayoutParams(dp(76), dp(76)));
+                sideGrip.addView(shutterFrame, new LinearLayout.LayoutParams(dp(88), dp(88)));
             }
 
             View lowerGripSpacer = new View(this);
@@ -1425,7 +1447,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             captureButton.setContentDescription(videoMode
                     ? recUi ? "Stop video recording" : "Start video recording"
                     : "Take photo");
-            shutterFrame.setBackground(round(0x00202020, 100, stroke, dp(2)));
+            shutterFrame.setBackground(round(0x00202020, 100, stroke, dp(3)));
         }
 
         if (cameraState != null && outputModeText != null) {
@@ -1452,9 +1474,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void styleModeButton(TextView button, boolean active) {
-        button.setTextColor(active ? ACCENT : 0xffe9ede6);
-        button.setBackground(round(active ? 0xe21c1d1b : 0xd8191e1e, 22,
-                active ? ACCENT : 0x556e7872, dp(1)));
+        button.setTypeface(Typeface.DEFAULT_BOLD);
+        if (active) {
+            button.setTextColor(BG);
+            button.setBackground(round(0xfffed36a, 100, 0, 0));
+        } else {
+            button.setTextColor(0xffffffff);
+            button.setBackground(null);
+        }
     }
 
     private void onShutterPressed() {
@@ -4255,7 +4282,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         captureButton.animate().scaleX(1.0f).scaleY(1.0f).setDuration(220)
                                 .setInterpolator(new android.view.animation.OvershootInterpolator(1.8f)).start();
                         float x = event.getX(), y = event.getY();
-                        int slop = dp(24);
+                        int slop = dp(32);
                         if (x >= -slop && x <= v.getWidth() + slop && y >= -slop && y <= v.getHeight() + slop) {
                             if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true)) {
                                 v.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
@@ -4602,17 +4629,21 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         private final Paint gridPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint framePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint aidPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint vigPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF lastVigFrame = new RectF();
+        private int lastVigSetting = -1;
+        private final Matrix vigMatrix = new Matrix();
         final RectF currentHistRect = new RectF();
 
         CompositionGrid(Activity activity) {
             super(activity);
-            maskPaint.setColor(0x99080b0c);
+            maskPaint.setColor(BG);
             gridPaint.setColor(0xb8f2f3ec);
             gridPaint.setStyle(Paint.Style.STROKE);
             gridPaint.setStrokeWidth(activity.getResources().getDisplayMetrics().density);
-            framePaint.setColor(0x99d7b574);
+            framePaint.setColor(0x18ffffff);
             framePaint.setStyle(Paint.Style.STROKE);
-            framePaint.setStrokeWidth(activity.getResources().getDisplayMetrics().density * 1.25f);
+            framePaint.setStrokeWidth(activity.getResources().getDisplayMetrics().density);
         }
 
         boolean isHistogramHit(float x, float y) {
@@ -4628,60 +4659,47 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             float density = getResources().getDisplayMetrics().density;
             float cornerRadius = Math.min(density * 24f, Math.min(frame.width(), frame.height()) * 0.5f);
 
-            boolean rangefinderLines = AppSettings.getBoolean(MainActivity.this, AppSettings.RANGEFINDER_LINES, true);
-
-            // Mask outside the curved viewfinder card (translucent veil if rangefinderLines enabled)
+            // Mask outside the curved viewfinder card with solid Leica obsidian black
             Path maskPath = new Path();
             maskPath.setFillType(Path.FillType.EVEN_ODD);
             maskPath.addRect(0, 0, w, h, Path.Direction.CW);
             maskPath.addRoundRect(frame, cornerRadius, cornerRadius, Path.Direction.CW);
-            maskPaint.setColor(rangefinderLines ? 0xC8080B0C : BG);
+            maskPaint.setColor(BG);
             maskPaint.setStyle(Paint.Style.FILL);
             canvas.drawPath(maskPath, maskPaint);
 
-            if (rangefinderLines) {
-                // Leica illuminated gold brightlines and corner brackets
-                Paint brightlinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                brightlinePaint.setStyle(Paint.Style.STROKE);
-                brightlinePaint.setColor(0xCCD7B574);
-                brightlinePaint.setStrokeWidth(density * 1.5f);
-                canvas.drawRoundRect(frame, cornerRadius, cornerRadius, brightlinePaint);
-
-                brightlinePaint.setStrokeWidth(density * 2.5f);
-                brightlinePaint.setColor(ACCENT);
-                float arm = density * 20f;
-                // Top-Left
-                canvas.drawLine(frame.left, frame.top, frame.left + arm, frame.top, brightlinePaint);
-                canvas.drawLine(frame.left, frame.top, frame.left, frame.top + arm, brightlinePaint);
-                // Top-Right
-                canvas.drawLine(frame.right, frame.top, frame.right - arm, frame.top, brightlinePaint);
-                canvas.drawLine(frame.right, frame.top, frame.right, frame.top + arm, brightlinePaint);
-                // Bottom-Left
-                canvas.drawLine(frame.left, frame.bottom, frame.left + arm, frame.bottom, brightlinePaint);
-                canvas.drawLine(frame.left, frame.bottom, frame.left, frame.bottom - arm, brightlinePaint);
-                // Bottom-Right
-                canvas.drawLine(frame.right, frame.bottom, frame.right - arm, frame.bottom, brightlinePaint);
-                canvas.drawLine(frame.right, frame.bottom, frame.right, frame.bottom - arm, brightlinePaint);
-
-                float tickLen = density * 7f;
-                canvas.drawLine(frame.centerX(), frame.top, frame.centerX(), frame.top + tickLen, brightlinePaint);
-                canvas.drawLine(frame.centerX(), frame.bottom, frame.centerX(), frame.bottom - tickLen, brightlinePaint);
-                canvas.drawLine(frame.left, frame.centerY(), frame.left + tickLen, frame.centerY(), brightlinePaint);
-                canvas.drawLine(frame.right, frame.centerY(), frame.right - tickLen, frame.centerY(), brightlinePaint);
-
-                Paint tagPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                tagPaint.setColor(ACCENT);
-                tagPaint.setTextSize(density * 9.5f);
-                tagPaint.setTypeface(Typeface.DEFAULT_BOLD);
-                String aspect = AppSettings.get(MainActivity.this, AppSettings.ASPECT_RATIO, "4:3");
-                canvas.drawText(aspect, frame.left + density * 8f, frame.top + density * 16f, tagPaint);
-            }
-
-            // Clip inner aids to the curved viewfinder
+            // Clip inner aids and vignette to the curved viewfinder
             Path clipPath = new Path();
             clipPath.addRoundRect(frame, cornerRadius, cornerRadius, Path.Direction.CW);
             canvas.save();
             canvas.clipPath(clipPath);
+
+            // Authentic analog viewfinder lens vignette falloff
+            int vigSetting = AppSettings.getInt(MainActivity.this, AppSettings.VIGNETTE, AppSettings.DEFAULT_VIGNETTE);
+            if (!frame.equals(lastVigFrame) || vigSetting != lastVigSetting) {
+                lastVigFrame.set(frame);
+                lastVigSetting = vigSetting;
+                float cx = frame.centerX();
+                float cy = frame.centerY();
+                float rx = frame.width() * 0.5f;
+                float ry = frame.height() * 0.5f;
+                vigMatrix.reset();
+                if (rx > 0f && ry > 0f) {
+                    vigMatrix.setScale(1.0f, ry / rx, cx, cy);
+                }
+                float vigFactor = Math.max(0.4f, Math.min(2.0f, vigSetting / 10f));
+                int edgeAlpha = Math.min(0x55, Math.round(0x24 * vigFactor));
+                int cornerAlpha = Math.min(0xDD, Math.round(0x8C * vigFactor));
+                RadialGradient vigGradient = new RadialGradient(
+                        cx, cy, rx,
+                        new int[]{0x00000000, 0x00000000, (edgeAlpha << 24), (cornerAlpha << 24)},
+                        new float[]{0.0f, 0.52f, 0.80f, 1.0f},
+                        Shader.TileMode.CLAMP
+                );
+                vigGradient.setLocalMatrix(vigMatrix);
+                vigPaint.setShader(vigGradient);
+            }
+            canvas.drawRect(frame, vigPaint);
 
             // Live Zebra Stripes & Focus Peaking Overlays
             boolean showZebra = AppSettings.getBoolean(MainActivity.this, AppSettings.ZEBRA, false);
@@ -4886,7 +4904,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
             canvas.restore();
 
-            framePaint.setColor(0x44d7b574);
+            framePaint.setColor(0x18ffffff);
             framePaint.setStyle(Paint.Style.STROKE);
             framePaint.setStrokeWidth(density * 1.0f);
             canvas.drawRoundRect(frame, cornerRadius, cornerRadius, framePaint);
