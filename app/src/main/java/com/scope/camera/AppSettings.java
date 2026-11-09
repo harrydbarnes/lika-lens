@@ -101,6 +101,7 @@ final class AppSettings {
     static final String RANGEFINDER_LINES = "rangefinder_frame_lines";
     static final String OPTICAL_LOUPE = "optical_loupe";
     static final String HISTOGRAM_MODE = "histogram_mode";
+    static final String SHOW_TELEMETRY = "show_telemetry";
 
     // Custom Film Recipes (User Presets)
     static final String RECIPE_1_NAME = "recipe_1_name";

@@ -346,6 +346,7 @@ public class SettingsActivity extends Activity {
         addChoice("Volume key action", "Hardware volume key function", AppSettings.VOLUME_ROCKER,
                 new String[]{"Shutter", "Zoom", "Volume", "Off"}, "Shutter");
         addSwitch("Shutter ocular wink", "Blackout pulse during optical leaf shutter exposure", AppSettings.SHUTTER_WINK, true);
+        addSwitch("Exposure telemetry HUD", "Display live shutter speed, ISO, and white balance metering on the viewfinder", AppSettings.SHOW_TELEMETRY, false);
         addInfo("Grid guides", "The frame outline and grid help compose the shot. They are not saved into the photo.", 0xffaab3ad);
         boolean hasRaw = AppSettings.getBoolean(this, AppSettings.RAW_SUPPORTED, false);
         addInfo("RAW sensor support", hasRaw ? "Available on the last opened camera" : "Not confirmed yet · open the camera to detect support", hasRaw ? ACCENT : 0xffdfb56f);

@@ -592,6 +592,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
         }
         buildCameraUi();
+        View decor = window != null ? window.getDecorView() : null;
+        if (decor != null) {
+            decor.setOnSystemUiVisibilityChangeListener(visibility -> {
+                if ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
+                    applyFullScreenImmersive();
+                }
+            });
+        }
         applyFullScreenImmersive();
         if (root != null) {
             root.post(this::applyFullScreenImmersive);
@@ -608,6 +616,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
         }
+    }
+
+    @Override public void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        applyFullScreenImmersive();
     }
 
     @Override public void onWindowFocusChanged(boolean hasFocus) {
@@ -637,6 +650,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 window.setDecorFitsSystemWindows(false);
                 WindowInsetsController controller = window.getInsetsController();
+                if (controller == null && decor != null) {
+                    controller = decor.getWindowInsetsController();
+                }
                 if (controller != null) {
                     controller.hide(WindowInsets.Type.statusBars());
                     controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
@@ -650,6 +666,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     @Override protected void onResume() {
         super.onResume();
         applyFullScreenImmersive();
+        if (root != null) {
+            root.postDelayed(this::applyFullScreenImmersive, 150L);
+        }
         if (sensorManager != null && orientationSensor != null) {
             sensorManager.registerListener(sensorEventListener, orientationSensor, SensorManager.SENSOR_DELAY_UI);
         }
@@ -1020,8 +1039,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         lensRow = new ZoomPresetRow();
         lensRow.setGravity(Gravity.CENTER);
-        lensRow.setPadding(dp(4), dp(3), dp(4), dp(3));
-        lensRow.setBackground(round(0xd016191a, 21, 0, 0));
+        lensRow.setPadding(dp(4), dp(4), dp(4), dp(4));
+        lensRow.setClipToPadding(false);
+        lensRow.setClipChildren(false);
+        lensRow.setBackground(round(0xd016191a, 100, 0, 0));
         lensRow.setContentDescription("Zoom presets. Swipe horizontally to reveal precision zoom.");
         float[] zooms = new float[]{.5f, 1f, 2f, 5f};
         String[] unselectedLabels = new String[]{".5", "1", "2", "5"};
@@ -1268,8 +1289,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         if (!isWide) {
             overlay.setOrientation(LinearLayout.VERTICAL);
-            int topPad = Math.max(dp(38), safeInsets.top + dp(6));
-            overlay.setPadding(dp(12) + safeInsets.left, topPad, dp(12) + safeInsets.right, dp(14) + safeInsets.bottom);
+            int topPad = Math.max(dp(30), safeInsets.top + dp(2));
+            overlay.setPadding(dp(12) + safeInsets.left, topPad, dp(12) + safeInsets.right, dp(12) + safeInsets.bottom);
             overlay.setBackground(new android.graphics.drawable.GradientDrawable(
                     android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
                     new int[]{0x98080b0c, 0x00080b0c, 0x10080b0c, 0xd8080b0c}));
@@ -1292,7 +1313,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             if (lensRow != null) {
                 if (lensRow.getParent() != null) ((ViewGroup) lensRow.getParent()).removeView(lensRow);
-                LinearLayout.LayoutParams lensRowLp = new LinearLayout.LayoutParams(-2, dp(40));
+                LinearLayout.LayoutParams lensRowLp = new LinearLayout.LayoutParams(-2, -2);
                 lensRowLp.gravity = Gravity.CENTER_HORIZONTAL;
                 overlay.addView(lensRow, lensRowLp);
             }
@@ -1309,35 +1330,29 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             LinearLayout bottomDeck = new LinearLayout(this);
             bottomDeck.setOrientation(LinearLayout.VERTICAL);
             bottomDeck.setGravity(Gravity.CENTER_HORIZONTAL);
-            bottomDeck.setPadding(0, dp(4), 0, 0);
+            bottomDeck.setPadding(0, dp(2), 0, dp(2));
 
             if (lookRow != null) {
                 if (lookRow.getParent() != null) ((ViewGroup) lookRow.getParent()).removeView(lookRow);
-                LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, dp(32));
+                LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, dp(30));
                 noteLp.bottomMargin = dp(6);
                 bottomDeck.addView(lookRow, noteLp);
+            }
+
+            restoreShootRow();
+            if (shootRow != null) {
+                if (shootRow.getParent() != null) ((ViewGroup) shootRow.getParent()).removeView(shootRow);
+                LinearLayout.LayoutParams shootLp = new LinearLayout.LayoutParams(-1, dp(86));
+                shootLp.bottomMargin = dp(4);
+                bottomDeck.addView(shootRow, shootLp);
             }
 
             if (modeRow != null) {
                 if (modeRow.getParent() != null) ((ViewGroup) modeRow.getParent()).removeView(modeRow);
                 LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(-2, -2);
                 modeRowLp.gravity = Gravity.CENTER_HORIZONTAL;
-                modeRowLp.bottomMargin = dp(8);
+                modeRowLp.bottomMargin = dp(4);
                 bottomDeck.addView(modeRow, modeRowLp);
-            }
-
-            restoreShootRow();
-            if (shootRow != null) {
-                if (shootRow.getParent() != null) ((ViewGroup) shootRow.getParent()).removeView(shootRow);
-                LinearLayout.LayoutParams shootLp = new LinearLayout.LayoutParams(-1, dp(88));
-                shootLp.bottomMargin = dp(6);
-                bottomDeck.addView(shootRow, shootLp);
-            }
-
-            if (outputModeText != null) {
-                if (outputModeText.getParent() != null) ((ViewGroup) outputModeText.getParent()).removeView(outputModeText);
-                LinearLayout.LayoutParams formatLp = new LinearLayout.LayoutParams(-1, dp(16));
-                bottomDeck.addView(outputModeText, formatLp);
             }
 
             overlay.addView(bottomDeck, new LinearLayout.LayoutParams(-1, -2));
@@ -1395,7 +1410,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             if (lensRow != null) {
                 if (lensRow.getParent() != null) ((ViewGroup) lensRow.getParent()).removeView(lensRow);
-                LinearLayout.LayoutParams lensRowLp = new LinearLayout.LayoutParams(-2, dp(38));
+                LinearLayout.LayoutParams lensRowLp = new LinearLayout.LayoutParams(-2, -2);
                 lensRowLp.topMargin = dp(6);
                 sideGrip.addView(lensRow, lensRowLp);
             }
@@ -1670,6 +1685,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 outputModeText.setText("JPEG FALLBACK  ·  SENSOR RAW NOT AVAILABLE");
             }
         }
+        updateTelemetryVisibility();
     }
 
     private void styleModeButton(TextView button, boolean active) {
@@ -2833,8 +2849,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             float frameWidth = width;
             float frameHeight = frameWidth / ratio;
             Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
-            float topOffset = Math.max(dp(82), safeInsets.top + dp(46));
-            float maxFrameHeight = Math.max(dp(100), height - topOffset - dp(200) - safeInsets.bottom);
+            float topOffset = Math.max(dp(72), safeInsets.top + dp(34));
+            float maxFrameHeight = Math.max(dp(100), height - topOffset - dp(180) - safeInsets.bottom);
             if (frameHeight > maxFrameHeight) {
                 frameHeight = maxFrameHeight;
                 frameWidth = frameHeight * ratio;
@@ -4441,6 +4457,21 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (isoValueText != null) isoValueText.setText(manual ? AppSettings.get(this, AppSettings.MANUAL_ISO, "ISO 100") : "AUTO");
         int wb = AppSettings.getInt(this, AppSettings.WHITE_BALANCE, 0);
         if (whiteBalanceValueText != null) whiteBalanceValueText.setText(wb <= 0 ? "AUTO" : wb + " K");
+        updateTelemetryVisibility();
+    }
+
+    private void updateTelemetryVisibility() {
+        boolean showTelemetry = AppSettings.getBoolean(this, AppSettings.SHOW_TELEMETRY, false);
+        boolean activeVideo = videoRecording || videoStarting || switchingVideoCamera;
+        if (telemetry != null) {
+            telemetry.setVisibility(showTelemetry ? View.VISIBLE : View.GONE);
+        }
+        if (cameraState != null) {
+            cameraState.setVisibility((showTelemetry || activeVideo) ? View.VISIBLE : View.GONE);
+        }
+        if (outputModeText != null) {
+            outputModeText.setVisibility(View.GONE);
+        }
     }
 
     private void configureTransform(int viewWidth, int viewHeight) {
@@ -4502,7 +4533,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         textureView.setTransform(matrix);
 
         if (viewfinderSpacer != null && frame.height() > 0) {
-            int desiredH = Math.max(dp(40), (int) (frame.height() - dp(92)));
+            boolean showTelemetry = AppSettings.getBoolean(this, AppSettings.SHOW_TELEMETRY, false);
+            int reserve = showTelemetry ? dp(92) : dp(52);
+            int desiredH = Math.max(dp(40), (int) (frame.height() - reserve));
             ViewGroup.LayoutParams lp = viewfinderSpacer.getLayoutParams();
             if (lp != null && lp.height != desiredH) {
                 lp.height = desiredH;
@@ -4848,6 +4881,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         ZoomPresetRow() {
             super(MainActivity.this);
             setOrientation(LinearLayout.HORIZONTAL);
+            setClipToPadding(false);
+            setClipChildren(false);
         }
 
         @Override public boolean onInterceptTouchEvent(MotionEvent event) {
