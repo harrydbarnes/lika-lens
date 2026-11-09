@@ -574,11 +574,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         checkAutomaticUpdates();
     }
 
+    private static boolean hasCheckedUpdatesThisSession = false;
+
     private void checkAutomaticUpdates() {
         if (!AppSettings.getBoolean(this, AppSettings.AUTO_CHECK_UPDATES, true)) return;
         long lastCheck = AppSettings.prefs(this).getLong(AppSettings.LAST_UPDATE_CHECK_TIME, 0L);
-        // Rate-limit automated checks to once every 6 hours
-        if (System.currentTimeMillis() - lastCheck < 6 * 3600 * 1000L) return;
+        long now = System.currentTimeMillis();
+        // Check immediately on app cold-start, or every 4 hours if kept alive in memory
+        if (hasCheckedUpdatesThisSession && (now - lastCheck < 4 * 3600 * 1000L)) return;
+        hasCheckedUpdatesThisSession = true;
 
         AppUpdateManager.checkForUpdate(this, false, new AppUpdateManager.UpdateCallback() {
             @Override
@@ -592,7 +596,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             public void onNoUpdateAvailable() {}
 
             @Override
-            public void onError(String message) {}
+            public void onError(String message) {
+                Log.d(TAG, "Background update check notice: " + message);
+            }
         });
     }
 
