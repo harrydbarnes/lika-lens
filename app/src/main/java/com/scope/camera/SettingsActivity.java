@@ -337,8 +337,8 @@ public class SettingsActivity extends Activity {
                 new String[]{"Toggle 1× / 2× zoom", "Reset exposure bias", "None"}, "Toggle 1× / 2× zoom");
         addChoice("Reticle metering", "Targeting behaviour for focus reticle tap (dual EV + Shadow sliders)", AppSettings.RETICLE_METERING,
                 new String[]{"AF + AE Metering", "AF Only (Continuous AE)", "AE Only (Continuous AF)"}, "AF + AE Metering");
-        addChoice("Volume rocker", "Hardware volume key function", AppSettings.VOLUME_ROCKER,
-                new String[]{"Shutter release", "EV compensation bias", "Zoom 1× / 2×", "Off"}, "Shutter release");
+        addChoice("Volume key action", "Hardware volume key function", AppSettings.VOLUME_ROCKER,
+                new String[]{"Shutter", "Zoom", "Volume", "Off"}, "Shutter");
         addSwitch("Shutter ocular wink", "Blackout pulse during optical leaf shutter exposure", AppSettings.SHUTTER_WINK, true);
         addInfo("Grid guides", "The frame outline and grid help compose the shot. They are not saved into the photo.", 0xffaab3ad);
         boolean hasRaw = AppSettings.getBoolean(this, AppSettings.RAW_SUPPORTED, false);
@@ -681,6 +681,10 @@ public class SettingsActivity extends Activity {
         }
         row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
         String current = AppSettings.get(this, key, defaultValue);
+        if (AppSettings.VOLUME_ROCKER.equals(key)) {
+            if ("Shutter release".equals(current)) current = "Shutter";
+            else if ("Zoom 1× / 2×".equals(current)) current = "Zoom";
+        }
         String display = shortValue(current);
         if (AppSettings.FILE_PREFIX.equals(key) && current.startsWith("CUSTOM")) {
             display = "CUSTOM: " + AppSettings.get(this, AppSettings.CUSTOM_PREFIX_VALUE, "LIKA");
@@ -804,6 +808,10 @@ public class SettingsActivity extends Activity {
         optionsList.setOrientation(LinearLayout.VERTICAL);
 
         String selected = AppSettings.get(this, key, defaultValue);
+        if (AppSettings.VOLUME_ROCKER.equals(key)) {
+            if ("Shutter release".equals(selected)) selected = "Shutter";
+            else if ("Zoom 1× / 2×".equals(selected)) selected = "Zoom";
+        }
         for (String option : options) {
             boolean isCurrent = option.equals(selected);
             LinearLayout row = new LinearLayout(this);
@@ -850,7 +858,7 @@ public class SettingsActivity extends Activity {
         optScroll.addView(optionsList, new FrameLayout.LayoutParams(-1, -2));
         sheet.addView(optScroll, new LinearLayout.LayoutParams(-1, dp(Math.min(380, options.length * 52 + 10))));
 
-        TextView cancel = pill("CLOSE", false);
+        TextView cancel = pill("DONE", false);
         cancel.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(-1, dp(38));
         cancelLp.topMargin = dp(12);

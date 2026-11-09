@@ -314,6 +314,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private volatile boolean captureInFlight;
     private ValueAnimator zoomAnimator;
     private int lastActiveLensIndex = -1;
+    private boolean volumeKeyHolding;
+    private final Handler volumeKeyHandler = new Handler(Looper.getMainLooper());
+    private final Runnable volumeQuickTakeRunnable = () -> {
+        if (!volumeKeyHolding || videoRecording || videoStarting || switchingVideoCamera) return;
+        isQuickTake = true;
+        if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true) && captureButton != null) {
+            captureButton.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+        }
+        startVideoRecording();
+    };
     private boolean openingCamera;
     private boolean rawSupported;
     private boolean manualSupported;
@@ -634,6 +644,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             mediaActionSound = null;
         }
+        volumeKeyHandler.removeCallbacks(volumeQuickTakeRunnable);
+        volumeKeyHolding = false;
         super.onDestroy();
     }
 
@@ -651,27 +663,103 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (videoLockButton != null) videoLockButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
                 return true;
             }
-            if (event.getRepeatCount() == 0) {
-                String action = AppSettings.get(this, AppSettings.VOLUME_ROCKER, "Shutter release");
-                if ("Shutter release".equals(action)) {
-                    onShutterPressed();
-                    return true;
-                } else if ("EV compensation bias".equals(action)) {
+            String action = AppSettings.get(this, AppSettings.VOLUME_ROCKER, "Shutter");
+            if ("Shutter release".equals(action)) action = "Shutter";
+            else if ("Zoom 1× / 2×".equals(action)) action = "Zoom";
+
+            if ("Volume".equals(action)) {
+                return super.onKeyDown(keyCode, event);
+            }
+            if ("Off".equals(action)) {
+                return true;
+            }
+            if ("Shutter".equals(action)) {
+                if (event.getRepeatCount() == 0) {
+                    volumeKeyHolding = true;
+                    if (videoMode || videoRecording) {
+                        onShutterPressed();
+                    } else {
+                        volumeKeyHandler.removeCallbacks(volumeQuickTakeRunnable);
+                        volumeKeyHandler.postDelayed(volumeQuickTakeRunnable, 450L);
+                    }
+                }
+                return true;
+            }
+            if ("Zoom".equals(action)) {
+                boolean zoomIn = (keyCode == KeyEvent.KEYCODE_VOLUME_UP);
+                if (event.getRepeatCount() == 0) {
+                    if (zoomIn) {
+                        if (requestedZoom < 0.95f) chooseLens(1.0f);
+                        else if (requestedZoom < 1.95f) chooseLens(2.0f);
+                        else if (requestedZoom < 4.95f) chooseLens(5.0f);
+                        else animateZoomTo(Math.min(MAX_INTERACTIVE_ZOOM, requestedZoom + 1.0f));
+                    } else {
+                        if (requestedZoom > 4.8f) chooseLens(2.0f);
+                        else if (requestedZoom > 1.8f) chooseLens(1.0f);
+                        else if (requestedZoom > 0.95f) chooseLens(0.5f);
+                        else animateZoomTo(Math.max(MIN_INTERACTIVE_ZOOM, requestedZoom - 0.2f));
+                    }
+                } else {
+                    float delta = zoomIn ? 0.08f : -0.08f;
+                    float next = Math.max(MIN_INTERACTIVE_ZOOM, Math.min(MAX_INTERACTIVE_ZOOM, requestedZoom + delta));
+                    setInteractiveZoom(next);
+                }
+                return true;
+            }
+            if ("EV compensation bias".equals(action)) {
+                if (event.getRepeatCount() == 0) {
                     float step = keyCode == KeyEvent.KEYCODE_VOLUME_UP ? 0.33f : -0.33f;
                     float newEv = Math.max(-2f, Math.min(2f, currentEvOffset + step));
                     setExposureCompensationEv(newEv);
                     if (focusReticle != null) focusReticle.updateEv(newEv);
                     showMessage(String.format(Locale.US, "EV %+.1f", newEv));
-                    return true;
-                } else if ("Zoom 1× / 2×".equals(action)) {
-                    chooseLens(keyCode == KeyEvent.KEYCODE_VOLUME_UP ? 2.0f : 1.0f);
-                    return true;
-                } else if ("Off".equals(action)) {
-                    return super.onKeyDown(keyCode, event);
                 }
+                return true;
             }
         }
         return super.onKeyDown(keyCode, event);
+    }
+
+    @Override public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            if (videoScreenLocked) {
+                return true;
+            }
+            String action = AppSettings.get(this, AppSettings.VOLUME_ROCKER, "Shutter");
+            if ("Shutter release".equals(action)) action = "Shutter";
+            else if ("Zoom 1× / 2×".equals(action)) action = "Zoom";
+
+            if ("Volume".equals(action)) {
+                return super.onKeyUp(keyCode, event);
+            }
+            if ("Off".equals(action)) {
+                return true;
+            }
+            if ("Shutter".equals(action)) {
+                volumeKeyHandler.removeCallbacks(volumeQuickTakeRunnable);
+                if (volumeKeyHolding) {
+                    volumeKeyHolding = false;
+                    if (isQuickTake) {
+                        isQuickTake = false;
+                        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
+                            captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+                        }
+                        stopVideoRecording(true);
+                    } else if (!videoMode && !videoRecording) {
+                        onShutterPressed();
+                    }
+                }
+                return true;
+            }
+            if ("Zoom".equals(action)) {
+                finishInteractiveZoom();
+                return true;
+            }
+            if ("EV compensation bias".equals(action)) {
+                return true;
+            }
+        }
+        return super.onKeyUp(keyCode, event);
     }
 
     private void buildCameraUi() {
