@@ -56,6 +56,11 @@ public final class AppUpdateManager {
     private static final ExecutorService worker = Executors.newSingleThreadExecutor();
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
 
+    private static volatile File sPendingInstallApk;
+    private static volatile UpdateInfo sPendingUpdateInfo;
+    private static volatile boolean sWaitingForInstallPermission;
+    private static Dialog sCurrentUpdateDialog;
+
     private AppUpdateManager() {}
 
     public static final class UpdateInfo {
@@ -324,10 +329,13 @@ public final class AppUpdateManager {
                     }
                     output.flush();
                 }
+                destFile.setReadable(true, false);
+                sPendingInstallApk = destFile;
+                sPendingUpdateInfo = info;
 
                 mainHandler.post(() -> {
                     if (listener != null) listener.onComplete(destFile);
-                    promptInstall(activity, destFile);
+                    promptInstall(activity, destFile, info);
                 });
             } catch (Exception e) {
                 Log.e(TAG, "Download failed", e);
@@ -344,31 +352,71 @@ public final class AppUpdateManager {
      * Prompts the Android Package Installer for the specified APK file.
      */
     public static void promptInstall(Activity activity, File apkFile) {
+        promptInstall(activity, apkFile, sPendingUpdateInfo);
+    }
+
+    public static void promptInstall(Activity activity, File apkFile, UpdateInfo info) {
         if (activity == null || apkFile == null || !apkFile.exists()) return;
         if (activity.isFinishing()) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed()) return;
 
+        sPendingInstallApk = apkFile;
+        if (info != null) sPendingUpdateInfo = info;
+
         // Check for Unknown App Sources permission on Android 8.0+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (!activity.getPackageManager().canRequestPackageInstalls()) {
+                sWaitingForInstallPermission = true;
                 Toast.makeText(activity, "Please allow Lika Lens to install updates", Toast.LENGTH_LONG).show();
                 Intent permissionIntent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
                 permissionIntent.setData(Uri.parse("package:" + activity.getPackageName()));
-                activity.startActivity(permissionIntent);
+                try {
+                    activity.startActivity(permissionIntent);
+                } catch (Exception e) {
+                    activity.startActivity(new Intent(Settings.ACTION_SECURITY_SETTINGS));
+                }
                 return;
             }
         }
 
+        sWaitingForInstallPermission = false;
         try {
+            apkFile.setReadable(true, false);
             Uri apkUri = ApkFileProvider.getUriForFile(activity, apkFile);
             Intent intent = new Intent(Intent.ACTION_VIEW);
             intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+            intent.setClipData(android.content.ClipData.newRawUri("Lika Lens Update", apkUri));
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity.startActivity(intent);
         } catch (Exception e) {
             Log.e(TAG, "Failed to start package installer", e);
             Toast.makeText(activity, "Could not open installer: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            if (sPendingUpdateInfo != null) {
+                showUpdateDialog(activity, sPendingUpdateInfo);
+            }
+        }
+    }
+
+    /**
+     * Called on Activity onResume to automatically resume pending installation
+     * once unknown app sources permission has been granted, or re-show update dialog if returned.
+     */
+    public static void onResume(Activity activity) {
+        if (activity == null || activity.isFinishing()) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed()) return;
+
+        if (sWaitingForInstallPermission) {
+            sWaitingForInstallPermission = false;
+            boolean canInstall = Build.VERSION.SDK_INT < Build.VERSION_CODES.O
+                    || activity.getPackageManager().canRequestPackageInstalls();
+
+            if (canInstall && sPendingInstallApk != null && sPendingInstallApk.exists()) {
+                Toast.makeText(activity, "Permission granted. Starting installation…", Toast.LENGTH_SHORT).show();
+                promptInstall(activity, sPendingInstallApk, sPendingUpdateInfo);
+            } else if (sPendingUpdateInfo != null) {
+                showUpdateDialog(activity, sPendingUpdateInfo);
+            }
         }
     }
 
@@ -379,7 +427,21 @@ public final class AppUpdateManager {
         if (activity == null || activity.isFinishing() || info == null) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed()) return;
 
+        if (sCurrentUpdateDialog != null && sCurrentUpdateDialog.isShowing()) {
+            try {
+                sCurrentUpdateDialog.dismiss();
+            } catch (Exception ignored) {}
+        }
+        sPendingUpdateInfo = info;
+
         Dialog dialog = new Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar);
+        sCurrentUpdateDialog = dialog;
+        dialog.setOnDismissListener(d -> {
+            if (sCurrentUpdateDialog == dialog) {
+                sCurrentUpdateDialog = null;
+            }
+        });
+
         Window window = dialog.getWindow();
         if (window != null) {
             window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
@@ -387,6 +449,7 @@ public final class AppUpdateManager {
         }
 
         float density = activity.getResources().getDisplayMetrics().density;
+        int screenH = activity.getResources().getDisplayMetrics().heightPixels;
         int dp20 = Math.round(20 * density);
         int dp16 = Math.round(16 * density);
         int dp14 = Math.round(14 * density);
@@ -409,7 +472,7 @@ public final class AppUpdateManager {
         sheetBg.setCornerRadius(20 * density);
         sheetBg.setStroke(Math.round(1 * density), BORDER_CARD);
         sheet.setBackground(sheetBg);
-        sheet.setPadding(dp20, dp16, dp20, dp20);
+        sheet.setPadding(dp20, dp20, dp20, dp20);
 
         // Header Title
         TextView header = new TextView(activity);
@@ -424,7 +487,7 @@ public final class AppUpdateManager {
         LinearLayout tagRow = new LinearLayout(activity);
         tagRow.setOrientation(LinearLayout.HORIZONTAL);
         tagRow.setGravity(Gravity.CENTER_VERTICAL);
-        tagRow.setPadding(0, dp6, 0, dp12);
+        tagRow.setPadding(0, dp8, 0, dp12);
 
         String tagText = info.tagName + (info.isBeta ? " · BETA CHANNEL" : " · STABLE RELEASE");
         TextView tagView = new TextView(activity);
@@ -456,7 +519,7 @@ public final class AppUpdateManager {
 
         ScrollView scroll = new ScrollView(activity);
         scroll.setBackgroundColor(0xff14191a);
-        scroll.setPadding(dp12, dp8, dp12, dp8);
+        scroll.setPadding(dp12, dp10, dp12, dp10);
 
         TextView changelogText = new TextView(activity);
         changelogText.setText(info.changelog != null && !info.changelog.isEmpty() ? info.changelog : "Continuous integration update.");
@@ -466,8 +529,9 @@ public final class AppUpdateManager {
         changelogText.setLineSpacing(dp4, 1.15f);
         scroll.addView(changelogText);
 
-        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, Math.round(140 * density));
-        scrollLp.topMargin = dp6;
+        int targetScrollH = Math.max(Math.round(240 * density), Math.min(Math.round(360 * density), Math.round(screenH * 0.44f)));
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, targetScrollH);
+        scrollLp.topMargin = dp8;
         scrollLp.bottomMargin = dp16;
         sheet.addView(scroll, scrollLp);
 
@@ -504,13 +568,21 @@ public final class AppUpdateManager {
         laterBg.setStroke(Math.round(1 * density), 0x556e7872);
         laterBtn.setBackground(laterBg);
 
-        LinearLayout.LayoutParams laterLp = new LinearLayout.LayoutParams(0, Math.round(38 * density), 1f);
+        LinearLayout.LayoutParams laterLp = new LinearLayout.LayoutParams(0, Math.round(42 * density), 1f);
         laterLp.rightMargin = dp6;
         actions.addView(laterBtn, laterLp);
         laterBtn.setOnClickListener(v -> dialog.dismiss());
 
+        File updateDir = new File(activity.getCacheDir(), "updates");
+        File destFile = new File(updateDir, "lika-lens-update.apk");
+        boolean isAlreadyDownloaded = destFile.exists() && destFile.length() > 1024
+                && (info.apkSize <= 0 || Math.abs(destFile.length() - info.apkSize) < 100000);
+        if (isAlreadyDownloaded) {
+            sPendingInstallApk = destFile;
+        }
+
         TextView installBtn = new TextView(activity);
-        installBtn.setText("DOWNLOAD & INSTALL");
+        installBtn.setText(isAlreadyDownloaded ? "INSTALL NOW" : "DOWNLOAD & INSTALL");
         installBtn.setTextSize(8);
         installBtn.setTextColor(0xff0b0d0e);
         installBtn.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
@@ -521,7 +593,7 @@ public final class AppUpdateManager {
         installBg.setCornerRadius(16 * density);
         installBtn.setBackground(installBg);
 
-        LinearLayout.LayoutParams installLp = new LinearLayout.LayoutParams(0, Math.round(38 * density), 1.5f);
+        LinearLayout.LayoutParams installLp = new LinearLayout.LayoutParams(0, Math.round(42 * density), 1.5f);
         installLp.leftMargin = dp6;
         actions.addView(installBtn, installLp);
 
@@ -531,6 +603,12 @@ public final class AppUpdateManager {
             if (AppSettings.getBoolean(activity, AppSettings.HAPTICS, true)) {
                 installBtn.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
             }
+            if (destFile.exists() && destFile.length() > 1024 && !installBtn.getText().toString().contains("RETRY")) {
+                dialog.dismiss();
+                promptInstall(activity, destFile, info);
+                return;
+            }
+
             installBtn.setEnabled(false);
             laterBtn.setEnabled(false);
             installBtn.setText("DOWNLOADING…");

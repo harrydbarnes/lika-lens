@@ -572,6 +572,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             textureView.postDelayed(exposureAidsSampler, 200L);
             if (textureView.isAvailable()) openCameraIfReady();
         }
+        AppUpdateManager.onResume(this);
         checkAutomaticUpdates();
     }
 

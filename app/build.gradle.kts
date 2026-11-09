@@ -21,8 +21,21 @@ android {
         versionName = vName
     }
 
+    val keystoreFile = file("likalens.keystore")
+    signingConfigs {
+        create("likalens") {
+            storeFile = keystoreFile
+            storePassword = "androiddebugkey"
+            keyAlias = "likalens"
+            keyPassword = "androiddebugkey"
+        }
+    }
+
     buildTypes {
         release {
+            if (keystoreFile.exists()) {
+                signingConfig = signingConfigs.getByName("likalens")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -31,6 +44,9 @@ android {
             )
         }
         debug {
+            if (keystoreFile.exists()) {
+                signingConfig = signingConfigs.getByName("likalens")
+            }
             isMinifyEnabled = false
         }
     }
