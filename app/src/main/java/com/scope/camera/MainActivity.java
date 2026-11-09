@@ -327,6 +327,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private float zoomRowStartZoom;
     private int zoomTouchSlop;
     private boolean videoMode;
+    private volatile boolean isQuickTake;
     private volatile boolean videoStarting;
     private volatile boolean videoRecording;
     private volatile boolean switchingVideoCamera;
@@ -709,23 +710,23 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         header = row();
         flashButton = pill("ϟ  OFF", false);
-        header.addView(flashButton, new LinearLayout.LayoutParams(dp(60), dp(38)));
+        header.addView(flashButton, new LinearLayout.LayoutParams(dp(56), dp(32)));
         flashButton.setOnClickListener(v -> { hapticClick(v); cycleFlash(); });
         aspectButton = pill("4:3", false);
-        LinearLayout.LayoutParams aspectLp = new LinearLayout.LayoutParams(-2, dp(38));
+        LinearLayout.LayoutParams aspectLp = new LinearLayout.LayoutParams(-2, dp(32));
         aspectLp.leftMargin = dp(6);
         header.addView(aspectButton, aspectLp);
         aspectButton.setOnClickListener(v -> { hapticClick(v); chooseAspectRatio(); });
 
         videoFpsButton = pill("24 FPS", true);
-        LinearLayout.LayoutParams fpsLp = new LinearLayout.LayoutParams(-2, dp(38));
+        LinearLayout.LayoutParams fpsLp = new LinearLayout.LayoutParams(-2, dp(32));
         fpsLp.leftMargin = dp(6);
         videoFpsButton.setVisibility(View.GONE);
         header.addView(videoFpsButton, fpsLp);
         videoFpsButton.setOnClickListener(v -> { hapticClick(v); cycleVideoFps(); });
 
         videoAspectButton = pill("16:9", false);
-        LinearLayout.LayoutParams vaspectLp = new LinearLayout.LayoutParams(-2, dp(38));
+        LinearLayout.LayoutParams vaspectLp = new LinearLayout.LayoutParams(-2, dp(32));
         vaspectLp.leftMargin = dp(6);
         videoAspectButton.setVisibility(View.GONE);
         header.addView(videoAspectButton, vaspectLp);
@@ -734,17 +735,20 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         View topSpacer = new View(this);
         header.addView(topSpacer, new LinearLayout.LayoutParams(0, 1, 1));
         brainButton = pill("FILM  ⌄", true);
-        LinearLayout.LayoutParams brainLp = new LinearLayout.LayoutParams(dp(64), dp(38));
+        LinearLayout.LayoutParams brainLp = new LinearLayout.LayoutParams(dp(62), dp(32));
         brainLp.leftMargin = dp(6);
         brainButton.setOnClickListener(v -> { hapticClick(v); chooseBrain(); });
         header.addView(brainButton, brainLp);
         timerButton = pill("◷  OFF", false);
-        LinearLayout.LayoutParams timerLp = new LinearLayout.LayoutParams(dp(58), dp(38));
+        LinearLayout.LayoutParams timerLp = new LinearLayout.LayoutParams(dp(54), dp(32));
         timerLp.leftMargin = dp(6);
         header.addView(timerButton, timerLp);
         timerButton.setOnClickListener(v -> { hapticClick(v); cycleTimer(); });
         settingsButton = pill("⚙", false);
-        LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(dp(36), dp(38));
+        settingsButton.setTextSize(17f);
+        settingsButton.setPadding(0, 0, 0, 0);
+        settingsButton.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(dp(34), dp(32));
         settingsLp.leftMargin = dp(6);
         settingsLp.rightMargin = dp(24);
         header.addView(settingsButton, settingsLp);
@@ -1053,6 +1057,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         updateVideoModeUi();
         setContentView(root);
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            WindowMetricsHelper.WindowSizeInfo wInfo = WindowMetricsHelper.computeWindowSizeInfo(MainActivity.this);
+            boolean isWideWin = wInfo.isLandscape || (wInfo.widthDp >= wInfo.heightDp);
+            assembleCameraLayout(isWideWin);
+            if (textureView != null && textureView.isAvailable()) {
+                configureTransform(textureView.getWidth(), textureView.getHeight());
+            }
+            if (gridOverlay != null) gridOverlay.invalidate();
+            return insets;
+        });
     }
 
     private void restoreShootRow() {
@@ -1081,7 +1095,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         if (!isWide) {
             overlay.setOrientation(LinearLayout.VERTICAL);
-            overlay.setPadding(dp(12) + safeInsets.left, dp(16) + safeInsets.top, dp(12) + safeInsets.right, dp(24) + safeInsets.bottom);
+            int topPad = Math.max(dp(38), safeInsets.top + dp(6));
+            overlay.setPadding(dp(12) + safeInsets.left, topPad, dp(12) + safeInsets.right, dp(14) + safeInsets.bottom);
             overlay.setBackground(new android.graphics.drawable.GradientDrawable(
                     android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
                     new int[]{0x98080b0c, 0x00080b0c, 0x10080b0c, 0xd8080b0c}));
@@ -1092,7 +1107,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             if (viewfinderSpacer != null) {
                 if (viewfinderSpacer.getParent() != null) ((ViewGroup) viewfinderSpacer.getParent()).removeView(viewfinderSpacer);
-                overlay.addView(viewfinderSpacer, new LinearLayout.LayoutParams(-1, dp(380)));
+                overlay.addView(viewfinderSpacer, new LinearLayout.LayoutParams(-1, dp(300)));
             }
             if (cameraState != null) {
                 if (cameraState.getParent() != null) ((ViewGroup) cameraState.getParent()).removeView(cameraState);
@@ -1104,7 +1119,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             if (lensRow != null) {
                 if (lensRow.getParent() != null) ((ViewGroup) lensRow.getParent()).removeView(lensRow);
-                LinearLayout.LayoutParams lensRowLp = new LinearLayout.LayoutParams(-2, dp(42));
+                LinearLayout.LayoutParams lensRowLp = new LinearLayout.LayoutParams(-2, dp(40));
                 lensRowLp.gravity = Gravity.CENTER_HORIZONTAL;
                 overlay.addView(lensRow, lensRowLp);
             }
@@ -1114,41 +1129,45 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 zoomSliderLp.topMargin = dp(4);
                 overlay.addView(zoomSliderPanel, zoomSliderLp);
             }
+
+            View flexSpacer = new View(this);
+            overlay.addView(flexSpacer, new LinearLayout.LayoutParams(-1, 0, 1.0f));
+
+            LinearLayout bottomDeck = new LinearLayout(this);
+            bottomDeck.setOrientation(LinearLayout.VERTICAL);
+            bottomDeck.setGravity(Gravity.CENTER_HORIZONTAL);
+            bottomDeck.setPadding(0, dp(4), 0, 0);
+
             if (lookRow != null) {
                 if (lookRow.getParent() != null) ((ViewGroup) lookRow.getParent()).removeView(lookRow);
-                LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
-                noteLp.topMargin = dp(8);
-                overlay.addView(lookRow, noteLp);
+                LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, dp(32));
+                noteLp.bottomMargin = dp(6);
+                bottomDeck.addView(lookRow, noteLp);
             }
-
-            View preModeSpacer = new View(this);
-            overlay.addView(preModeSpacer, new LinearLayout.LayoutParams(-1, 0, 0.45f));
 
             if (modeRow != null) {
                 if (modeRow.getParent() != null) ((ViewGroup) modeRow.getParent()).removeView(modeRow);
-                LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(-2, -2);
+                LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(-2, dp(32));
                 modeRowLp.gravity = Gravity.CENTER_HORIZONTAL;
-                overlay.addView(modeRow, modeRowLp);
+                modeRowLp.bottomMargin = dp(8);
+                bottomDeck.addView(modeRow, modeRowLp);
             }
-
-            View preShootSpacer = new View(this);
-            overlay.addView(preShootSpacer, new LinearLayout.LayoutParams(-1, 0, 0.65f));
 
             restoreShootRow();
             if (shootRow != null) {
                 if (shootRow.getParent() != null) ((ViewGroup) shootRow.getParent()).removeView(shootRow);
-                overlay.addView(shootRow);
+                LinearLayout.LayoutParams shootLp = new LinearLayout.LayoutParams(-1, dp(88));
+                shootLp.bottomMargin = dp(6);
+                bottomDeck.addView(shootRow, shootLp);
             }
-
-            View postShootSpacer = new View(this);
-            overlay.addView(postShootSpacer, new LinearLayout.LayoutParams(-1, 0, 1.0f));
 
             if (outputModeText != null) {
                 if (outputModeText.getParent() != null) ((ViewGroup) outputModeText.getParent()).removeView(outputModeText);
-                LinearLayout.LayoutParams formatLp = new LinearLayout.LayoutParams(-1, -2);
-                formatLp.bottomMargin = dp(4);
-                overlay.addView(outputModeText, formatLp);
+                LinearLayout.LayoutParams formatLp = new LinearLayout.LayoutParams(-1, dp(16));
+                bottomDeck.addView(outputModeText, formatLp);
             }
+
+            overlay.addView(bottomDeck, new LinearLayout.LayoutParams(-1, -2));
         } else {
             // Landscape, Tablet, and Foldable Pro Camera Side-Grip layout
             overlay.setOrientation(LinearLayout.VERTICAL);
@@ -1443,14 +1462,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (shutterFrame != null) shutterFrame.setEnabled(!videoStarting && !switchingVideoCamera && (videoRecording || cameraDevice != null));
 
         if (captureButton != null && shutterFrame != null) {
-            boolean recUi = videoRecording || switchingVideoCamera;
-            int fill = videoMode ? (recUi ? 0xfff0443c : 0xffd93632) : 0xfffaf9f5;
-            int stroke = videoMode ? 0xffff827a : 0xfffaf9f5;
+            boolean isVidActive = videoMode || isQuickTake;
+            boolean recUi = videoRecording || switchingVideoCamera || isQuickTake;
+            int fill = isVidActive ? (recUi ? 0xfff0443c : 0xffd93632) : 0xfffaf9f5;
+            int stroke = isVidActive ? 0xffff827a : 0xfffaf9f5;
             captureButton.setBackground(round(fill, 100, fill, dp(2)));
-            captureButton.setText(videoMode && recUi ? "■" : "");
-            captureButton.setTextColor(videoMode ? 0xffffffff : BG);
+            captureButton.setText(isVidActive && recUi ? "■" : "");
+            captureButton.setTextColor(isVidActive ? 0xffffffff : BG);
             captureButton.setTextSize(recUi ? 18 : 12);
-            captureButton.setContentDescription(videoMode
+            captureButton.setContentDescription(isVidActive
                     ? recUi ? "Stop video recording" : "Start video recording"
                     : "Take photo");
             shutterFrame.setBackground(round(0x00202020, 100, stroke, dp(3)));
@@ -1591,7 +1611,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void startVideoRecording() {
-        if (!videoMode || videoRecording || videoStarting || switchingVideoCamera) return;
+        if ((!videoMode && !isQuickTake) || videoRecording || videoStarting || switchingVideoCamera) return;
         if (cameraDevice == null || !started) {
             showMessage("Camera is warming up.");
             return;
@@ -1622,7 +1642,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void beginVideoRecording(boolean withAudio) {
-        if (!videoMode || videoRecording || videoStarting || cameraDevice == null) return;
+        if ((!videoMode && !isQuickTake && !pendingVideoStart) || videoRecording || videoStarting || cameraDevice == null) return;
         pendingVideoStart = false;
         videoStarting = true;
         runOnUiThread(this::updateVideoModeUi);
@@ -1634,7 +1654,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void prepareVideoRecording(boolean withAudio) {
-        if (!videoMode || (!videoStarting && !switchingVideoCamera) || cameraDevice == null) {
+        if ((!videoMode && !isQuickTake && !pendingVideoStart) || (!videoStarting && !switchingVideoCamera) || cameraDevice == null) {
             failVideoStart("Video recording could not start.");
             return;
         }
@@ -1808,7 +1828,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         runOnUiThread(() -> {
             updateVideoModeUi();
-            showMessage(hadPreviousSegments ? "Camera switch unsupported · saving recorded segments…" : message);
+            if (!"Video start cancelled.".equals(message)) {
+                showMessage(hadPreviousSegments ? "Camera switch unsupported · saving recorded segments…" : message);
+            }
             if (cameraDevice != null && textureView != null && textureView.isAvailable()) createPreviewSession();
         });
     }
@@ -2637,8 +2659,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             ratio = 1f / ratio;
             float frameWidth = width;
             float frameHeight = frameWidth / ratio;
-            float topOffset = dp(56);
-            float maxFrameHeight = Math.max(dp(100), height - topOffset - dp(185));
+            Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
+            float topOffset = Math.max(dp(82), safeInsets.top + dp(46));
+            float maxFrameHeight = Math.max(dp(100), height - topOffset - dp(200) - safeInsets.bottom);
             if (frameHeight > maxFrameHeight) {
                 frameHeight = maxFrameHeight;
                 frameWidth = frameHeight * ratio;
@@ -2647,17 +2670,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             float top = topOffset;
             return new RectF(left, top, left + frameWidth, top + frameHeight);
         } else {
+            Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
             float gripWidth = dp(112);
-            float topOffset = dp(52);
-            float availableWidth = Math.max(dp(200), width - gripWidth - dp(24));
-            float availableHeight = Math.max(dp(200), height - topOffset - dp(16));
+            float topOffset = Math.max(dp(52), safeInsets.top + dp(12));
+            float availableWidth = Math.max(dp(200), width - gripWidth - dp(24) - safeInsets.right - safeInsets.left);
+            float availableHeight = Math.max(dp(200), height - topOffset - dp(16) - safeInsets.bottom);
             float frameWidth = availableWidth;
             float frameHeight = frameWidth / ratio;
             if (frameHeight > availableHeight) {
                 frameHeight = availableHeight;
                 frameWidth = frameHeight * ratio;
             }
-            float left = dp(12) + (availableWidth - frameWidth) * 0.5f;
+            float left = safeInsets.left + dp(12) + (availableWidth - frameWidth) * 0.5f;
             float top = topOffset + (availableHeight - frameHeight) * 0.5f;
             return new RectF(left, top, left + frameWidth, top + frameHeight);
         }
@@ -4252,7 +4276,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         textureView.setTransform(matrix);
 
         if (viewfinderSpacer != null && frame.height() > 0) {
-            int desiredH = Math.max(dp(80), (int) (frame.height() - dp(120)));
+            int desiredH = Math.max(dp(40), (int) (frame.height() - dp(92)));
             ViewGroup.LayoutParams lp = viewfinderSpacer.getLayoutParams();
             if (lp != null && lp.height != desiredH) {
                 lp.height = desiredH;
@@ -4263,6 +4287,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private final class ShutterTouchListener implements View.OnTouchListener {
         private boolean isDown = false;
+        private final Handler shutterHandler = new Handler(Looper.getMainLooper());
+        private final Runnable quickTakeRunnable = () -> {
+            if (!isDown || videoRecording || videoStarting || switchingVideoCamera) return;
+            isQuickTake = true;
+            if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true)) {
+                shutterFrame.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            }
+            startVideoRecording();
+        };
 
         @Override
         public boolean onTouch(View v, MotionEvent event) {
@@ -4272,13 +4305,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
                     isDown = true;
+                    isQuickTake = false;
                     hapticClick(v);
                     shutterFrame.animate().cancel();
                     captureButton.animate().cancel();
                     shutterFrame.animate().scaleX(0.88f).scaleY(0.88f).setDuration(70).setInterpolator(new DecelerateInterpolator()).start();
                     captureButton.animate().scaleX(0.92f).scaleY(0.92f).setDuration(70).setInterpolator(new DecelerateInterpolator()).start();
+
+                    if (!videoMode && !videoRecording && !videoStarting && !switchingVideoCamera) {
+                        shutterHandler.postDelayed(quickTakeRunnable, 450L);
+                    }
                     return true;
                 case MotionEvent.ACTION_UP:
+                    shutterHandler.removeCallbacks(quickTakeRunnable);
                     if (isDown) {
                         isDown = false;
                         shutterFrame.animate().cancel();
@@ -4287,6 +4326,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                                 .setInterpolator(new android.view.animation.OvershootInterpolator(2.0f)).start();
                         captureButton.animate().scaleX(1.0f).scaleY(1.0f).setDuration(220)
                                 .setInterpolator(new android.view.animation.OvershootInterpolator(1.8f)).start();
+
+                        if (isQuickTake) {
+                            isQuickTake = false;
+                            if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true)) {
+                                v.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+                            }
+                            stopVideoRecording(true);
+                            return true;
+                        }
+
                         float x = event.getX(), y = event.getY();
                         int slop = dp(32);
                         if (x >= -slop && x <= v.getWidth() + slop && y >= -slop && y <= v.getHeight() + slop) {
@@ -4299,6 +4348,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     }
                     break;
                 case MotionEvent.ACTION_CANCEL:
+                    shutterHandler.removeCallbacks(quickTakeRunnable);
                     if (isDown) {
                         isDown = false;
                         shutterFrame.animate().cancel();
@@ -4307,6 +4357,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                                 .setInterpolator(new DecelerateInterpolator()).start();
                         captureButton.animate().scaleX(1.0f).scaleY(1.0f).setDuration(160)
                                 .setInterpolator(new DecelerateInterpolator()).start();
+                        if (isQuickTake) {
+                            isQuickTake = false;
+                            stopVideoRecording(true);
+                        }
                         return true;
                     }
                     break;
