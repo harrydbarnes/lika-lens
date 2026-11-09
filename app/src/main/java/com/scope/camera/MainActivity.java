@@ -313,6 +313,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private final AtomicInteger pendingRenders = new AtomicInteger(0);
     private volatile boolean captureInFlight;
     private ValueAnimator zoomAnimator;
+    private int lastActiveLensIndex = -1;
     private boolean openingCamera;
     private boolean rawSupported;
     private boolean manualSupported;
@@ -3697,8 +3698,33 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 return;
             }
 
-            // Prefer a real wider RAW camera when the device exposes one.
+            // If the current camera can handle this zoom level natively, animate smoothly without restarting
+            if (mainCameraId.equals(cameraId) && canZoomOnCurrentCamera(factor)) {
+                physicalFocalFactor = 1f;
+                animateZoomTo(factor);
+                return;
+            }
+
+            // If we are currently on an auxiliary camera, return to mainCameraId when factor >= 1f
+            if (!mainCameraId.equals(cameraId) && factor >= 1f) {
+                selectCameraForLens(mainCameraId, factor, false);
+                return;
+            }
+
+            // Prefer a real wider RAW camera when the device exposes one and mainCameraId cannot zoom wide.
             if (factor < 1f) {
+                CameraCharacteristics main = cameraManager.getCameraCharacteristics(mainCameraId);
+                float logicalWideZoom = supportedWideZoom(main, factor);
+                if (logicalWideZoom > 0f) {
+                    physicalFocalFactor = 1f;
+                    if (mainCameraId.equals(cameraId)) {
+                        animateZoomTo(logicalWideZoom);
+                    } else {
+                        selectCameraForLens(mainCameraId, logicalWideZoom, false);
+                    }
+                    return;
+                }
+
                 String rawWideId = null;
                 float rawWideFactor = 1f;
                 float rawWideScore = Float.MAX_VALUE;
@@ -3725,17 +3751,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (rawWideId != null && rawWideScore < .12f) {
                     physicalFocalFactor = rawWideFactor;
                     selectCameraForLens(rawWideId, rawWideFactor, false);
-                    return;
-                }
-
-                // A logical multi-camera can zoom below 1x by switching to its ultra-wide
-                // sensor. RAW streams do not follow logical zoom on many devices, so use
-                // the camera's JPEG stream for this one lens and keep the Lika render.
-                CameraCharacteristics main = cameraManager.getCameraCharacteristics(mainCameraId);
-                float logicalWideZoom = supportedWideZoom(main, factor);
-                if (logicalWideZoom > 0f) {
-                    physicalFocalFactor = 1f;
-                    selectCameraForLens(mainCameraId, logicalWideZoom, true);
                     return;
                 }
 
@@ -3772,42 +3787,37 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 return;
             }
 
-            String bestId = mainCameraId;
-            float bestPhysical = 1f;
-            float score = Float.MAX_VALUE;
-            for (String id : cameraManager.getCameraIdList()) {
-                CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
-                Integer lensFacing = c.get(CameraCharacteristics.LENS_FACING);
-                if (lensFacing == null || lensFacing != CameraCharacteristics.LENS_FACING_BACK) continue;
-                float[] focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
-                if (focal == null || focal.length == 0) continue;
-                float physical = focal[0] / Math.max(.1f, primaryFocalLength);
-                int[] caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
-                boolean raw = caps != null && Arrays.stream(caps).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW);
-                StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-                Size[] rawOutputs = map == null ? null : map.getOutputSizes(ImageFormat.RAW_SENSOR);
-                raw = raw && rawOutputs != null && rawOutputs.length > 0;
-                if (AppSettings.getBoolean(this, AppSettings.KEEP_RAW, true) && !raw) continue;
-                float candidate = Math.abs((float) Math.log(Math.max(.1f, physical) / Math.max(.1f, factor)));
-                if (candidate < score) { score = candidate; bestId = id; bestPhysical = physical; }
+            if (mainCameraId.equals(cameraId)) {
+                animateZoomTo(factor);
+                return;
             }
-            physicalFocalFactor = bestPhysical;
-            selectCameraForLens(bestId, factor, false);
+            selectCameraForLens(mainCameraId, factor, false);
         } catch (CameraAccessException e) {
             showMessage("Lens selection is unavailable.");
         }
     }
 
+    private boolean canZoomOnCurrentCamera(float factor) {
+        if (characteristics == null) return false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Range<Float> range = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+            if (range != null && factor >= range.getLower() - 0.05f) {
+                return true;
+            }
+        }
+        return factor >= 1.0f && mainCameraId != null && mainCameraId.equals(cameraId);
+    }
+
     private float supportedWideZoom(CameraCharacteristics camera, float factor) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || camera == null) return -1f;
         Range<Float> range = camera.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
-        if (range == null || range.getLower() > factor + .01f || range.getUpper() < 1f) return -1f;
+        if (range == null || range.getLower() > factor + .05f || range.getUpper() < 1f) return -1f;
         return Math.max(factor, range.getLower());
     }
 
     private void selectCameraForLens(String id, float factor, boolean jpegWide) {
         AppSettings.prefs(this).edit().putString(AppSettings.LAST_CAMERA_ID, id).apply();
-        boolean mustRestart = !id.equals(cameraId) || forceJpegForWide != jpegWide;
+        boolean mustRestart = !id.equals(cameraId);
         forceJpegForWide = jpegWide;
         if (mustRestart) {
             if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
@@ -3850,12 +3860,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void finishInteractiveZoom() {
         if (videoScreenLocked || videoStarting || switchingVideoCamera) return;
+        if (canZoomOnCurrentCamera(requestedZoom) && mainCameraId != null && mainCameraId.equals(cameraId)) {
+            return;
+        }
         if (requestedZoom < 1f) chooseLens(requestedZoom);
         else chooseContinuousLens(requestedZoom);
     }
 
     /** Selects the longest physical lens that does not exceed the requested zoom. */
     private void chooseContinuousLens(float factor) {
+        if (canZoomOnCurrentCamera(factor) && mainCameraId != null && mainCameraId.equals(cameraId)) {
+            return;
+        }
         if (cameraManager == null || mainCameraId == null) {
             chooseLens(factor);
             return;
@@ -3933,22 +3949,43 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             return;
         }
         float startZoom = requestedZoom;
+        if (Math.abs(startZoom - targetZoom) < 0.01f) {
+            requestedZoom = targetZoom;
+            updateLensButtons(targetZoom);
+            return;
+        }
         zoomAnimator = ValueAnimator.ofFloat(startZoom, targetZoom);
-        zoomAnimator.setDuration(230);
-        zoomAnimator.setInterpolator(new DecelerateInterpolator(1.4f));
+        zoomAnimator.setDuration(260);
+        zoomAnimator.setInterpolator(new DecelerateInterpolator(1.5f));
+        final long[] lastRequestTime = {0L};
         zoomAnimator.addUpdateListener(animation -> {
             requestedZoom = (float) animation.getAnimatedValue();
+            updateZoomSliderUi();
             if (previewRequest == null || captureSession == null) return;
-            try {
-                applyZoom(previewRequest);
-                captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
-            } catch (CameraAccessException | IllegalStateException e) {
-                Log.w(TAG, "Failed to update zoom during animation", e);
+            long now = SystemClock.uptimeMillis();
+            if (now - lastRequestTime[0] >= 24L || animation.getAnimatedFraction() >= 1f) {
+                lastRequestTime[0] = now;
+                try {
+                    applyZoom(previewRequest);
+                    captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+                } catch (CameraAccessException | IllegalStateException e) {
+                    Log.w(TAG, "Failed to update zoom during animation", e);
+                }
             }
         });
         zoomAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
+                requestedZoom = targetZoom;
+                if (previewRequest != null && captureSession != null) {
+                    try {
+                        applyZoom(previewRequest);
+                        captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+                    } catch (CameraAccessException | IllegalStateException e) {
+                        Log.w(TAG, "Failed to apply final zoom", e);
+                    }
+                }
                 updateLensButtons(targetZoom);
+                updateZoomSliderUi();
             }
         });
         updateLensButtons(targetZoom);
@@ -4020,6 +4057,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 closestIndex = i;
             }
         }
+        boolean indexChanged = (closestIndex != lastActiveLensIndex);
+        if (indexChanged) {
+            lastActiveLensIndex = closestIndex;
+        }
         for (int i = 0; i < lensButtons.size(); i++) {
             TextView button = lensButtons.get(i);
             boolean active = (i == closestIndex);
@@ -4032,32 +4073,47 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 } else {
                     button.setText(String.format(Locale.US, "%.1fx", factor));
                 }
+                if (indexChanged) {
+                    button.setScaleX(0.92f);
+                    button.setScaleY(0.92f);
+                    button.animate().scaleX(1.0f).scaleY(1.0f).setDuration(180).setInterpolator(new DecelerateInterpolator()).start();
+                }
             } else {
                 button.setBackground(null);
                 button.setTextColor(0xffffffff);
                 if (i < unselectedLabels.length) {
                     button.setText(unselectedLabels[i]);
                 }
+                button.setScaleX(1.0f);
+                button.setScaleY(1.0f);
             }
         }
         updateZoomSliderUi();
     }
 
     private void applyZoom(CaptureRequest.Builder builder) {
-        if (characteristics == null) return;
+        if (characteristics == null || builder == null) return;
         Rect active = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
         if (active == null) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             Range<Float> ratioRange = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
-            if (requestedZoom < 1f && ratioRange != null
-                    && requestedZoom >= ratioRange.getLower() && requestedZoom <= ratioRange.getUpper()) {
-                builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, requestedZoom);
-                // Keep the crop shape equal to the sensor array while the logical camera
-                // changes lenses; aspect-ratio framing is applied by the saved render.
-                builder.set(CaptureRequest.SCALER_CROP_REGION, active);
+            if (ratioRange != null) {
+                float minRatio = ratioRange.getLower();
+                float maxRatio = ratioRange.getUpper();
+                float clampedRatio = Math.max(minRatio, Math.min(maxRatio, requestedZoom));
+                builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, clampedRatio);
+                float excessZoom = requestedZoom / clampedRatio;
+                if (excessZoom > 1.01f) {
+                    int cropW = Math.max(1, Math.round(active.width() / excessZoom));
+                    int cropH = Math.max(1, Math.round(active.height() / excessZoom));
+                    int left = active.centerX() - cropW / 2;
+                    int top = active.centerY() - cropH / 2;
+                    builder.set(CaptureRequest.SCALER_CROP_REGION, new Rect(left, top, left + cropW, top + cropH));
+                } else {
+                    builder.set(CaptureRequest.SCALER_CROP_REGION, active);
+                }
                 return;
             }
-            builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1f);
         }
         float digital = Math.max(1f, requestedZoom / Math.max(.1f, physicalFocalFactor));
         int cropW = Math.max(1, Math.round(active.width() / digital));
@@ -4690,10 +4746,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         private final Paint gridPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint framePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint aidPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint vigPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF lastVigFrame = new RectF();
-        private int lastVigSetting = -1;
-        private final Matrix vigMatrix = new Matrix();
         final RectF currentHistRect = new RectF();
 
         CompositionGrid(Activity activity) {
@@ -4729,38 +4781,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             maskPaint.setStyle(Paint.Style.FILL);
             canvas.drawPath(maskPath, maskPaint);
 
-            // Clip inner aids and vignette to the curved viewfinder
+            // Clip inner aids to the curved viewfinder
             Path clipPath = new Path();
             clipPath.addRoundRect(frame, cornerRadius, cornerRadius, Path.Direction.CW);
             canvas.save();
             canvas.clipPath(clipPath);
-
-            // Authentic analog viewfinder lens vignette falloff
-            int vigSetting = AppSettings.getInt(MainActivity.this, AppSettings.VIGNETTE, AppSettings.DEFAULT_VIGNETTE);
-            if (!frame.equals(lastVigFrame) || vigSetting != lastVigSetting) {
-                lastVigFrame.set(frame);
-                lastVigSetting = vigSetting;
-                float cx = frame.centerX();
-                float cy = frame.centerY();
-                float rx = frame.width() * 0.5f;
-                float ry = frame.height() * 0.5f;
-                vigMatrix.reset();
-                if (rx > 0f && ry > 0f) {
-                    vigMatrix.setScale(1.0f, ry / rx, cx, cy);
-                }
-                float vigFactor = Math.max(0.4f, Math.min(2.0f, vigSetting / 10f));
-                int edgeAlpha = Math.min(0x55, Math.round(0x24 * vigFactor));
-                int cornerAlpha = Math.min(0xDD, Math.round(0x8C * vigFactor));
-                RadialGradient vigGradient = new RadialGradient(
-                        cx, cy, rx,
-                        new int[]{0x00000000, 0x00000000, (edgeAlpha << 24), (cornerAlpha << 24)},
-                        new float[]{0.0f, 0.52f, 0.80f, 1.0f},
-                        Shader.TileMode.CLAMP
-                );
-                vigGradient.setLocalMatrix(vigMatrix);
-                vigPaint.setShader(vigGradient);
-            }
-            canvas.drawRect(frame, vigPaint);
 
             // Live Zebra Stripes & Focus Peaking Overlays
             boolean showZebra = AppSettings.getBoolean(MainActivity.this, AppSettings.ZEBRA, false);
