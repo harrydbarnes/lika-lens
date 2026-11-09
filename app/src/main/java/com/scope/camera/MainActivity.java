@@ -232,22 +232,34 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void hapticClick(View v) {
         if (!AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) return;
-        if (vibrator != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-                && vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_CLICK)) {
-            vibrator.vibrate(VibrationEffect.startComposition()
-                    .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 0.85f).compose());
-        } else if (v != null) {
+        boolean vibrated = false;
+        try {
+            if (vibrator != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                    && vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_CLICK)) {
+                vibrator.vibrate(VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 0.85f).compose());
+                vibrated = true;
+            }
+        } catch (Throwable ignored) {
+        }
+        if (!vibrated && v != null) {
             v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
         }
     }
 
     private void hapticDetent() {
         if (!AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) return;
-        if (vibrator != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-                && vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_TICK)) {
-            vibrator.vibrate(VibrationEffect.startComposition()
-                    .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.65f).compose());
-        } else if (captureButton != null) {
+        boolean vibrated = false;
+        try {
+            if (vibrator != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                    && vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_TICK)) {
+                vibrator.vibrate(VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.65f).compose());
+                vibrated = true;
+            }
+        } catch (Throwable ignored) {
+        }
+        if (!vibrated && captureButton != null) {
             captureButton.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
         }
     }
@@ -533,11 +545,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     }
             );
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            VibratorManager vm = (VibratorManager) getSystemService(VIBRATOR_MANAGER_SERVICE);
-            if (vm != null) vibrator = vm.getDefaultVibrator();
-        } else {
-            vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                VibratorManager vm = (VibratorManager) getSystemService(VIBRATOR_MANAGER_SERVICE);
+                if (vm != null) vibrator = vm.getDefaultVibrator();
+            } else {
+                vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+            }
+        } catch (Throwable ignored) {
         }
         Window window = getWindow();
         if (window != null) {
@@ -1079,8 +1094,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         modeRow = row();
         modeRow.setGravity(Gravity.CENTER);
-        modeRow.setPadding(dp(3), dp(3), dp(3), dp(3));
-        modeRow.setBackground(round(0xd016191a, 20, 0, 0));
+        modeRow.setPadding(dp(4), dp(3), dp(4), dp(3));
+        modeRow.setClipToPadding(false);
+        modeRow.setClipChildren(false);
+        modeRow.setBackground(round(0xd016191a, 100, 0, 0));
         photoModeButton = new TextView(this);
         photoModeButton.setText("PHOTO");
         photoModeButton.setGravity(Gravity.CENTER);
@@ -1095,7 +1112,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         videoModeButton.setTypeface(Typeface.DEFAULT_BOLD);
         videoModeButton.setContentDescription("Video mode");
 
-        LinearLayout.LayoutParams modeLp = new LinearLayout.LayoutParams(dp(72), dp(32));
+        LinearLayout.LayoutParams modeLp = new LinearLayout.LayoutParams(dp(76), dp(32));
         modeLp.setMargins(dp(1), 0, dp(1), 0);
         modeRow.addView(photoModeButton, modeLp);
         modeRow.addView(videoModeButton, modeLp);
@@ -1303,7 +1320,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
             if (modeRow != null) {
                 if (modeRow.getParent() != null) ((ViewGroup) modeRow.getParent()).removeView(modeRow);
-                LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(-2, dp(32));
+                LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(-2, -2);
                 modeRowLp.gravity = Gravity.CENTER_HORIZONTAL;
                 modeRowLp.bottomMargin = dp(8);
                 bottomDeck.addView(modeRow, modeRowLp);
@@ -4344,14 +4361,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         String mode = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure");
         if (!mode.startsWith("Manual") || !manualSupported) {
-            int aeMode = CaptureRequest.CONTROL_AE_MODE_ON;
-            if (Build.VERSION.SDK_INT >= 35 && characteristics != null) {
-                int[] modes = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES);
-                if (modes != null && Arrays.stream(modes).anyMatch(m -> m == 6)) {
-                    aeMode = 6;
-                }
-            }
-            builder.set(CaptureRequest.CONTROL_AE_MODE, aeMode);
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
             builder.set(CaptureRequest.CONTROL_AE_LOCK, aeLocked);
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentAeIndex);
             if (currentAeRegions != null) {
