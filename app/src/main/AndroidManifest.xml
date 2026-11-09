@@ -13,6 +13,7 @@
         android:label="Lika Lens"
         android:supportsRtl="true"
         android:resizeableActivity="true"
+        android:enableOnBackInvokedCallback="true"
         android:theme="@style/AppTheme">
         <activity
             android:name=".GalleryActivity"

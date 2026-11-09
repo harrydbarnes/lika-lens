@@ -67,6 +67,12 @@ public class SettingsActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    this::finish
+            );
+        }
         AppSettings.migrateBranding(this);
         LutManager.init(this);
         getWindow().setStatusBarColor(BG);

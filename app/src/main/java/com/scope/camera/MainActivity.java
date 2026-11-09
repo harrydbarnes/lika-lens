@@ -55,6 +55,10 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.os.Vibrator;
+import android.os.VibratorManager;
+import android.os.VibrationEffect;
+import android.window.OnBackInvokedDispatcher;
 import android.provider.MediaStore;
 import android.util.Size;
 import android.util.Range;
@@ -224,10 +228,27 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private View shutterWink;
     private View screenFlashOverlay;
     private android.media.MediaActionSound mediaActionSound;
+    private Vibrator vibrator;
 
     private void hapticClick(View v) {
-        if (v != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+        if (!AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) return;
+        if (vibrator != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                && vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_CLICK)) {
+            vibrator.vibrate(VibrationEffect.startComposition()
+                    .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 0.85f).compose());
+        } else if (v != null) {
             v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+    }
+
+    private void hapticDetent() {
+        if (!AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) return;
+        if (vibrator != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                && vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_TICK)) {
+            vibrator.vibrate(VibrationEffect.startComposition()
+                    .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.65f).compose());
+        } else if (captureButton != null) {
+            captureButton.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
         }
     }
 
@@ -496,8 +517,52 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         };
         AppSettings.migrateBranding(this);
         LutManager.init(this);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    () -> {
+                        if (videoScreenLocked) {
+                            if (videoLockButton != null) videoLockButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+                            return;
+                        }
+                        finish();
+                    }
+            );
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            VibratorManager vm = (VibratorManager) getSystemService(VIBRATOR_MANAGER_SERVICE);
+            if (vm != null) vibrator = vm.getDefaultVibrator();
+        } else {
+            vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+        }
         Window window = getWindow();
         if (window != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                window.setColorMode(android.content.pm.ActivityInfo.COLOR_MODE_WIDE_COLOR_GAMUT);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.view.Display display = getDisplay();
+                if (display != null) {
+                    android.view.Display.Mode[] modes = display.getSupportedModes();
+                    android.view.Display.Mode bestMode = null;
+                    for (android.view.Display.Mode m : modes) {
+                        if (bestMode == null || m.getRefreshRate() > bestMode.getRefreshRate()) {
+                            bestMode = m;
+                        }
+                    }
+                    if (bestMode != null && bestMode.getRefreshRate() >= 85f) {
+                        WindowManager.LayoutParams lp = window.getAttributes();
+                        if (lp != null) {
+                            lp.preferredDisplayModeId = bestMode.getModeId();
+                            window.setAttributes(lp);
+                        }
+                    }
+                }
+            }
             window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
             window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
             window.setStatusBarColor(0x00000000);
@@ -3767,7 +3832,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void chooseLens(float factor) {
-        hapticClick(captureButton);
+        hapticDetent();
         if (cameraManager == null || mainCameraId == null) {
             requestedZoom = Math.max(.5f, factor);
             updateLensButtons(requestedZoom);
@@ -4028,9 +4093,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void animateZoomTo(float targetZoom) {
-        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
-            captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
-        }
+        hapticDetent();
         if (zoomAnimator != null) zoomAnimator.cancel();
         if (captureSession == null || previewRequest == null) {
             requestedZoom = targetZoom;
@@ -4281,7 +4344,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         String mode = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure");
         if (!mode.startsWith("Manual") || !manualSupported) {
-            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+            int aeMode = CaptureRequest.CONTROL_AE_MODE_ON;
+            if (Build.VERSION.SDK_INT >= 35 && characteristics != null) {
+                int[] modes = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES);
+                if (modes != null && Arrays.stream(modes).anyMatch(m -> m == 6)) {
+                    aeMode = 6;
+                }
+            }
+            builder.set(CaptureRequest.CONTROL_AE_MODE, aeMode);
             builder.set(CaptureRequest.CONTROL_AE_LOCK, aeLocked);
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentAeIndex);
             if (currentAeRegions != null) {
