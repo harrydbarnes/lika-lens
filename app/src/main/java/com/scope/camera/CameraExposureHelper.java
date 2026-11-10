@@ -131,12 +131,21 @@ public final class CameraExposureHelper {
         return (float) Math.exp(curLog);
     }
 
+    private static Rect makeRect(int left, int top, int right, int bottom) {
+        Rect r = new Rect();
+        r.left = left;
+        r.top = top;
+        r.right = right;
+        r.bottom = bottom;
+        return r;
+    }
+
     /**
      * Computes the digital crop rectangle for optical/digital zoom centered on active sensor array.
      */
     public static Rect computeCropRect(Rect activeArray, float zoomFactor) {
         if (activeArray == null) return new Rect();
-        if (zoomFactor <= 1.0f) return new Rect(activeArray);
+        if (zoomFactor <= 1.0f) return makeRect(activeArray.left, activeArray.top, activeArray.right, activeArray.bottom);
 
         int activeW = activeArray.right - activeArray.left;
         int activeH = activeArray.bottom - activeArray.top;
@@ -145,7 +154,7 @@ public final class CameraExposureHelper {
         int cropLeft = activeArray.left + (activeW - cropWidth) / 2;
         int cropTop = activeArray.top + (activeH - cropHeight) / 2;
 
-        return new Rect(cropLeft, cropTop, cropLeft + cropWidth, cropTop + cropHeight);
+        return makeRect(cropLeft, cropTop, cropLeft + cropWidth, cropTop + cropHeight);
     }
 
     /**
@@ -166,7 +175,7 @@ public final class CameraExposureHelper {
 
         int w = cropRegion.right - cropRegion.left;
         int h = cropRegion.bottom - cropRegion.top;
-        if (w <= 0 || h <= 0) return new Rect(cropRegion);
+        if (w <= 0 || h <= 0) return makeRect(cropRegion.left, cropRegion.top, cropRegion.right, cropRegion.bottom);
 
         // Android camera sensor coordinates:
         // In default portrait orientation, camera sensor is oriented 90 degrees clockwise (rear).
@@ -185,6 +194,6 @@ public final class CameraExposureHelper {
         int right = Math.min(cropRegion.right, left + boxW);
         int bottom = Math.min(cropRegion.bottom, top + boxH);
 
-        return new Rect(left, top, right, bottom);
+        return makeRect(left, top, right, bottom);
     }
 }

@@ -67,15 +67,30 @@ public class CameraExposureHelperTest {
         assertTrue("Zoom 2.0x round trip: " + z2, Math.abs(z2 - 2.0f) < 0.05f);
     }
 
+    private static Rect makeRect(int left, int top, int right, int bottom) {
+        Rect r = new Rect();
+        r.left = left;
+        r.top = top;
+        r.right = right;
+        r.bottom = bottom;
+        return r;
+    }
+
     @Test
     public void testComputeCropRect() {
         assertNotNull(CameraExposureHelper.computeCropRect(null, 1.0f));
         assertNotNull(CameraExposureHelper.computeCropRect(null, 2.0f));
+        Rect active = makeRect(0, 0, 4000, 3000);
+        Rect crop = CameraExposureHelper.computeCropRect(active, 2.0f);
+        assertEquals(1000, crop.left);
+        assertEquals(750, crop.top);
+        assertEquals(3000, crop.right);
+        assertEquals(2250, crop.bottom);
     }
 
     @Test
     public void testComputeMeteringRectBoundsAndCentering() {
-        Rect cropRegion = new Rect(1000, 750, 3000, 2250); // 2x digital crop on 4000x3000 sensor
+        Rect cropRegion = makeRect(1000, 750, 3000, 2250); // 2x digital crop on 4000x3000 sensor
         // Center tap (0.5, 0.5)
         Rect centerRect = CameraExposureHelper.computeMeteringRect(cropRegion, 0.5f, 0.5f, false, 0.10f);
         assertNotNull(centerRect);
@@ -100,7 +115,7 @@ public class CameraExposureHelperTest {
 
     @Test
     public void testComputeMeteringRectFrontCameraMirroring() {
-        Rect cropRegion = new Rect(0, 0, 4000, 3000);
+        Rect cropRegion = makeRect(0, 0, 4000, 3000);
         // Tapping right side of screen (nx = 0.8f) on rear vs front camera
         Rect rearRect = CameraExposureHelper.computeMeteringRect(cropRegion, 0.8f, 0.5f, false, 0.10f);
         Rect frontRect = CameraExposureHelper.computeMeteringRect(cropRegion, 0.8f, 0.5f, true, 0.10f);
