@@ -261,13 +261,21 @@ final class RawDeveloper {
                 b *= gains[3];
                 r *= exposureScale; g *= exposureScale; b *= exposureScale;
 
-                float x = cameraToXyz[0] * r + cameraToXyz[1] * g + cameraToXyz[2] * b;
-                float y = cameraToXyz[3] * r + cameraToXyz[4] * g + cameraToXyz[5] * b;
-                float z = cameraToXyz[6] * r + cameraToXyz[7] * g + cameraToXyz[8] * b;
-                // XYZ D50 to linear sRGB. The camera profile is kept separate from the authored look.
-                float lr = 3.1339f * x - 1.6169f * y - .4906f * z;
-                float lg = -.9785f * x + 1.9160f * y + .0333f * z;
-                float lb = .0720f * x - .2290f * y + 1.4057f * z;
+                float lr, lg, lb;
+                if (look.whiteBalanceKelvin <= 0 && frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9) {
+                    float[] cct = frame.colorCorrectionTransform;
+                    lr = cct[0] * r + cct[1] * g + cct[2] * b;
+                    lg = cct[3] * r + cct[4] * g + cct[5] * b;
+                    lb = cct[6] * r + cct[7] * g + cct[8] * b;
+                } else {
+                    float x = cameraToXyz[0] * r + cameraToXyz[1] * g + cameraToXyz[2] * b;
+                    float y = cameraToXyz[3] * r + cameraToXyz[4] * g + cameraToXyz[5] * b;
+                    float z = cameraToXyz[6] * r + cameraToXyz[7] * g + cameraToXyz[8] * b;
+                    // XYZ D50 to linear sRGB. The camera profile is kept separate from the authored look.
+                    lr = 3.1339f * x - 1.6169f * y - .4906f * z;
+                    lg = -.9785f * x + 1.9160f * y + .0333f * z;
+                    lb = .0720f * x - .2290f * y + 1.4057f * z;
+                }
                 int color = renderLook(lr, lg, lb, look, ox, oy, seed, frame, lut);
                 if (look.vignette > 0f) {
                     float nx = outW <= 1 ? 0f : ox / (float) (outW - 1) * 2f - 1f;
@@ -517,21 +525,10 @@ final class RawDeveloper {
             t = clamp((kelvin - a) / (b - a), 0f, 1f);
         } else if (frame.neutralPoint != null && frame.neutralPoint.length >= 3
                 && (frame.neutralPoint[0] + frame.neutralPoint[1] + frame.neutralPoint[2]) > .0001f) {
-            // Choose the interpolation whose evaluated neutral is closest to the D50 display-prep white.
-            float best = Float.MAX_VALUE, bestT = 0f;
-            for (int n = 0; n <= 100; n++) {
-                float candidate = n / 100f;
-                float[] m = blend(first, second, candidate);
-                float x = m[0]*frame.neutralPoint[0] + m[1]*frame.neutralPoint[1] + m[2]*frame.neutralPoint[2];
-                float y = m[3]*frame.neutralPoint[0] + m[4]*frame.neutralPoint[1] + m[5]*frame.neutralPoint[2];
-                float z = m[6]*frame.neutralPoint[0] + m[7]*frame.neutralPoint[1] + m[8]*frame.neutralPoint[2];
-                float sum = x + y + z;
-                if (sum <= .0001f) continue;
-                float dx = x/sum - .3457f, dy = y/sum - .3585f;
-                float error = dx*dx + dy*dy;
-                if (error < best) { best = error; bestT = candidate; }
-            }
-            t = bestT;
+            float rNorm = frame.neutralPoint[0] / Math.max(0.0001f, frame.neutralPoint[1]);
+            float bNorm = frame.neutralPoint[2] / Math.max(0.0001f, frame.neutralPoint[1]);
+            float estimatedKelvin = 5500f * (float) Math.pow(bNorm / Math.max(0.001f, rNorm), 0.65f);
+            t = clamp((estimatedKelvin - a) / Math.max(1f, b - a), 0f, 1f);
         } else {
             t = clamp((5600f - a) / (b - a), 0f, 1f);
         }
@@ -634,12 +631,20 @@ final class RawDeveloper {
                 g *= (gains[1] + gains[2]) * .5f * boostScale;
                 b *= gains[3] * boostScale;
 
-                float x = cameraToXyz[0] * r + cameraToXyz[1] * g + cameraToXyz[2] * b;
-                float y = cameraToXyz[3] * r + cameraToXyz[4] * g + cameraToXyz[5] * b;
-                float z = cameraToXyz[6] * r + cameraToXyz[7] * g + cameraToXyz[8] * b;
-                float lr = 3.1339f * x - 1.6169f * y - .4906f * z;
-                float lg = -.9785f * x + 1.9160f * y + .0333f * z;
-                float lb = .0720f * x - .2290f * y + 1.4057f * z;
+                float lr, lg, lb;
+                if (look.whiteBalanceKelvin <= 0 && frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9) {
+                    float[] cct = frame.colorCorrectionTransform;
+                    lr = cct[0] * r + cct[1] * g + cct[2] * b;
+                    lg = cct[3] * r + cct[4] * g + cct[5] * b;
+                    lb = cct[6] * r + cct[7] * g + cct[8] * b;
+                } else {
+                    float x = cameraToXyz[0] * r + cameraToXyz[1] * g + cameraToXyz[2] * b;
+                    float y = cameraToXyz[3] * r + cameraToXyz[4] * g + cameraToXyz[5] * b;
+                    float z = cameraToXyz[6] * r + cameraToXyz[7] * g + cameraToXyz[8] * b;
+                    lr = 3.1339f * x - 1.6169f * y - .4906f * z;
+                    lg = -.9785f * x + 1.9160f * y + .0333f * z;
+                    lb = .0720f * x - .2290f * y + 1.4057f * z;
+                }
                 float luma = Math.max(0f, .2126f * lr + .7152f * lg + .0722f * lb);
                 allLuma[allCount++] = luma;
                 if (luma > 0.0005f && luma < 0.85f) {
@@ -652,13 +657,13 @@ final class RawDeveloper {
         java.util.Arrays.sort(midLuma, 0, midCount);
         float p50 = midLuma[(int) ((midCount - 1) * 0.50f)];
         float p75 = midLuma[(int) ((midCount - 1) * 0.75f)];
-        float p85 = allLuma[(int) ((allCount - 1) * 0.85f)];
+        float p90 = allLuma[(int) ((allCount - 1) * 0.90f)];
         float midMetric = 0.55f * p50 + 0.45f * p75;
-        float targetMid = 0.165f;
+        float targetMid = 0.175f;
         if (midMetric >= targetMid) return boostScale;
         float neededGain = (float) Math.pow(targetMid / Math.max(0.005f, midMetric), 0.85);
-        float maxHighlightGain = p85 > 0.25f ? (1.10f / Math.max(0.10f, p85)) : 4.2f;
-        float sceneGain = clamp(Math.min(neededGain, Math.max(1.0f, maxHighlightGain)), 1.0f, 4.2f);
+        float maxHighlightGain = p90 > 0.35f ? (2.20f / Math.max(0.10f, p90)) : 4.5f;
+        float sceneGain = clamp(Math.min(neededGain, Math.max(1.0f, maxHighlightGain)), 1.0f, 4.5f);
         return boostScale * sceneGain;
     }
 
@@ -706,6 +711,9 @@ final class RawDeveloper {
             contrasted = logY <= 0f ? 0f : logPivot * (float) Math.pow(logY / Math.max(0.01f, logPivot), safeContrast * 0.78f);
         } else { // Filmic S-Curve: power-law toe around pivot preserves shadow gradation without hard-clipping below pivot
             contrasted = oldY <= 0f ? 0f : safePivot * (float) Math.pow(oldY / safePivot, safeContrast);
+            if (look.easyMode && contrasted < safePivot) {
+                contrasted += 0.018f * (1f - (contrasted / safePivot));
+            }
         }
 
         float shadowWeight = 1f - smoothstep(.02f, .44f, contrasted);
@@ -780,7 +788,7 @@ final class RawDeveloper {
             // Boost low to medium chroma tones (everyday subjects: food, clothing, nature, foliage)
             // Non-linear boost that tapers off for already saturated tones and protects skin
             float vibranceWeight = (1.0f - skinFactor * 0.85f) * (1.0f - smoothstep(0.12f, 0.35f, rawChroma));
-            vibranceBoost += 0.22f * vibranceWeight;
+            vibranceBoost += 0.26f * vibranceWeight;
         }
 
         if (applySkinProtection && skinFactor > 0.05f) {
@@ -812,18 +820,17 @@ final class RawDeveloper {
                 ambientWarmthFactor = clamp(0.5f + 0.5f * (look.whiteBalanceKelvin - 2800f) / 1200f, 0.35f, 1.0f);
             } else if (frame != null && frame.wbGains != null && frame.wbGains.length >= 4) {
                 float greenGain = (frame.wbGains[1] + frame.wbGains[2]) * .5f;
-                float redBlueGain = (frame.wbGains[0] + frame.wbGains[3]) * .5f;
-                if (redBlueGain > 0.01f && (greenGain / redBlueGain) > 1.08f) {
+                if (greenGain > 1.35f * frame.wbGains[0] && greenGain > 1.35f * frame.wbGains[3]) {
                     fluorescentSpike = true;
                     ambientWarmthFactor = look.easyMode ? 0.50f : 0.65f;
                 }
             }
 
-            float baseWarmth = brain.startsWith("NEUTRAL") ? 0f : (.42f * ambientWarmthFactor);
+            float baseWarmth = brain.startsWith("NEUTRAL") ? 0f : (.50f * ambientWarmthFactor);
             if (brain.startsWith("KODACHROME")) {
-                baseWarmth = 0.52f * ambientWarmthFactor;
+                baseWarmth = 0.55f * ambientWarmthFactor;
             } else if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
-                baseWarmth = 0.20f * ambientWarmthFactor;
+                baseWarmth = 0.22f * ambientWarmthFactor;
             } else if (brain.startsWith("BLEACH")) {
                 baseWarmth = 0.04f;
             }

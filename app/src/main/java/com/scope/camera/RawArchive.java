@@ -30,7 +30,7 @@ import java.util.zip.InflaterInputStream;
 final class RawArchive {
     private static final String TAG = "RawArchive";
     private static final int MAGIC = 0x53524157; // SRAW
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
 
     static final class Frame {
         int width;
@@ -47,6 +47,7 @@ final class RawArchive {
         float[] blackLevels = new float[4];
         float[] wbGains = new float[]{1f, 1f, 1f, 1f};
         float[] neutralPoint = new float[3];
+        float[] colorCorrectionTransform;
         float[] sensorToXyz1;
         float[] sensorToXyz2;
         int illuminant1;
@@ -134,6 +135,8 @@ final class RawArchive {
             frame.blackLevels[y * 2 + x] = black;
         }
         frame.wbGains = wb; frame.neutralPoint = neutralValues;
+        ColorSpaceTransform cct = result == null ? null : result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM);
+        frame.colorCorrectionTransform = matrix(cct);
         frame.sensorToXyz1 = toXyz1; frame.sensorToXyz2 = toXyz2;
         frame.illuminant1 = illum1 == null ? 0 : illum1;
         frame.illuminant2 = illum2 == null ? 0 : Byte.toUnsignedInt(illum2);
@@ -182,6 +185,7 @@ final class RawArchive {
             for (float v : frame.blackLevels) out.writeFloat(v);
             for (float v : frame.wbGains) out.writeFloat(v);
             for (float v : frame.neutralPoint) out.writeFloat(v);
+            writeMatrix(out, frame.colorCorrectionTransform);
             writeMatrix(out, frame.sensorToXyz1);
             writeMatrix(out, frame.sensorToXyz2);
             out.writeInt(frame.illuminant1); out.writeInt(frame.illuminant2);
@@ -223,7 +227,7 @@ final class RawArchive {
         try (DataInputStream in = new DataInputStream(new BufferedInputStream(new InflaterInputStream(new FileInputStream(source))))) {
             int magic = in.readInt();
             int version = in.readInt();
-            if (magic != MAGIC || (version != 1 && version != 2 && version != VERSION)) throw new IOException("Unsupported RAW archive");
+            if (magic != MAGIC || (version < 1 || version > VERSION)) throw new IOException("Unsupported RAW archive");
             Frame frame = new Frame();
             frame.width = in.readInt(); frame.height = in.readInt(); frame.cfa = in.readInt();
             frame.orientation = in.readInt();
@@ -237,6 +241,9 @@ final class RawArchive {
             for (int i = 0; i < 4; i++) frame.blackLevels[i] = in.readFloat();
             for (int i = 0; i < 4; i++) frame.wbGains[i] = in.readFloat();
             for (int i = 0; i < 3; i++) frame.neutralPoint[i] = in.readFloat();
+            if (version >= 4) {
+                frame.colorCorrectionTransform = readMatrix(in);
+            }
             frame.sensorToXyz1 = readMatrix(in);
             frame.sensorToXyz2 = readMatrix(in);
             frame.illuminant1 = in.readInt();

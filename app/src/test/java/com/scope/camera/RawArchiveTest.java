@@ -60,4 +60,13 @@ public class RawArchiveTest {
         assertEquals(ByteOrder.LITTLE_ENDIAN, buffer.order());
         assertEquals(42, buffer.getInt());
     }
+
+    @Test
+    public void testColorCorrectionTransformField() {
+        RawArchive.Frame frame = new RawArchive.Frame();
+        assertNull(frame.colorCorrectionTransform);
+        frame.colorCorrectionTransform = new float[]{1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f};
+        assertNotNull(frame.colorCorrectionTransform);
+        assertEquals(9, frame.colorCorrectionTransform.length);
+    }
 }

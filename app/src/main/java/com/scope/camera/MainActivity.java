@@ -3479,9 +3479,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             String path = Environment.DIRECTORY_PICTURES + "/Lika Lens" + (subfolder.isEmpty() ? "" : "/" + subfolder);
             values.put(MediaStore.MediaColumns.RELATIVE_PATH, path);
             values.put(MediaStore.MediaColumns.IS_PENDING, 1);
-            Uri collection = mime.equals("image/jpeg")
-                    ? MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                    : MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+            Uri collection;
+            if (mime.startsWith("image/")) {
+                collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+            } else if (mime.startsWith("video/")) {
+                collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+            } else {
+                collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+            }
             Uri uri = getContentResolver().insert(collection, values);
             if (uri == null) throw new IllegalStateException("Could not create media file");
             return new OutputTarget(uri, null);
@@ -4069,7 +4074,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             // If the current camera can handle this zoom level natively, animate smoothly without restarting
             if (mainCameraId.equals(cameraId) && canZoomOnCurrentCamera(factor)) {
                 physicalFocalFactor = 1f;
-                animateZoomTo(factor);
+                float targetZoom = factor;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && characteristics != null) {
+                    Range<Float> range = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+                    if (range != null) {
+                        targetZoom = Math.max(factor, range.getLower());
+                    }
+                }
+                animateZoomTo(targetZoom);
                 return;
             }
 
@@ -4116,7 +4128,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         rawWideFactor = physical;
                     }
                 }
-                if (rawWideId != null && rawWideScore < .12f) {
+                if (rawWideId != null) {
                     physicalFocalFactor = rawWideFactor;
                     selectCameraForLens(rawWideId, rawWideFactor, false);
                     return;
@@ -4169,8 +4181,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (characteristics == null) return false;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             Range<Float> range = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
-            if (range != null && factor >= range.getLower() - 0.05f) {
-                return true;
+            if (range != null) {
+                if (factor >= 1.0f) {
+                    return factor <= range.getUpper() + 0.05f;
+                } else {
+                    return range.getLower() < 0.98f;
+                }
             }
         }
         return factor >= 1.0f && mainCameraId != null && mainCameraId.equals(cameraId);
@@ -4179,7 +4195,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private float supportedWideZoom(CameraCharacteristics camera, float factor) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || camera == null) return -1f;
         Range<Float> range = camera.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
-        if (range == null || range.getLower() > factor + .05f || range.getUpper() < 1f) return -1f;
+        if (range == null || range.getLower() >= 0.98f || range.getUpper() < 1f) return -1f;
         return Math.max(factor, range.getLower());
     }
 
