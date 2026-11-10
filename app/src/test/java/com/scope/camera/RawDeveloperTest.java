@@ -109,9 +109,34 @@ public class RawDeveloperTest {
         int rLowMid = (lowerMidtone >> 16) & 0xff;
 
         // Shadows below pivot must not be hard-clipped to 0 and must maintain strictly monotonic gradation
-        org.junit.Assert.assertTrue("Shadow at linear 0.02 should not be crushed to black, got " + rDark, rDark > 15);
-        org.junit.Assert.assertTrue("Shadow gradation must be monotonic (0.02 < 0.05)", rMid > rDark + 10);
-        org.junit.Assert.assertTrue("Shadow gradation must be monotonic (0.05 < 0.12)", rLowMid > rMid + 15);
+        org.junit.Assert.assertTrue("Shadow at linear 0.02 should not be crushed to black, got " + rDark, rDark > 25);
+        org.junit.Assert.assertTrue("Shadow gradation must be monotonic (0.02 < 0.05)", rMid > rDark + 12);
+        org.junit.Assert.assertTrue("Shadow gradation must be monotonic (0.05 < 0.12)", rLowMid > rMid + 18);
+    }
+
+    @Test
+    public void testDarkShadowNoiseDoesNotExplodeIntoColorSpeckles() {
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.brain = AppSettings.BRAIN_LIKA_FILM;
+        look.contrast = 1.12f;
+        look.pivot = 0.20f;
+        look.shadows = 0.36f;
+        look.grain = 0.22f;
+        look.warmth = 0f;
+        look.easyMode = true;
+
+        // Simulate a noisy dark sensor pixel (e.g. turned-off TV screen) where off-diagonal
+        // color matrix coefficients produce a negative green excursion alongside tiny R/B noise.
+        int pixel = RawDeveloper.renderLook(0.008f, -0.003f, 0.012f, look, 10, 10, 42);
+        int r = (pixel >> 16) & 0xff;
+        int g = (pixel >> 8) & 0xff;
+        int b = pixel & 0xff;
+
+        org.junit.Assert.assertTrue("Dark noise R channel must stay dark (< 35), got " + r, r < 35);
+        org.junit.Assert.assertTrue("Dark noise G channel must stay dark (< 35), got " + g, g < 35);
+        org.junit.Assert.assertTrue("Dark noise B channel must stay dark (< 35), got " + b, b < 35);
+        org.junit.Assert.assertTrue("Dark shadow noise must be desaturated (no magenta speckle), |R-G|=" + Math.abs(r - g), Math.abs(r - g) <= 6);
+        org.junit.Assert.assertTrue("Dark shadow noise must be desaturated (no purple speckle), |B-G|=" + Math.abs(b - g), Math.abs(b - g) <= 6);
     }
 
     @Test

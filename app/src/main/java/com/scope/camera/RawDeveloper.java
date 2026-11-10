@@ -252,9 +252,11 @@ final class RawDeveloper {
                 float b = interpolate(rawShorts, frame, white, sx, sy, 2);
                 if (applyLsm) {
                     float[] lsm = sampleLsm(frame, sx, sy);
-                    r *= lsm[0];
-                    g *= (lsm[1] + lsm[2]) * 0.5f;
-                    b *= lsm[3];
+                    float sig = Math.max(r, Math.max(g, b));
+                    float lsmWeight = smoothstep(0.003f, 0.030f, sig);
+                    r *= 1f + (lsm[0] - 1f) * lsmWeight;
+                    g *= 1f + ((lsm[1] + lsm[2]) * 0.5f - 1f) * lsmWeight;
+                    b *= 1f + (lsm[3] - 1f) * lsmWeight;
                 }
                 r *= gains[0];
                 g *= (gains[1] + gains[2]) * .5f;
@@ -288,8 +290,8 @@ final class RawDeveloper {
         });
 
         float effectiveChromaNr = look.chromaNr;
-        if (look.easyMode && frame.sensitivityIso >= 400 && effectiveChromaNr < 0.22f) {
-            effectiveChromaNr = Math.max(effectiveChromaNr, 0.22f);
+        if (look.easyMode && frame.sensitivityIso >= 400 && effectiveChromaNr < 0.25f) {
+            effectiveChromaNr = Math.max(effectiveChromaNr, 0.25f);
         }
         if (effectiveChromaNr > 0f) applyChromaDenoise(allPixels, outW, outH, effectiveChromaNr);
         if (look.halation > 0f) applyHalation(allPixels, outW, outH, look.halation, aspect);
@@ -494,7 +496,12 @@ final class RawDeveloper {
         if (x < 0 || y < 0 || x >= frame.width || y >= frame.height) return 0f;
         int sample = raw[y * frame.width + x] & 0xffff;
         float black = frame.blackLevels[(y & 1) * 2 + (x & 1)];
-        return clamp((sample - black) / Math.max(1f, white - black), 0f, 4f);
+        float norm = (sample - black) / Math.max(1f, white - black);
+        // Subtract a small read-noise floor around black level when real black levels are present
+        if (black > 0.5f) {
+            norm = (norm - 0.0012f) / 0.9988f;
+        }
+        return clamp(norm, 0f, 4f);
     }
 
     private static float[] whiteBalanceGains(RawArchive.Frame frame, int kelvin) {
@@ -584,8 +591,8 @@ final class RawDeveloper {
     /**
      * Computes scene-linear exposure normalization for RAW frames.
      * Applies Camera2 CONTROL_POST_RAW_SENSITIVITY_BOOST and, when Easy Mode is active,
-     * compensates for highlight-protecting RAW metering so midtones match viewfinder perception
-     * while specular highlights roll off naturally through the filmic shoulder.
+     * uses center-weighted metering to compensate for highlight-protecting RAW exposure so
+     * subjects match viewfinder perception while highlights roll off through the filmic shoulder.
      */
     static float computeSceneExposureGain(short[] rawShorts, RawArchive.Frame frame, float white,
                                           float[] gains, float[] cameraToXyz, float[] crop,
@@ -603,14 +610,17 @@ final class RawDeveloper {
         float cropW = crop != null && crop.length >= 4 ? crop[2] : width;
         float cropH = crop != null && crop.length >= 4 ? crop[3] : height;
         int gridX = 32, gridY = 24;
-        float[] allLuma = new float[gridX * gridY];
-        float[] midLuma = new float[gridX * gridY];
+        float[] allLuma = new float[gridX * gridY * 3];
+        float[] midLuma = new float[gridX * gridY * 3];
         int allCount = 0, midCount = 0;
 
         for (int gy = 0; gy < gridY; gy++) {
             float dy = Math.min(cropY + cropH - .5f, cropY + (gy + .5f) * cropH / gridY);
+            boolean centerY = (gy >= gridY / 4 && gy < (gridY * 3) / 4);
             for (int gx = 0; gx < gridX; gx++) {
                 float dx = Math.min(cropX + cropW - .5f, cropX + (gx + .5f) * cropW / gridX);
+                boolean centerX = (gx >= gridX / 4 && gx < (gridX * 3) / 4);
+                int weight = (centerX && centerY) ? 3 : 1;
                 int sx, sy;
                 switch (orientation) {
                     case 90: sx = Math.min(width - 1, (int) dy); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dx)); break;
@@ -623,9 +633,11 @@ final class RawDeveloper {
                 float b = interpolate(rawShorts, frame, white, sx, sy, 2);
                 if (applyLsm) {
                     float[] lsm = sampleLsm(frame, sx, sy);
-                    r *= lsm[0];
-                    g *= (lsm[1] + lsm[2]) * 0.5f;
-                    b *= lsm[3];
+                    float sig = Math.max(r, Math.max(g, b));
+                    float lsmWeight = smoothstep(0.003f, 0.030f, sig);
+                    r *= 1f + (lsm[0] - 1f) * lsmWeight;
+                    g *= 1f + ((lsm[1] + lsm[2]) * 0.5f - 1f) * lsmWeight;
+                    b *= 1f + (lsm[3] - 1f) * lsmWeight;
                 }
                 r *= gains[0] * boostScale;
                 g *= (gains[1] + gains[2]) * .5f * boostScale;
@@ -645,10 +657,12 @@ final class RawDeveloper {
                     lg = -.9785f * x + 1.9160f * y + .0333f * z;
                     lb = .0720f * x - .2290f * y + 1.4057f * z;
                 }
-                float luma = Math.max(0f, .2126f * lr + .7152f * lg + .0722f * lb);
-                allLuma[allCount++] = luma;
-                if (luma > 0.0005f && luma < 0.85f) {
-                    midLuma[midCount++] = luma;
+                float luma = Math.max(0f, .2126f * Math.max(0f, lr) + .7152f * Math.max(0f, lg) + .0722f * Math.max(0f, lb));
+                for (int w = 0; w < weight; w++) {
+                    allLuma[allCount++] = luma;
+                    if (luma > 0.002f && luma < 0.85f) {
+                        midLuma[midCount++] = luma;
+                    }
                 }
             }
         }
@@ -657,13 +671,13 @@ final class RawDeveloper {
         java.util.Arrays.sort(midLuma, 0, midCount);
         float p50 = midLuma[(int) ((midCount - 1) * 0.50f)];
         float p75 = midLuma[(int) ((midCount - 1) * 0.75f)];
-        float p90 = allLuma[(int) ((allCount - 1) * 0.90f)];
+        float p92 = allLuma[(int) ((allCount - 1) * 0.92f)];
         float midMetric = 0.55f * p50 + 0.45f * p75;
-        float targetMid = 0.175f;
+        float targetMid = 0.21f;
         if (midMetric >= targetMid) return boostScale;
-        float neededGain = (float) Math.pow(targetMid / Math.max(0.005f, midMetric), 0.85);
-        float maxHighlightGain = p90 > 0.35f ? (2.20f / Math.max(0.10f, p90)) : 4.5f;
-        float sceneGain = clamp(Math.min(neededGain, Math.max(1.0f, maxHighlightGain)), 1.0f, 4.5f);
+        float neededGain = (float) Math.pow(targetMid / Math.max(0.005f, midMetric), 0.88);
+        float maxHighlightGain = p92 > 0.35f ? (2.60f / Math.max(0.10f, p92)) : 4.8f;
+        float sceneGain = clamp(Math.min(neededGain, Math.max(1.0f, maxHighlightGain)), 1.0f, 4.8f);
         return boostScale * sceneGain;
     }
 
@@ -679,12 +693,18 @@ final class RawDeveloper {
     static int renderLook(float r, float g, float b, Look look, int x, int y, int seed, RawArchive.Frame frame, LutManager.Lut3D lut) {
         String brain = look.brain == null ? "LIKA / FILM" : look.brain;
 
+        // Clamp negative off-diagonal matrix excursions before computing luminance so near-black
+        // read noise never produces an artificially tiny denominator in `contrasted / oldY`.
+        r = Math.max(0f, r);
+        g = Math.max(0f, g);
+        b = Math.max(0f, b);
+
         if (brain.startsWith("MONO")) {
-            float luma = Math.max(0f, .2126f * r + .7152f * g + .0722f * b);
+            float luma = .2126f * r + .7152f * g + .0722f * b;
             r = g = b = luma;
         }
 
-        float oldY = Math.max(.00001f, .2126f * r + .7152f * g + .0722f * b);
+        float oldY = Math.max(.0001f, .2126f * r + .7152f * g + .0722f * b);
 
         float effectiveContrast = look.contrast;
         float effectivePivot = look.pivot;
@@ -709,11 +729,9 @@ final class RawDeveloper {
             float logY = (float) Math.log1p(oldY * 7.0f) / (float) Math.log1p(7.0f);
             float logPivot = (float) Math.log1p(safePivot * 7.0f) / (float) Math.log1p(7.0f);
             contrasted = logY <= 0f ? 0f : logPivot * (float) Math.pow(logY / Math.max(0.01f, logPivot), safeContrast * 0.78f);
-        } else { // Filmic S-Curve: power-law toe around pivot preserves shadow gradation without hard-clipping below pivot
-            contrasted = oldY <= 0f ? 0f : safePivot * (float) Math.pow(oldY / safePivot, safeContrast);
-            if (look.easyMode && contrasted < safePivot) {
-                contrasted += 0.018f * (1f - (contrasted / safePivot));
-            }
+        } else { // Filmic S-Curve: power-law toe around pivot preserves shadow gradation down to true black without exploding read noise
+            float toeContrast = (look.easyMode && oldY < safePivot) ? Math.min(safeContrast, 0.94f) : safeContrast;
+            contrasted = oldY <= 0f ? 0f : safePivot * (float) Math.pow(oldY / safePivot, toeContrast);
         }
 
         float shadowWeight = 1f - smoothstep(.02f, .44f, contrasted);
@@ -721,7 +739,7 @@ final class RawDeveloper {
         String shadowProf = look.shadowProfile == null ? "Deep Cinema Blacks" : look.shadowProfile;
         if (shadowProf.startsWith("Lifted") || brain.startsWith("FUJI") || brain.contains("ETERNA")) {
             shadowDepth *= 0.65f;
-            contrasted = Math.max(0.015f, contrasted);
+            contrasted = Math.max(0.012f * smoothstep(0.002f, 0.025f, oldY), contrasted);
         } else if (shadowProf.startsWith("Neutral")) {
             shadowDepth *= 0.85f;
         } else if (brain.startsWith("KODACHROME") || brain.startsWith("BLEACH")) {
@@ -733,11 +751,12 @@ final class RawDeveloper {
         if (look.easyMode && shoulder < 0.65f) {
             shoulder = 0.65f;
         }
-        if (contrasted > .68f) {
-            float excess = contrasted - .68f;
-            contrasted = .68f + excess / (1f + excess * (1.8f + shoulder * 5f));
+        float knee = look.easyMode ? 0.52f : 0.68f;
+        if (contrasted > knee) {
+            float excess = contrasted - knee;
+            contrasted = knee + excess / (1f + excess * (1.6f + shoulder * 3.8f));
         }
-        float ratio = contrasted / oldY;
+        float ratio = Math.min(4.0f, contrasted / oldY);
         r *= ratio; g *= ratio; b *= ratio;
 
         r = Math.max(0f, r); g = Math.max(0f, g); b = Math.max(0f, b);
@@ -793,14 +812,16 @@ final class RawDeveloper {
 
         if (applySkinProtection && skinFactor > 0.05f) {
             // Keep skin saturation in an optimal, flattering corridor (avoiding sunburn or overly flushed skin)
-            float maxSkinChroma = 0.17f;
+            float maxSkinChroma = 0.145f;
             if (rawChroma * satBase > maxSkinChroma) {
                 float excess = (rawChroma * satBase) - maxSkinChroma;
-                satBase = (maxSkinChroma + excess * 0.40f) / Math.max(0.001f, rawChroma);
+                satBase = (maxSkinChroma + excess * 0.30f) / Math.max(0.001f, rawChroma);
             }
         }
 
-        float chromaScale = clamp(satBase * vibranceBoost, 0f, 1.8f) * (1f - .13f * highlightWeight) * highlightDesat;
+        // Suppress color read-noise speckles in deep near-black shadows (e.g. turned-off screens, dark corners)
+        float shadowNoiseGate = smoothstep(0.0015f, 0.016f, oldY);
+        float chromaScale = clamp(satBase * vibranceBoost, 0f, 1.8f) * (1f - .13f * highlightWeight) * highlightDesat * shadowNoiseGate;
         a *= chromaScale;
         bb *= chromaScale;
         float chroma = (float) Math.sqrt(a * a + bb * bb);
@@ -826,32 +847,36 @@ final class RawDeveloper {
                 }
             }
 
-            float baseWarmth = brain.startsWith("NEUTRAL") ? 0f : (.50f * ambientWarmthFactor);
+            // Attenuate synthetic film warmth when the pixel is already warm (e.g. tungsten lighting / warm skin)
+            // so we don't crush the blue/green channels in Oklab -> sRGB conversion.
+            float alreadyWarmAtten = 1.0f - 0.72f * smoothstep(0.025f, 0.105f, bb);
+            float baseWarmth = brain.startsWith("NEUTRAL") ? 0f : (.42f * ambientWarmthFactor * alreadyWarmAtten);
             if (brain.startsWith("KODACHROME")) {
-                baseWarmth = 0.55f * ambientWarmthFactor;
+                baseWarmth = 0.48f * ambientWarmthFactor * alreadyWarmAtten;
             } else if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
-                baseWarmth = 0.22f * ambientWarmthFactor;
+                baseWarmth = 0.20f * ambientWarmthFactor * alreadyWarmAtten;
             } else if (brain.startsWith("BLEACH")) {
                 baseWarmth = 0.04f;
             }
 
-            float warmth = clamp(look.warmth + baseWarmth, -1f, 1f);
-            a += warmth * (.006f + .004f * shadowWeight + .002f * highlightWeight);
-            bb += warmth * (.014f + .006f * shadowWeight + .008f * highlightWeight);
+            float warmthGate = smoothstep(0.03f, 0.16f, lightness);
+            float warmth = clamp(look.warmth + baseWarmth, -1f, 1f) * warmthGate;
+            a += warmth * (.005f + .003f * shadowWeight + .002f * highlightWeight);
+            bb += warmth * (.012f + .005f * shadowWeight + .006f * highlightWeight);
 
             // Illuminant-Adaptive Neutralization in Easy Mode:
             // Neutralizes the yellow-green jaundiced tint under fluorescent lighting
             if (look.easyMode && fluorescentSpike) {
-                a += 0.0035f;
-                bb -= 0.0070f;
+                a += 0.0035f * warmthGate;
+                bb -= 0.0070f * warmthGate;
             }
 
             if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
-                bb -= 0.010f * shadowWeight;
-                a -= 0.005f * shadowWeight;
+                bb -= 0.010f * shadowWeight * warmthGate;
+                a -= 0.005f * shadowWeight * warmthGate;
             }
             if (brain.startsWith("BLEACH")) {
-                bb -= 0.006f * shadowWeight;
+                bb -= 0.006f * shadowWeight * warmthGate;
             }
         }
         lightness = clamp(lightness, 0f, 1f);
@@ -886,7 +911,8 @@ final class RawDeveloper {
             int grainScale = look.grainStructure.startsWith("Coarse") ? 5 : look.grainStructure.startsWith("Soft") ? 2 : 1;
             float fine = hashNoise(x, y, seed);
             float coarse = hashNoise(x / (grainScale * 3), y / (grainScale * 3), seed ^ 0x51ed270b);
-            float texture = (fine * (grainScale == 1 ? .72f : .40f) + coarse * (grainScale == 1 ? .28f : .60f)) * grainAmount * .05f;
+            float shadowGrainGate = smoothstep(0.025f, 0.11f, lightness);
+            float texture = (fine * (grainScale == 1 ? .72f : .40f) + coarse * (grainScale == 1 ? .28f : .60f)) * grainAmount * .05f * shadowGrainGate;
             String gResp = look.grainResponse == null ? "Luminance-weighted" : look.grainResponse;
             if (!gResp.startsWith("Uniform")) {
                 texture *= .38f + .62f * 4f * lightness * (1f - lightness);

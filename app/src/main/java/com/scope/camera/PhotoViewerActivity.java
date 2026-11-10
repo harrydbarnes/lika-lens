@@ -250,11 +250,81 @@ public class PhotoViewerActivity extends Activity {
         }
     }
 
+    private static RawDeveloper.Look buildNeutralRawLook(RawArchive.Frame frame) {
+        RawDeveloper.Look neutral = new RawDeveloper.Look();
+        neutral.brain = AppSettings.BRAIN_NEUTRAL_RAW;
+        neutral.toneCurve = "Linear Response";
+        neutral.shadowProfile = "Neutral / Open Shadows";
+        neutral.highlightRecovery = "Adaptive blend";
+        neutral.easyMode = true;
+        neutral.skinProtection = false;
+        neutral.smartVibrance = false;
+        neutral.contrast = 1.0f;
+        neutral.pivot = 0.50f;
+        neutral.saturation = 0.96f;
+        neutral.shadows = 0.0f;
+        neutral.highlights = 0.50f;
+        neutral.grain = 0f;
+        neutral.halation = 0f;
+        neutral.vignette = 0f;
+        neutral.sharpening = 0f;
+        neutral.chromaNr = 0.25f;
+        neutral.colorRollOff = 0.50f;
+        neutral.exposureEv = 0f;
+        neutral.warmth = 0f;
+        neutral.lutName = "None";
+        neutral.frameBorder = "None";
+        if (frame != null) {
+            neutral.aspectRatio = frame.aspectRatio;
+        }
+        return neutral;
+    }
+
+    private void preloadRawOriginal(String keyForLoad, int targetW, int targetH) {
+        if (keyForLoad == null || !RawArchive.exists(this, keyForLoad)) return;
+        worker.execute(() -> {
+            try {
+                if (!keyForLoad.equals(archiveKey) || isFinishing()) return;
+                RawArchive.Frame frame = RawArchive.read(PhotoViewerActivity.this, keyForLoad);
+                RawDeveloper.Look neutral = buildNeutralRawLook(frame);
+                int targetDim = Math.max(1200, Math.max(targetW, targetH));
+                Bitmap rawBmp = RawDeveloper.develop(frame, neutral, targetDim);
+                if (rawBmp != null && targetW > 0 && targetH > 0
+                        && (rawBmp.getWidth() != targetW || rawBmp.getHeight() != targetH)) {
+                    Bitmap scaled = Bitmap.createScaledBitmap(rawBmp, targetW, targetH, true);
+                    if (scaled != rawBmp) {
+                        rawBmp.recycle();
+                        rawBmp = scaled;
+                    }
+                }
+                final Bitmap finalRaw = rawBmp;
+                mainHandler.post(() -> {
+                    if (!keyForLoad.equals(archiveKey) || isFinishing()) {
+                        if (finalRaw != null && !finalRaw.isRecycled()) finalRaw.recycle();
+                        return;
+                    }
+                    if (rawOriginalBitmap != null && rawOriginalBitmap != finalRaw && !rawOriginalBitmap.isRecycled()) {
+                        rawOriginalBitmap.recycle();
+                    }
+                    rawOriginalBitmap = finalRaw;
+                    if (isComparing && rawOriginalBitmap != null) {
+                        if (compareBadge != null) compareBadge.setText("ORIGINAL SENSOR RAW · UNGRADED");
+                        photoView.setImageBitmap(rawOriginalBitmap);
+                    }
+                });
+            } catch (Throwable ignored) {
+                mainHandler.post(() -> {
+                    if (isComparing && compareBadge != null) compareBadge.setText("NO RAW DATA");
+                });
+            }
+        });
+    }
+
     private void startComparing() {
         if (isComparing) return;
         isComparing = true;
         if (compareBadge != null) {
-            compareBadge.setText(rawOriginalBitmap != null ? "ORIGINAL SENSOR RAW" : "DEVELOPING SENSOR ORIGINAL…");
+            compareBadge.setText(rawOriginalBitmap != null ? "ORIGINAL SENSOR RAW · UNGRADED" : "DEVELOPING SENSOR ORIGINAL…");
             compareBadge.setVisibility(View.VISIBLE);
         }
         if (compareButton != null) compareButton.setTextColor(ACCENT);
@@ -264,49 +334,9 @@ public class PhotoViewerActivity extends Activity {
         if (rawOriginalBitmap != null) {
             photoView.setImageBitmap(rawOriginalBitmap);
         } else if (archiveKey != null && RawArchive.exists(this, archiveKey)) {
-            worker.execute(() -> {
-                try {
-                    RawArchive.Frame frame = RawArchive.read(PhotoViewerActivity.this, archiveKey);
-                    RawDeveloper.Look neutral = new RawDeveloper.Look();
-                    neutral.brain = "NEUTRAL RAW";
-                    neutral.contrast = 1.0f;
-                    neutral.pivot = 0.5f;
-                    neutral.saturation = 1.0f;
-                    neutral.grain = 0f;
-                    neutral.halation = 0f;
-                    neutral.vignette = 0f;
-                    neutral.sharpening = 0f;
-                    neutral.chromaNr = 0f;
-                    neutral.colorRollOff = 0.5f;
-                    neutral.exposureEv = 0f;
-                    neutral.warmth = 0f;
-                    neutral.aspectRatio = frame.aspectRatio;
-
-                    int targetW = developedBitmap != null ? developedBitmap.getWidth() : 2000;
-                    int targetH = developedBitmap != null ? developedBitmap.getHeight() : 2000;
-                    int targetDim = Math.max(targetW, targetH);
-                    Bitmap rawBmp = RawDeveloper.develop(frame, neutral, targetDim);
-                    if (rawBmp != null && developedBitmap != null && (rawBmp.getWidth() != targetW || rawBmp.getHeight() != targetH)) {
-                        Bitmap scaled = Bitmap.createScaledBitmap(rawBmp, targetW, targetH, true);
-                        if (scaled != rawBmp) {
-                            rawBmp.recycle();
-                            rawBmp = scaled;
-                        }
-                    }
-                    final Bitmap finalRaw = rawBmp;
-                    mainHandler.post(() -> {
-                        rawOriginalBitmap = finalRaw;
-                        if (compareBadge != null) compareBadge.setText("ORIGINAL SENSOR RAW");
-                        if (isComparing && rawOriginalBitmap != null) {
-                            photoView.setImageBitmap(rawOriginalBitmap);
-                        }
-                    });
-                } catch (Throwable ignored) {
-                    mainHandler.post(() -> {
-                        if (compareBadge != null) compareBadge.setText("NO RAW DATA");
-                    });
-                }
-            });
+            int targetW = developedBitmap != null ? developedBitmap.getWidth() : 2000;
+            int targetH = developedBitmap != null ? developedBitmap.getHeight() : 2000;
+            preloadRawOriginal(archiveKey, targetW, targetH);
         }
     }
 
@@ -386,7 +416,7 @@ public class PhotoViewerActivity extends Activity {
                     swipingDownToDismiss = (currentScale <= 1.05f);
                     break;
                 case MotionEvent.ACTION_MOVE:
-                    if (!scaleDetector.isInProgress()) {
+                    if (!scaleDetector.isInProgress() && !isComparing) {
                         float dx = event.getX() - startPoint.x;
                         float dy = event.getY() - startPoint.y;
 
@@ -407,6 +437,7 @@ public class PhotoViewerActivity extends Activity {
                 case MotionEvent.ACTION_CANCEL:
                     if (isComparing) {
                         stopComparing();
+                        break;
                     }
                     if (!scaleDetector.isInProgress() && currentScale <= 1.05f) {
                         float dx = event.getX() - startPoint.x;
@@ -678,6 +709,9 @@ public class PhotoViewerActivity extends Activity {
                     photoView.setImageBitmap(bitmap);
                     photoView.post(this::fitImageToView);
                     if (infoVisible) populateInfoData();
+                    if (hasRaw && rawOriginalBitmap == null) {
+                        preloadRawOriginal(archiveKey, imageWidth, imageHeight);
+                    }
                 }
             }
         } catch (Exception ignored) {
