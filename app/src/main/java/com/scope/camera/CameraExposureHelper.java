@@ -138,10 +138,12 @@ public final class CameraExposureHelper {
         if (activeArray == null) return new Rect();
         if (zoomFactor <= 1.0f) return new Rect(activeArray);
 
-        int cropWidth = Math.round(activeArray.width() / zoomFactor);
-        int cropHeight = Math.round(activeArray.height() / zoomFactor);
-        int cropLeft = activeArray.left + (activeArray.width() - cropWidth) / 2;
-        int cropTop = activeArray.top + (activeArray.height() - cropHeight) / 2;
+        int activeW = activeArray.right - activeArray.left;
+        int activeH = activeArray.bottom - activeArray.top;
+        int cropWidth = Math.round(activeW / zoomFactor);
+        int cropHeight = Math.round(activeH / zoomFactor);
+        int cropLeft = activeArray.left + (activeW - cropWidth) / 2;
+        int cropTop = activeArray.top + (activeH - cropHeight) / 2;
 
         return new Rect(cropLeft, cropTop, cropLeft + cropWidth, cropTop + cropHeight);
     }
@@ -162,8 +164,8 @@ public final class CameraExposureHelper {
         float clampedNx = Math.max(0f, Math.min(1f, nx));
         float clampedNy = Math.max(0f, Math.min(1f, ny));
 
-        int w = cropRegion.width();
-        int h = cropRegion.height();
+        int w = cropRegion.right - cropRegion.left;
+        int h = cropRegion.bottom - cropRegion.top;
         if (w <= 0 || h <= 0) return new Rect(cropRegion);
 
         // Android camera sensor coordinates:

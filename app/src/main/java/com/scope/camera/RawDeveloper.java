@@ -343,9 +343,9 @@ final class RawDeveloper {
             for (int x = 0; x < w; x++) {
                 int srcX = finalLook.flipHorizontal ? (w - 1 - x) : x;
                 int c = pixels[rowOffset + srcX];
-                float r = srgbToLinear(Color.red(c) / 255f) * exposureScale * wbShift;
-                float g = srgbToLinear(Color.green(c) / 255f) * exposureScale;
-                float b = srgbToLinear(Color.blue(c) / 255f) * exposureScale / wbShift;
+                float r = srgbToLinear(((c >> 16) & 0xFF) / 255f) * exposureScale * wbShift;
+                float g = srgbToLinear(((c >> 8) & 0xFF) / 255f) * exposureScale;
+                float b = srgbToLinear((c & 0xFF) / 255f) * exposureScale / wbShift;
                 int rendered = renderLook(r, g, b, finalLook, x, y, 0x53434f50, null, lut);
                 if (finalLook.vignette > 0f) {
                     float nx = w <= 1 ? 0f : x / (float) (w - 1) * 2f - 1f;
@@ -892,7 +892,7 @@ final class RawDeveloper {
             float sB = toSrgb(outB) / 255f;
             return lut.applyToRgb(sR, sG, sB, look.lutIntensity);
         }
-        return Color.rgb(toSrgb(outR), toSrgb(outG), toSrgb(outB));
+        return (0xFF << 24) | ((toSrgb(outR) & 0xFF) << 16) | ((toSrgb(outG) & 0xFF) << 8) | (toSrgb(outB) & 0xFF);
     }
 
     private static void applyHalation(int[] pixels, int w, int h, float amount, String aspect) {
@@ -1073,7 +1073,10 @@ final class RawDeveloper {
     }
 
     private static int scaleColor(int color, float scale) {
-        return Color.rgb(clamp255(Color.red(color)*scale), clamp255(Color.green(color)*scale), clamp255(Color.blue(color)*scale));
+        int r = clamp255(((color >> 16) & 0xFF) * scale);
+        int g = clamp255(((color >> 8) & 0xFF) * scale);
+        int b = clamp255((color & 0xFF) * scale);
+        return (0xFF << 24) | (r << 16) | (g << 8) | b;
     }
     private static float smoothstep(float edge0, float edge1, float x) {
         float t = clamp((x-edge0)/(edge1-edge0), 0f, 1f); return t*t*(3f-2f*t);

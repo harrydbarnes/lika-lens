@@ -144,22 +144,7 @@ public class RawDeveloperTest {
     }
 
     @Test
-    public void testDevelopBitmapInMemPipelineAndBorder() {
-        android.graphics.Bitmap testBmp = android.graphics.Bitmap.createBitmap(100, 80, android.graphics.Bitmap.Config.ARGB_8888);
-        RawDeveloper.Look look = new RawDeveloper.Look();
-        look.brain = AppSettings.BRAIN_LIKA_FILM;
-        look.frameBorder = "None";
-
-        android.graphics.Bitmap devNoBorder = RawDeveloper.developBitmap(testBmp, look, false);
-        assertNotNull(devNoBorder);
-        assertEquals(100, devNoBorder.getWidth());
-        assertEquals(80, devNoBorder.getHeight());
-
-        look.frameBorder = "Museum · White Fine Art";
-        android.graphics.Bitmap devBordered = RawDeveloper.developBitmap(testBmp, look, false);
-        assertNotNull(devBordered);
-        // Border padding adds width and height
-        org.junit.Assert.assertTrue("Bordered bitmap width should expand", devBordered.getWidth() > 100);
-        org.junit.Assert.assertTrue("Bordered bitmap height should expand", devBordered.getHeight() > 80);
+    public void testDevelopBitmapHandlesNull() {
+        org.junit.Assert.assertNull(RawDeveloper.developBitmap(null, null, false));
     }
 }

@@ -83,8 +83,12 @@ public class CameraExposureHelperTest {
         assertTrue("Top must be inside crop region", centerRect.top >= cropRegion.top);
         assertTrue("Right must be inside crop region", centerRect.right <= cropRegion.right);
         assertTrue("Bottom must be inside crop region", centerRect.bottom <= cropRegion.bottom);
-        assertEquals(cropRegion.centerX(), centerRect.centerX());
-        assertEquals(cropRegion.centerY(), centerRect.centerY());
+        int cropCenterX = (cropRegion.left + cropRegion.right) / 2;
+        int cropCenterY = (cropRegion.top + cropRegion.bottom) / 2;
+        int centerRectX = (centerRect.left + centerRect.right) / 2;
+        int centerRectY = (centerRect.top + centerRect.bottom) / 2;
+        assertEquals(cropCenterX, centerRectX);
+        assertEquals(cropCenterY, centerRectY);
 
         // Corner tap (0.0, 0.0) - must clamp cleanly within crop region
         Rect cornerRect = CameraExposureHelper.computeMeteringRect(cropRegion, 0.0f, 0.0f, false, 0.10f);
@@ -103,7 +107,9 @@ public class CameraExposureHelperTest {
 
         // Rear camera maps nx=0.8 to (1 - 0.8)*3000 = 600
         // Front camera (mirrored) maps nx=0.8 to 0.8*3000 = 2400
-        assertTrue("Rear sensorY should be in lower third", rearRect.centerY() < 1000);
-        assertTrue("Front sensorY should be in upper third", frontRect.centerY() > 2000);
+        int rearCenterY = (rearRect.top + rearRect.bottom) / 2;
+        int frontCenterY = (frontRect.top + frontRect.bottom) / 2;
+        assertTrue("Rear sensorY should be in lower third", rearCenterY < 1000);
+        assertTrue("Front sensorY should be in upper third", frontCenterY > 2000);
     }
 }
