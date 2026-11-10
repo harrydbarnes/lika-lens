@@ -4756,7 +4756,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 }
             }
         }
-        showBottomSheetSelector("SHUTTER SPEED", options, subtitles, currentIndex, index -> {
+        showCustomBottomSheet("SHUTTER SPEED", options, subtitles, currentIndex, index -> {
             if (index == 0) {
                 AppSettings.prefs(this).edit().putString(AppSettings.EXPOSURE_MODE, "Auto exposure").apply();
                 showMessage("AUTO EXPOSURE ACTIVE");
@@ -4808,7 +4808,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 }
             }
         }
-        showBottomSheetSelector("SENSOR ISO SENSITIVITY", options, subtitles, currentIndex, index -> {
+        showCustomBottomSheet("SENSOR ISO SENSITIVITY", options, subtitles, currentIndex, index -> {
             if (index == 0) {
                 AppSettings.prefs(this).edit().putString(AppSettings.EXPOSURE_MODE, "Auto exposure").apply();
                 showMessage("AUTO ISO & EXPOSURE ACTIVE");
@@ -4858,7 +4858,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 break;
             }
         }
-        showBottomSheetSelector("WHITE BALANCE", options, subtitles, currentIndex, index -> {
+        showCustomBottomSheet("WHITE BALANCE", options, subtitles, currentIndex, index -> {
             int chosenKelvin = kelvins[index];
             AppSettings.setWhiteBalanceKelvin(this, chosenKelvin);
             updateReadouts();
