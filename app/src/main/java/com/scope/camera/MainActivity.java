@@ -103,6 +103,7 @@ import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -3591,6 +3592,39 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
+    private void setExifGps(ExifInterface exif, Location loc) {
+        if (exif == null || loc == null) return;
+        double lat = loc.getLatitude();
+        double lon = loc.getLongitude();
+        exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE, formatExifCoord(Math.abs(lat)));
+        exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE_REF, lat >= 0 ? "N" : "S");
+        exif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE, formatExifCoord(Math.abs(lon)));
+        exif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE_REF, lon >= 0 ? "E" : "W");
+        if (loc.hasAltitude()) {
+            double alt = loc.getAltitude();
+            exif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE, ((int) Math.round(Math.abs(alt))) + "/1");
+            exif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE_REF, alt >= 0 ? "0" : "1");
+        }
+        if (loc.getTime() > 0) {
+            SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss", Locale.US);
+            timeFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
+            SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy:MM:dd", Locale.US);
+            dateFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
+            Date date = new Date(loc.getTime());
+            exif.setAttribute(ExifInterface.TAG_GPS_TIMESTAMP, timeFormat.format(date));
+            exif.setAttribute(ExifInterface.TAG_GPS_DATESTAMP, dateFormat.format(date));
+        }
+    }
+
+    private static String formatExifCoord(double coord) {
+        int degrees = (int) coord;
+        coord = (coord - degrees) * 60;
+        int minutes = (int) coord;
+        coord = (coord - minutes) * 60000;
+        int seconds = (int) Math.round(coord);
+        return degrees + "/1," + minutes + "/1," + seconds + "/1000";
+    }
+
     private void writeDng(Image image, TotalCaptureResult result, CameraCharacteristics captureCharacteristics, String name, String subfolder) throws Exception {
         if (result == null || captureCharacteristics == null) throw new IllegalStateException("Missing capture metadata");
         OutputTarget target = createOutput(name, "image/x-adobe-dng", subfolder);
@@ -3675,7 +3709,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 } else {
                     Location loc = getCaptureLocation();
                     if (loc != null) {
-                        exif.setGpsInfo(loc);
+                        setExifGps(exif, loc);
                     }
                 }
                 exif.saveAttributes();
