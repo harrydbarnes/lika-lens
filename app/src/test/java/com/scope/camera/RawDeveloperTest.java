@@ -172,4 +172,41 @@ public class RawDeveloperTest {
     public void testDevelopBitmapHandlesNull() {
         org.junit.Assert.assertNull(RawDeveloper.developBitmap(null, null, false));
     }
+
+    @Test
+    public void testMonoSilverUsesPanchromaticResponseAndSupportsPaperToning() {
+        RawDeveloper.Look mono = new RawDeveloper.Look();
+        mono.brain = AppSettings.BRAIN_MONO_SILVER;
+        mono.grain = 0f;
+        mono.warmth = 0f;
+        mono.easyMode = true;
+
+        // Pure red vs pure blue of equal energy: panchromatic Tri-X (0.33 R vs 0.08 B)
+        // must render red/skin tones significantly more luminous than blue skies.
+        int redPixel = RawDeveloper.renderLook(0.40f, 0.05f, 0.05f, mono, 0, 0, 1);
+        int bluePixel = RawDeveloper.renderLook(0.05f, 0.05f, 0.40f, mono, 0, 0, 1);
+
+        int rLuma = (redPixel >> 16) & 0xff;
+        int bLuma = (bluePixel >> 16) & 0xff;
+        org.junit.Assert.assertTrue("Panchromatic MONO / SILVER must render red brighter than blue (" + rLuma + " vs " + bLuma + ")",
+                rLuma > bLuma + 35);
+
+        // When warmth is shifted > 0 on MONO / SILVER, warm silver-gelatin toning should warm R over B
+        mono.warmth = 0.50f;
+        int tonedMid = RawDeveloper.renderLook(0.22f, 0.22f, 0.22f, mono, 0, 0, 1);
+        int tr = (tonedMid >> 16) & 0xff;
+        int tb = tonedMid & 0xff;
+        org.junit.Assert.assertTrue("Warm-toned MONO / SILVER should have R > B, got R=" + tr + " B=" + tb, tr > tb);
+    }
+
+    @Test
+    public void testWhiteBalanceModeParsingAndFormatting() {
+        assertEquals(0, AppSettings.parseWhiteBalanceModeKelvin("Auto · as shot"));
+        assertEquals(2800, AppSettings.parseWhiteBalanceModeKelvin("2800 K · incandescent"));
+        assertEquals(3200, AppSettings.parseWhiteBalanceModeKelvin("3200 K · tungsten"));
+        assertEquals(5600, AppSettings.parseWhiteBalanceModeKelvin("5600 K · daylight"));
+        assertEquals(7500, AppSettings.parseWhiteBalanceModeKelvin("7500 K · shade"));
+        assertEquals("3200 K · tungsten", AppSettings.formatWhiteBalanceMode(3200));
+        assertEquals("Auto · as shot", AppSettings.formatWhiteBalanceMode(0));
+    }
 }

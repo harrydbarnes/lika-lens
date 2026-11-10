@@ -393,15 +393,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private long unlockHoldStartedAt;
     private Size videoSize;
 
-    // Live exposure aids state (32-bin histogram + 16x12 zebra & peaking grid)
+    // Live exposure aids state (32-bin histogram + 24x24 zebra & peaking grid)
     private final int[] liveHistogramBins = new int[32];
     private final int[] liveHistR = new int[32];
     private final int[] liveHistG = new int[32];
     private final int[] liveHistB = new int[32];
     private boolean liveHighlightClipped = false;
     private boolean liveShadowClipped = false;
-    private final boolean[] liveZebraCells = new boolean[16 * 12];
-    private final boolean[] livePeakingCells = new boolean[16 * 12];
+    private static final int EXPOSURE_GRID_SIZE = 24;
+    private final boolean[] liveZebraCells = new boolean[EXPOSURE_GRID_SIZE * EXPOSURE_GRID_SIZE];
+    private final boolean[] livePeakingCells = new boolean[EXPOSURE_GRID_SIZE * EXPOSURE_GRID_SIZE];
+    private int[] liveSamplePixels = new int[64 * 48];
+    private int[] liveSampleLuma = new int[64 * 48];
     private final Runnable exposureAidsSampler = new Runnable() {
         @Override public void run() {
             if (textureView != null && textureView.isAvailable() && gridOverlay != null) {
@@ -430,9 +433,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void computeExposureAids(Bitmap bmp, boolean wantHist, boolean wantZebra, boolean wantPeak) {
         int w = bmp.getWidth();
         int h = bmp.getHeight();
-        int[] px = new int[w * h];
+        int total = w * h;
+        if (liveSamplePixels.length < total) {
+            liveSamplePixels = new int[total];
+            liveSampleLuma = new int[total];
+        }
+        int[] px = liveSamplePixels;
+        int[] luma = liveSampleLuma;
         bmp.getPixels(px, 0, w, 0, 0, w, h);
-        int[] luma = new int[w * h];
         if (wantHist) {
             Arrays.fill(liveHistogramBins, 0);
             Arrays.fill(liveHistR, 0);
@@ -441,7 +449,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         int clipHigh = 0;
         int clipLow = 0;
-        for (int i = 0; i < px.length; i++) {
+        for (int i = 0; i < total; i++) {
             int c = px[i];
             int r = (c >> 16) & 0xff;
             int g = (c >> 8) & 0xff;
@@ -459,16 +467,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
         }
         if (wantHist) {
-            liveHighlightClipped = clipHigh > (px.length * 0.012f);
-            liveShadowClipped = clipLow > (px.length * 0.020f);
+            liveHighlightClipped = clipHigh > (total * 0.012f);
+            liveShadowClipped = clipLow > (total * 0.020f);
         }
         if (wantZebra || wantPeak) {
-            for (int cy = 0; cy < 12; cy++) {
-                for (int cx = 0; cx < 16; cx++) {
-                    int idx = cy * 16 + cx;
-                    int sx = cx * 4 + 2;
-                    int sy = cy * 4 + 2;
-                    int pIdx = sy * w + sx;
+            for (int cy = 0; cy < EXPOSURE_GRID_SIZE; cy++) {
+                int sy = Math.min(h - 1, (cy * h + (h / 2)) / EXPOSURE_GRID_SIZE);
+                int rowOff = sy * w;
+                int gridRow = cy * EXPOSURE_GRID_SIZE;
+                for (int cx = 0; cx < EXPOSURE_GRID_SIZE; cx++) {
+                    int idx = gridRow + cx;
+                    int sx = Math.min(w - 1, (cx * w + (w / 2)) / EXPOSURE_GRID_SIZE);
+                    int pIdx = rowOff + sx;
                     int yVal = luma[pIdx];
                     liveZebraCells[idx] = wantZebra && (yVal >= 242);
                     if (wantPeak && sx > 0 && sx < w - 1 && sy > 0 && sy < h - 1) {
@@ -1048,12 +1058,21 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         telemetry = row();
         telemetry.setPadding(dp(3), dp(6), dp(3), dp(8));
-        telemetry.addView(readoutView("SHUTTER", "AUTO"), new LinearLayout.LayoutParams(0, -2, 1));
-        telemetry.addView(readoutView("ISO", "AUTO"), new LinearLayout.LayoutParams(0, -2, 1));
-        telemetry.addView(readoutView("WB", "5600 K"), new LinearLayout.LayoutParams(0, -2, 1));
+        View shutterBox = readoutView("SHUTTER", "AUTO");
+        View isoBox = readoutView("ISO", "AUTO");
+        View wbBox = readoutView("WB", "AUTO");
+        shutterBox.setOnClickListener(v -> { hapticClick(v); chooseShutterSpeed(); });
+        shutterBox.setOnLongClickListener(v -> { toggleAeLock(); return true; });
+        isoBox.setOnClickListener(v -> { hapticClick(v); chooseManualIso(); });
+        isoBox.setOnLongClickListener(v -> { toggleAeLock(); return true; });
+        wbBox.setOnClickListener(v -> { hapticClick(v); chooseWhiteBalance(); });
+        wbBox.setOnLongClickListener(v -> { toggleAeLock(); return true; });
+        telemetry.addView(shutterBox, new LinearLayout.LayoutParams(0, -2, 1));
+        telemetry.addView(isoBox, new LinearLayout.LayoutParams(0, -2, 1));
+        telemetry.addView(wbBox, new LinearLayout.LayoutParams(0, -2, 1));
         telemetry.setClickable(true);
-        telemetry.setContentDescription("Exposure telemetry. Tap to lock or unlock exposure.");
-        telemetry.setOnClickListener(v -> toggleAeLock());
+        telemetry.setContentDescription("Exposure telemetry. Tap SHUTTER, ISO, or WB to adjust; long-press to lock exposure.");
+        telemetry.setOnLongClickListener(v -> { toggleAeLock(); return true; });
 
         lensRow = new ZoomPresetRow();
         lensRow.setGravity(Gravity.CENTER);
@@ -2326,6 +2345,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         labelRow.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
         TextView value = label("", 8, ACCENT, true);
         value.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        value.setPadding(dp(8), 0, 0, 0);
         labelRow.addView(value);
         control.addView(labelRow);
 
@@ -2338,6 +2358,23 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         control.addView(seek, new LinearLayout.LayoutParams(-1, dp(28)));
         updateQuickValue(value, key, selected);
         final int[] lastHapticVal = {selected};
+
+        View.OnClickListener resetSingle = v -> {
+            seek.setProgress(fallback - min);
+            updateQuickValue(value, key, fallback);
+            AppSettings.prefs(MainActivity.this).edit().putInt(key, fallback).apply();
+            applyLiveFilmPreview();
+            updateContextualStatus();
+            if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true)) {
+                seek.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            }
+        };
+        value.setOnClickListener(resetSingle);
+        labelRow.setOnLongClickListener(v -> {
+            resetSingle.onClick(v);
+            return true;
+        });
+
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
                 int next = min + progress;
@@ -2347,16 +2384,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     applyLiveFilmPreview();
                     updateContextualStatus();
                     if (AppSettings.getBoolean(MainActivity.this, AppSettings.HAPTICS, true)) {
-                        boolean isLandmark = false;
+                        boolean isLandmark = (next == fallback);
                         if (AppSettings.EXPOSURE.equals(key) && next == 0) isLandmark = true;
-                        else if (AppSettings.WARMTH.equals(key) && next == 50) isLandmark = true;
                         else if (AppSettings.CONTRAST.equals(key) && next == 100) isLandmark = true;
-                        else if (AppSettings.SHADOWS.equals(key) && next == 50) isLandmark = true;
                         else if (AppSettings.SATURATION.equals(key) && next == 100) isLandmark = true;
-                        else if (AppSettings.HIGHLIGHTS.equals(key) && next == 50) isLandmark = true;
                         else if (AppSettings.GRAIN.equals(key) && next == 0) isLandmark = true;
                         else if (AppSettings.HALATION.equals(key) && next == 0) isLandmark = true;
-                        else if (AppSettings.SHARPEN.equals(key) && next == 50) isLandmark = true;
+                        else if (AppSettings.SHARPEN.equals(key) && next == 0) isLandmark = true;
 
                         if (isLandmark) {
                             bar.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
@@ -3828,7 +3862,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
 
         RawDeveloper.Look look = RawDeveloper.Look.fromPreferences(this);
-        if (AppSettings.BRAIN_NEUTRAL_RAW.equals(brain) && "None".equalsIgnoreCase(activeLut) && !isCustomLookActive()) {
+        if (AppSettings.BRAIN_NEUTRAL_RAW.equals(brain) && "None".equalsIgnoreCase(activeLut)
+                && !isCustomLookActive() && look.whiteBalanceKelvin <= 0) {
             textureView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
             textureView.invalidate();
             return;
@@ -3837,62 +3872,64 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         Paint paint = new Paint();
         ColorMatrix cm = new ColorMatrix();
         if (brain.startsWith("MONO") || brain.contains("SILVER")) {
-            cm.setSaturation(0f);
-            ColorMatrix contrast = new ColorMatrix();
-            float scale = 1.14f;
-            float translate = (-0.42f * scale + 0.42f) * 255f - 10f;
-            contrast.set(new float[] {
-                scale, 0, 0, 0, translate,
-                0, scale, 0, 0, translate,
-                0, 0, scale, 0, translate,
-                0, 0, 0, 1, 0
+            // Panchromatic silver halide luma (Tri-X 400): elevated red/orange response + silver contrast
+            float scale = 1.12f;
+            float translate = (-0.42f * scale + 0.42f) * 255f - 4f;
+            float rW = 0.33f * scale, gW = 0.59f * scale, bW = 0.08f * scale;
+            cm.set(new float[] {
+                rW, gW, bW, 0, translate,
+                rW, gW, bW, 0, translate,
+                rW, gW, bW, 0, translate,
+                0,  0,  0,  1, 0
             });
-            cm.postConcat(contrast);
         } else if (brain.contains("KODACHROME")) {
             ColorMatrix warmReversal = new ColorMatrix(new float[] {
-                1.14f,  0.02f, -0.04f, 0, -10f,
-               -0.02f,  1.05f, -0.01f, 0, -14f,
-               -0.05f, -0.02f,  0.88f, 0, -20f,
+                1.14f,  0.02f, -0.04f, 0, -6f,
+               -0.02f,  1.05f, -0.01f, 0, -8f,
+               -0.05f, -0.02f,  0.90f, 0, -12f,
                 0,      0,      0,     1,   0f
             });
             cm.postConcat(warmReversal);
         } else if (brain.contains("FUJI") || brain.contains("ETERNA")) {
             ColorMatrix fuji = new ColorMatrix(new float[] {
-                0.92f, -0.01f,  0.02f, 0, -4f,
-                0.00f,  0.96f,  0.02f, 0,  0f,
-                0.02f,  0.02f,  1.02f, 0,  4f,
+                0.93f, -0.01f,  0.02f, 0, -2f,
+                0.00f,  0.97f,  0.02f, 0,  2f,
+                0.02f,  0.02f,  1.02f, 0,  5f,
                 0,      0,      0,     1,  0f
             });
             cm.postConcat(fuji);
         } else if (brain.contains("BLEACH")) {
-            cm.setSaturation(0.35f);
+            cm.setSaturation(0.32f);
             ColorMatrix contrast = new ColorMatrix();
-            float scale = 1.26f;
-            float translate = (-0.42f * scale + 0.42f) * 255f - 14f;
+            float scale = 1.24f;
+            float translate = (-0.42f * scale + 0.42f) * 255f - 10f;
             contrast.set(new float[] {
-                scale, 0, 0, 0, translate,
+                scale, 0, 0, 0, translate - 2f,
                 0, scale, 0, 0, translate,
-                0, 0, scale, 0, translate,
+                0, 0, scale, 0, translate + 3f,
                 0, 0, 0, 1, 0
             });
             cm.postConcat(contrast);
         } else if (!AppSettings.BRAIN_NEUTRAL_RAW.equals(brain)) {
-            // LIKA / FILM: darker, warmer Kodak 500T filmic density with deeper shadows and rolled-off highlights
+            // LIKA / FILM: Kodak Vision3 500T filmic density with warm midtones and natural shadow gradation
             ColorMatrix film = new ColorMatrix(new float[] {
-                1.03f,  0.02f, -0.02f, 0, -14f,
-               -0.01f,  0.97f,  0.01f, 0, -16f,
-                0.02f,  0.03f,  0.90f, 0, -18f,
-                0,      0,      0,     1,   0f
+                1.04f,  0.02f, -0.02f, 0, -4f,
+               -0.01f,  0.99f,  0.01f, 0, -5f,
+                0.01f,  0.02f,  0.93f, 0, -7f,
+                0,      0,      0,     1,  0f
             });
             cm.postConcat(film);
         }
 
-        // Incorporate user developer adjustments (exposureEv, contrast, shadows, warmth, saturation) relative to defaults
+        // Incorporate user developer adjustments (exposureEv, contrast, shadows, warmth, saturation, manual Kelvin WB)
         float evDelta = look.exposureEv - (AppSettings.DEFAULT_EXPOSURE / 10f);
         float evScale = (float) Math.pow(2.0, evDelta * 0.45f);
         float contrastRatio = look.contrast / (AppSettings.DEFAULT_CONTRAST / 100f);
         float shadowDelta = look.shadows - (AppSettings.DEFAULT_SHADOWS / 100f);
         float warmthDelta = look.warmth;
+        if (look.whiteBalanceKelvin > 0 && !brain.startsWith("MONO")) {
+            warmthDelta += Math.max(-0.6f, Math.min(0.6f, (look.whiteBalanceKelvin - 5600f) / 3600f));
+        }
         float satRatio = look.saturation / (AppSettings.DEFAULT_SATURATION / 100f);
 
         if (Math.abs(satRatio - 1.0f) > 0.02f && !brain.startsWith("MONO")) {
@@ -4001,7 +4038,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         } else if (easy) {
             modeNote.setText("INTELLIGENT AUTO");
         } else {
-            modeNote.setText("MANUAL PHOTO");
+            modeNote.setText("MANUAL PHOTO · TAP HUD");
         }
     }
 
@@ -4043,8 +4080,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         boolean next = !current;
         AppSettings.prefs(this).edit().putBoolean(AppSettings.EASY_MODE, next).apply();
         updateEasyButton();
+        updateReadouts();
         showMessage(next ? "EASY P&S ON  ·  Smart film science & scene adaptive"
-                         : "CUSTOM PRO MODE  ·  Manual developer controls active");
+                         : "CUSTOM PRO MODE  ·  Tap SHUTTER / ISO / WB to adjust");
         if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && easyButton != null) {
             easyButton.performHapticFeedback(HapticFeedbackConstants.CONFIRM);
         }
@@ -4644,21 +4682,34 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (shutterValueText != null) {
             if (manual) {
                 shutterValueText.setText(AppSettings.get(this, AppSettings.MANUAL_SHUTTER, "1/120 sec").replace(" sec", ""));
+                shutterValueText.setTextColor(ACCENT);
             } else if (videoMode) {
                 String fps = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
                 shutterValueText.setText(fps.startsWith("24") ? "1/48 (180°)" : fps.startsWith("30") ? "1/60 (180°)" : "1/120 (180°)");
+                shutterValueText.setTextColor(0xfff0f1ea);
             } else {
                 shutterValueText.setText("AUTO");
+                shutterValueText.setTextColor(0xfff0f1ea);
             }
         }
-        if (isoValueText != null) isoValueText.setText(manual ? AppSettings.get(this, AppSettings.MANUAL_ISO, "ISO 100") : "AUTO");
-        int wb = AppSettings.getInt(this, AppSettings.WHITE_BALANCE, 0);
-        if (whiteBalanceValueText != null) whiteBalanceValueText.setText(wb <= 0 ? "AUTO" : wb + " K");
+        if (isoValueText != null) {
+            isoValueText.setText(manual ? AppSettings.get(this, AppSettings.MANUAL_ISO, "ISO 100") : "AUTO");
+            isoValueText.setTextColor(manual ? ACCENT : 0xfff0f1ea);
+        }
+        int wb = AppSettings.resolveWhiteBalanceKelvin(this);
+        if (whiteBalanceValueText != null) {
+            whiteBalanceValueText.setText(wb <= 0 ? "AUTO" : wb + " K");
+            whiteBalanceValueText.setTextColor(wb > 0 ? ACCENT : 0xfff0f1ea);
+        }
         updateTelemetryVisibility();
     }
 
     private void updateTelemetryVisibility() {
-        boolean showTelemetry = AppSettings.getBoolean(this, AppSettings.SHOW_TELEMETRY, false);
+        boolean easyMode = AppSettings.getBoolean(this, AppSettings.EASY_MODE, true);
+        boolean manualExp = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual");
+        int wb = AppSettings.resolveWhiteBalanceKelvin(this);
+        boolean showTelemetry = AppSettings.getBoolean(this, AppSettings.SHOW_TELEMETRY, false)
+                || !easyMode || manualExp || wb > 0;
         boolean activeVideo = videoRecording || videoStarting || switchingVideoCamera;
         if (telemetry != null) {
             telemetry.setVisibility(showTelemetry ? View.VISIBLE : View.GONE);
@@ -4669,6 +4720,151 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (outputModeText != null) {
             outputModeText.setVisibility(View.GONE);
         }
+    }
+
+    private void chooseShutterSpeed() {
+        String[] options = {
+                "Auto exposure",
+                "1/30 sec",
+                "1/60 sec",
+                "1/120 sec",
+                "1/240 sec",
+                "1/500 sec",
+                "1/1000 sec",
+                "1/2000 sec",
+                "1/4000 sec"
+        };
+        String[] subtitles = {
+                "Intelligent scene-adaptive shutter & ISO",
+                "Slow shutter · Handheld low-light limit",
+                "Standard indoor / 30fps 180° cinema shutter",
+                "Everyday walkaround · freezes casual motion",
+                "Street & portraits · crisp subject motion",
+                "Fast action & outdoor daylight",
+                "High-speed daylight action",
+                "Very bright sun · wide-aperture control",
+                "Maximum high-speed shutter freeze"
+        };
+        boolean isManual = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual");
+        String curShutter = AppSettings.get(this, AppSettings.MANUAL_SHUTTER, "1/120 sec");
+        int currentIndex = 0;
+        if (isManual) {
+            for (int i = 1; i < options.length; i++) {
+                if (options[i].equals(curShutter)) {
+                    currentIndex = i;
+                    break;
+                }
+            }
+        }
+        showBottomSheetSelector("SHUTTER SPEED", options, subtitles, currentIndex, index -> {
+            if (index == 0) {
+                AppSettings.prefs(this).edit().putString(AppSettings.EXPOSURE_MODE, "Auto exposure").apply();
+                showMessage("AUTO EXPOSURE ACTIVE");
+            } else {
+                if (!manualSupported) {
+                    showMessage("Manual sensor exposure not supported on this lens");
+                    return;
+                }
+                AppSettings.prefs(this).edit()
+                        .putString(AppSettings.EXPOSURE_MODE, "Manual exposure")
+                        .putString(AppSettings.MANUAL_SHUTTER, options[index])
+                        .apply();
+                showMessage("MANUAL SHUTTER · " + options[index].replace(" sec", "s"));
+            }
+            updateReadouts();
+            refreshPreviewRequest();
+        });
+    }
+
+    private void chooseManualIso() {
+        String[] options = {
+                "Auto ISO",
+                "ISO 50",
+                "ISO 100",
+                "ISO 200",
+                "ISO 400",
+                "ISO 800",
+                "ISO 1600",
+                "ISO 3200"
+        };
+        String[] subtitles = {
+                "Automatic sensor gain & exposure",
+                "Base lowest gain · maximum dynamic range",
+                "Daylight fine grain baseline",
+                "Bright overcast & shaded daylight",
+                "Classic Tri-X / Portra 400 speed",
+                "Tungsten indoor & evening cinema",
+                "Low-light night street",
+                "Pushed high-sensitivity night"
+        };
+        boolean isManual = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual");
+        String curIso = AppSettings.get(this, AppSettings.MANUAL_ISO, "ISO 100");
+        int currentIndex = 0;
+        if (isManual) {
+            for (int i = 1; i < options.length; i++) {
+                if (options[i].equals(curIso)) {
+                    currentIndex = i;
+                    break;
+                }
+            }
+        }
+        showBottomSheetSelector("SENSOR ISO SENSITIVITY", options, subtitles, currentIndex, index -> {
+            if (index == 0) {
+                AppSettings.prefs(this).edit().putString(AppSettings.EXPOSURE_MODE, "Auto exposure").apply();
+                showMessage("AUTO ISO & EXPOSURE ACTIVE");
+            } else {
+                if (!manualSupported) {
+                    showMessage("Manual sensor ISO not supported on this lens");
+                    return;
+                }
+                AppSettings.prefs(this).edit()
+                        .putString(AppSettings.EXPOSURE_MODE, "Manual exposure")
+                        .putString(AppSettings.MANUAL_ISO, options[index])
+                        .apply();
+                showMessage("MANUAL " + options[index]);
+            }
+            updateReadouts();
+            refreshPreviewRequest();
+        });
+    }
+
+    private void chooseWhiteBalance() {
+        String[] options = {
+                "Auto · as shot",
+                "2800 K · incandescent",
+                "3200 K · tungsten",
+                "4000 K · warm LED",
+                "5000 K · direct sun",
+                "5600 K · daylight",
+                "6500 K · overcast",
+                "7500 K · open shade"
+        };
+        int[] kelvins = {0, 2800, 3200, 4000, 5000, 5600, 6500, 7500};
+        String[] subtitles = {
+                "Uses sensor neutral point & illuminant adaptation",
+                "Warm household filament bulbs",
+                "Kodak Vision3 500T native tungsten balance",
+                "Indoor fluorescent & warm studio LED",
+                "Clean noon sun",
+                "Standard 5600K daylight film balance",
+                "Cloudy sky · adds pleasing golden warmth",
+                "Deep blue shade · maximum amber correction"
+        };
+        int currentWb = AppSettings.resolveWhiteBalanceKelvin(this);
+        int currentIndex = 0;
+        for (int i = 1; i < kelvins.length; i++) {
+            if (Math.abs(currentWb - kelvins[i]) <= 250) {
+                currentIndex = i;
+                break;
+            }
+        }
+        showBottomSheetSelector("WHITE BALANCE", options, subtitles, currentIndex, index -> {
+            int chosenKelvin = kelvins[index];
+            AppSettings.setWhiteBalanceKelvin(this, chosenKelvin);
+            updateReadouts();
+            applyLiveFilmPreview();
+            showMessage(chosenKelvin == 0 ? "WHITE BALANCE · AUTO" : "WHITE BALANCE · " + chosenKelvin + " K");
+        });
     }
 
     private void configureTransform(int viewWidth, int viewHeight) {

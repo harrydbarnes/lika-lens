@@ -50,11 +50,12 @@ final class RawDeveloper {
         String frameBorder = "None";
         String lutName = "None";
         float lutIntensity = 1.0f;
+        String colorSpace = "sRGB · Standard Display";
 
         static Look fromPreferences(Context context) {
             Look look = new Look();
             look.brain = AppSettings.brain(context);
-            look.whiteBalanceKelvin = AppSettings.getInt(context, AppSettings.WHITE_BALANCE, 0);
+            look.whiteBalanceKelvin = AppSettings.resolveWhiteBalanceKelvin(context);
             look.exposureEv = AppSettings.getInt(context, AppSettings.EXPOSURE, AppSettings.DEFAULT_EXPOSURE) / 10f;
             look.warmth = (AppSettings.getInt(context, AppSettings.WARMTH, AppSettings.DEFAULT_WARMTH) - 50) / 50f;
             look.contrast = AppSettings.getInt(context, AppSettings.CONTRAST, AppSettings.DEFAULT_CONTRAST) / 100f;
@@ -81,6 +82,7 @@ final class RawDeveloper {
             look.frameBorder = AppSettings.get(context, AppSettings.FRAME_BORDER, "None");
             look.lutName = AppSettings.get(context, AppSettings.LUT_NAME, "None");
             look.lutIntensity = AppSettings.getInt(context, AppSettings.LUT_INTENSITY, AppSettings.DEFAULT_LUT_INTENSITY) / 100f;
+            look.colorSpace = AppSettings.get(context, AppSettings.COLOR_SPACE, "sRGB · Standard Display");
             return look;
         }
 
@@ -105,6 +107,7 @@ final class RawDeveloper {
             c.frameBorder = frameBorder;
             c.lutName = lutName;
             c.lutIntensity = lutIntensity;
+            c.colorSpace = colorSpace;
             return c;
         }
 
@@ -140,6 +143,7 @@ final class RawDeveloper {
                 o.put("frameBorder", frameBorder);
                 o.put("lutName", lutName != null ? lutName : "None");
                 o.put("lutIntensity", (double) lutIntensity);
+                if (colorSpace != null) o.put("colorSpace", colorSpace);
                 return o.toString();
             } catch (JSONException e) {
                 return null;
@@ -180,6 +184,7 @@ final class RawDeveloper {
                 if (o.has("frameBorder")) look.frameBorder = o.getString("frameBorder");
                 if (o.has("lutName")) look.lutName = o.getString("lutName");
                 if (o.has("lutIntensity")) look.lutIntensity = (float) o.getDouble("lutIntensity");
+                if (o.has("colorSpace")) look.colorSpace = o.getString("colorSpace");
                 return look;
             } catch (JSONException e) {
                 return null;
@@ -187,9 +192,185 @@ final class RawDeveloper {
         }
     }
 
+    private static final int BRAIN_ID_LIKA_FILM = 0;
+    private static final int BRAIN_ID_KODACHROME = 1;
+    private static final int BRAIN_ID_FUJI_ETERNA = 2;
+    private static final int BRAIN_ID_BLEACH = 3;
+    private static final int BRAIN_ID_MONO = 4;
+    private static final int BRAIN_ID_NEUTRAL = 5;
+
+    private static final int CURVE_FILMIC = 0;
+    private static final int CURVE_LINEAR = 1;
+    private static final int CURVE_LOG = 2;
+
+    private static final int HL_ADAPTIVE = 0;
+    private static final int HL_SUBTRACTIVE = 1;
+    private static final int HL_HARD = 2;
+
+    private static final float INV_LOG1P_7 = 1.0f / (float) Math.log1p(7.0);
+
+    /** Precomputed frame-invariant look constants to eliminate per-pixel String checks and redundant math. */
+    static final class PreparedLook {
+        final Look look;
+        final int brainId;
+        final int curveId;
+        final int hlRecId;
+        final boolean liftedShadows;
+        final float safePivot;
+        final float safeContrast;
+        final float toeContrast;
+        final float logPivot;
+        final float invSafeLogPivot;
+        final float logContrast;
+        final float shadowDepth;
+        final float knee;
+        final float shoulderFactor;
+        final float satBase;
+        final float rollOff;
+        final float rollOffSlope;
+        final boolean applySkinProtection;
+        final boolean applySmartVibrance;
+        final float ambientWarmthFactor;
+        final boolean fluorescentSpike;
+        final float grainAmount;
+        final int grainScale;
+        final int coarseDiv;
+        final float fineWeight;
+        final float coarseWeight;
+        final boolean uniformGrain;
+        final LutManager.Lut3D lut;
+        final float lutIntensity;
+
+        PreparedLook(Look look, RawArchive.Frame frame, LutManager.Lut3D lut) {
+            this.look = look != null ? look : new Look();
+            String brain = this.look.brain == null ? "LIKA / FILM" : this.look.brain;
+            if (brain.startsWith("MONO")) {
+                this.brainId = BRAIN_ID_MONO;
+            } else if (brain.startsWith("KODACHROME")) {
+                this.brainId = BRAIN_ID_KODACHROME;
+            } else if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
+                this.brainId = BRAIN_ID_FUJI_ETERNA;
+            } else if (brain.startsWith("BLEACH")) {
+                this.brainId = BRAIN_ID_BLEACH;
+            } else if (brain.startsWith("NEUTRAL")) {
+                this.brainId = BRAIN_ID_NEUTRAL;
+            } else {
+                this.brainId = BRAIN_ID_LIKA_FILM;
+            }
+
+            float effectiveContrast = this.look.contrast;
+            float effectivePivot = this.look.pivot;
+            if (this.brainId == BRAIN_ID_KODACHROME) {
+                effectiveContrast = this.look.contrast * 1.14f;
+                effectivePivot = Math.max(0.12f, this.look.pivot * 0.90f);
+            } else if (this.brainId == BRAIN_ID_FUJI_ETERNA) {
+                effectiveContrast = this.look.contrast * 0.90f;
+                effectivePivot = this.look.pivot * 1.05f;
+            } else if (this.brainId == BRAIN_ID_BLEACH) {
+                effectiveContrast = this.look.contrast * 1.30f;
+                effectivePivot = 0.22f;
+            }
+            this.safePivot = clamp(effectivePivot, 0.02f, 0.85f);
+            this.safeContrast = clamp(effectiveContrast, 0.35f, 2.50f);
+            this.toeContrast = this.look.easyMode ? Math.min(this.safeContrast, 0.94f) : this.safeContrast;
+
+            String curve = this.look.toneCurve == null ? "Filmic S-Curve" : this.look.toneCurve;
+            if (curve.startsWith("Linear")) {
+                this.curveId = CURVE_LINEAR;
+            } else if (curve.startsWith("Log")) {
+                this.curveId = CURVE_LOG;
+            } else {
+                this.curveId = CURVE_FILMIC;
+            }
+            this.logPivot = (float) Math.log1p(this.safePivot * 7.0f) * INV_LOG1P_7;
+            this.invSafeLogPivot = 1.0f / Math.max(0.01f, this.logPivot);
+            this.logContrast = this.safeContrast * 0.78f;
+
+            String shadowProf = this.look.shadowProfile == null ? "Deep Cinema Blacks" : this.look.shadowProfile;
+            float sDepth = clamp(this.look.shadows, 0f, 1f);
+            if (shadowProf.startsWith("Lifted") || this.brainId == BRAIN_ID_FUJI_ETERNA) {
+                this.liftedShadows = true;
+                sDepth *= 0.65f;
+            } else {
+                this.liftedShadows = false;
+                if (shadowProf.startsWith("Neutral")) {
+                    sDepth *= 0.85f;
+                } else if (this.brainId == BRAIN_ID_KODACHROME || this.brainId == BRAIN_ID_BLEACH) {
+                    sDepth = Math.min(1.2f, sDepth * 1.22f);
+                }
+            }
+            this.shadowDepth = sDepth;
+
+            float shoulder = clamp(this.look.highlights, 0f, 1f);
+            if (this.look.easyMode && shoulder < 0.65f) {
+                shoulder = 0.65f;
+            }
+            this.knee = this.look.easyMode ? 0.52f : 0.68f;
+            this.shoulderFactor = 1.6f + shoulder * 3.8f;
+
+            String hlRec = this.look.highlightRecovery == null ? "Adaptive blend" : this.look.highlightRecovery;
+            if (hlRec.startsWith("Hard")) {
+                this.hlRecId = HL_HARD;
+            } else if (hlRec.startsWith("Subtractive") || this.look.easyMode) {
+                this.hlRecId = HL_SUBTRACTIVE;
+            } else {
+                this.hlRecId = HL_ADAPTIVE;
+            }
+
+            float sb = this.look.saturation;
+            if (this.brainId == BRAIN_ID_BLEACH) {
+                sb *= 0.32f;
+            } else if (this.brainId == BRAIN_ID_KODACHROME) {
+                sb *= 1.16f;
+            } else if (this.brainId == BRAIN_ID_FUJI_ETERNA) {
+                sb *= 0.88f;
+            }
+            this.satBase = sb;
+
+            this.rollOff = clamp(this.look.colorRollOff, 0f, 1f);
+            this.rollOffSlope = 2f + this.rollOff * 5.5f;
+            this.applySkinProtection = this.look.skinProtection || this.look.easyMode;
+            this.applySmartVibrance = this.look.smartVibrance || this.look.easyMode;
+
+            float ambWarmth = 1.0f;
+            boolean fluo = false;
+            if (this.look.whiteBalanceKelvin > 0 && this.look.whiteBalanceKelvin < 4000) {
+                ambWarmth = clamp(0.5f + 0.5f * (this.look.whiteBalanceKelvin - 2800f) / 1200f, 0.35f, 1.0f);
+            } else if (frame != null && frame.wbGains != null && frame.wbGains.length >= 4) {
+                float greenGain = (frame.wbGains[1] + frame.wbGains[2]) * .5f;
+                if (greenGain > 1.35f * frame.wbGains[0] && greenGain > 1.35f * frame.wbGains[3]) {
+                    fluo = true;
+                    ambWarmth = this.look.easyMode ? 0.50f : 0.65f;
+                }
+            }
+            this.ambientWarmthFactor = ambWarmth;
+            this.fluorescentSpike = fluo;
+
+            float gAmt = clamp(this.look.grain, 0f, 1f);
+            if (this.look.easyMode && frame != null && frame.sensitivityIso > 0) {
+                if (frame.sensitivityIso < 100) {
+                    gAmt *= 0.75f;
+                } else if (frame.sensitivityIso > 800) {
+                    gAmt *= 0.65f;
+                }
+            }
+            this.grainAmount = gAmt;
+            String gStruct = this.look.grainStructure == null ? "Fine · 35 mm" : this.look.grainStructure;
+            this.grainScale = gStruct.startsWith("Coarse") ? 5 : gStruct.startsWith("Soft") ? 2 : 1;
+            this.coarseDiv = this.grainScale * 3;
+            this.fineWeight = this.grainScale == 1 ? .72f : .40f;
+            this.coarseWeight = this.grainScale == 1 ? .28f : .60f;
+            String gResp = this.look.grainResponse == null ? "Luminance-weighted" : this.look.grainResponse;
+            this.uniformGrain = gResp.startsWith("Uniform");
+            this.lut = lut;
+            this.lutIntensity = this.look.lutIntensity;
+        }
+    }
+
     /** maxDimension=0 renders at the sensor's available resolution, within the safety pixel budget. */
     static Bitmap develop(RawArchive.Frame frame, Look look, int maxDimension) {
         if (frame == null || (frame.rawSamples == null && frame.captureBuffer == null)) return null;
+        if (look == null) look = new Look();
         int width = frame.width, height = frame.height;
         int orientation = normalizeOrientation(frame.orientation);
         int displayWidth = orientation == 90 || orientation == 270 ? height : width;
@@ -231,13 +412,20 @@ final class RawDeveloper {
         int seed = frame.key == null ? width * 31 + height : frame.key.hashCode();
         LutManager.Lut3D lut = (look.lutName != null && !look.lutName.equals("None") && look.lutIntensity > 0.001f)
                 ? LutManager.get(look.lutName) : null;
+        final PreparedLook prep = new PreparedLook(look, frame, lut);
+        final boolean hasCct = frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9;
+        final float[] cct = frame.colorCorrectionTransform;
+        final boolean flipH = look.flipHorizontal;
+        final float vigAmount = look.vignette;
 
         java.util.stream.IntStream.range(0, outH).parallel().forEach(oy -> {
             float dy = Math.min(crop[1] + cropHeight - .5f,
                     crop[1] + (oy + .5f) * cropHeight / outH);
             int rowOffset = oy * outW;
+            float ny = outH <= 1 ? 0f : oy / (float) (outH - 1) * 2f - 1f;
+            float nySq = ny * ny;
             for (int ox = 0; ox < outW; ox++) {
-                float effectiveOx = look.flipHorizontal ? (outW - 1 - ox) : ox;
+                float effectiveOx = flipH ? (outW - 1 - ox) : ox;
                 float dx = Math.min(crop[0] + cropWidth - .5f,
                         crop[0] + (effectiveOx + .5f) * cropWidth / outW);
                 int sx, sy;
@@ -258,14 +446,12 @@ final class RawDeveloper {
                     g *= 1f + ((lsm[1] + lsm[2]) * 0.5f - 1f) * lsmWeight;
                     b *= 1f + (lsm[3] - 1f) * lsmWeight;
                 }
-                r *= gains[0];
-                g *= (gains[1] + gains[2]) * .5f;
-                b *= gains[3];
-                r *= exposureScale; g *= exposureScale; b *= exposureScale;
+                r *= gains[0] * exposureScale;
+                g *= (gains[1] + gains[2]) * .5f * exposureScale;
+                b *= gains[3] * exposureScale;
 
                 float lr, lg, lb;
-                if (look.whiteBalanceKelvin <= 0 && frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9) {
-                    float[] cct = frame.colorCorrectionTransform;
+                if (hasCct) {
                     lr = cct[0] * r + cct[1] * g + cct[2] * b;
                     lg = cct[3] * r + cct[4] * g + cct[5] * b;
                     lb = cct[6] * r + cct[7] * g + cct[8] * b;
@@ -278,11 +464,10 @@ final class RawDeveloper {
                     lg = -.9785f * x + 1.9160f * y + .0333f * z;
                     lb = .0720f * x - .2290f * y + 1.4057f * z;
                 }
-                int color = renderLook(lr, lg, lb, look, ox, oy, seed, frame, lut);
-                if (look.vignette > 0f) {
+                int color = renderPreparedLook(lr, lg, lb, prep, ox, oy, seed);
+                if (vigAmount > 0f) {
                     float nx = outW <= 1 ? 0f : ox / (float) (outW - 1) * 2f - 1f;
-                    float ny = outH <= 1 ? 0f : oy / (float) (outH - 1) * 2f - 1f;
-                    float falloff = Math.max(.72f, 1f - look.vignette * .18f * (nx * nx + ny * ny));
+                    float falloff = Math.max(.72f, 1f - vigAmount * .18f * (nx * nx + nySq));
                     color = scaleColor(color, falloff);
                 }
                 allPixels[rowOffset + ox] = color;
@@ -297,11 +482,27 @@ final class RawDeveloper {
         if (look.halation > 0f) applyHalation(allPixels, outW, outH, look.halation, aspect);
         if (look.sharpening > 0f) applySharpen(allPixels, outW, outH, Math.min(.14f, look.sharpening * .14f));
 
-        Bitmap bitmap = Bitmap.createBitmap(allPixels, outW, outH, Bitmap.Config.ARGB_8888);
+        Bitmap bitmap = createColorSpaceAwareBitmap(allPixels, outW, outH, look.colorSpace);
         if (look.frameBorder != null && !look.frameBorder.startsWith("None")) {
             bitmap = applyFrameBorder(bitmap, look, frame);
         }
         return bitmap;
+    }
+
+    private static Bitmap createColorSpaceAwareBitmap(int[] pixels, int w, int h, String colorSpace) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O
+                && colorSpace != null && colorSpace.contains("Display P3")) {
+            try {
+                android.graphics.ColorSpace p3 = android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.DISPLAY_P3);
+                if (p3 != null) {
+                    Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888, false, p3);
+                    bmp.setPixels(pixels, 0, w, 0, 0, w, h);
+                    return bmp;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888);
     }
 
     /** JPEG fallback keeps the file usable, but cannot undo the phone's baked image processing. */
@@ -347,20 +548,25 @@ final class RawDeveloper {
 
         LutManager.Lut3D lut = (look.lutName != null && !look.lutName.equals("None") && look.lutIntensity > 0.001f)
                 ? LutManager.get(look.lutName) : null;
-        final Look finalLook = look;
+        final PreparedLook prep = new PreparedLook(look, null, lut);
+        final boolean flipH = look.flipHorizontal;
+        final float vigAmount = look.vignette;
+        final int[] srcPixels = flipH ? pixels.clone() : pixels;
+
         java.util.stream.IntStream.range(0, h).parallel().forEach(y -> {
             int rowOffset = y * w;
+            float ny = h <= 1 ? 0f : y / (float) (h - 1) * 2f - 1f;
+            float nySq = ny * ny;
             for (int x = 0; x < w; x++) {
-                int srcX = finalLook.flipHorizontal ? (w - 1 - x) : x;
-                int c = pixels[rowOffset + srcX];
+                int srcX = flipH ? (w - 1 - x) : x;
+                int c = srcPixels[rowOffset + srcX];
                 float r = srgbToLinear(((c >> 16) & 0xFF) / 255f) * exposureScale * wbShift;
                 float g = srgbToLinear(((c >> 8) & 0xFF) / 255f) * exposureScale;
                 float b = srgbToLinear((c & 0xFF) / 255f) * exposureScale / wbShift;
-                int rendered = renderLook(r, g, b, finalLook, x, y, 0x53434f50, null, lut);
-                if (finalLook.vignette > 0f) {
+                int rendered = renderPreparedLook(r, g, b, prep, x, y, 0x53434f50);
+                if (vigAmount > 0f) {
                     float nx = w <= 1 ? 0f : x / (float) (w - 1) * 2f - 1f;
-                    float ny = h <= 1 ? 0f : y / (float) (h - 1) * 2f - 1f;
-                    float falloff = Math.max(.72f, 1f - finalLook.vignette * .18f * (nx * nx + ny * ny));
+                    float falloff = Math.max(.72f, 1f - vigAmount * .18f * (nx * nx + nySq));
                     rendered = scaleColor(rendered, falloff);
                 }
                 pixels[rowOffset + x] = rendered;
@@ -373,7 +579,7 @@ final class RawDeveloper {
         if (look.halation > 0f) applyHalation(pixels, w, h, look.halation, look.aspectRatio);
         if (look.sharpening > 0f) applySharpen(pixels, w, h, Math.min(.14f, look.sharpening * .14f));
 
-        Bitmap result = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888);
+        Bitmap result = createColorSpaceAwareBitmap(pixels, w, h, look.colorSpace);
         if (look.frameBorder != null && !look.frameBorder.startsWith("None")) {
             result = applyFrameBorder(result, look, null);
         }
@@ -613,6 +819,8 @@ final class RawDeveloper {
         float[] allLuma = new float[gridX * gridY * 3];
         float[] midLuma = new float[gridX * gridY * 3];
         int allCount = 0, midCount = 0;
+        boolean hasCct = frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9;
+        float[] cct = frame.colorCorrectionTransform;
 
         for (int gy = 0; gy < gridY; gy++) {
             float dy = Math.min(cropY + cropH - .5f, cropY + (gy + .5f) * cropH / gridY);
@@ -644,8 +852,7 @@ final class RawDeveloper {
                 b *= gains[3] * boostScale;
 
                 float lr, lg, lb;
-                if (look.whiteBalanceKelvin <= 0 && frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9) {
-                    float[] cct = frame.colorCorrectionTransform;
+                if (hasCct) {
                     lr = cct[0] * r + cct[1] * g + cct[2] * b;
                     lg = cct[3] * r + cct[4] * g + cct[5] * b;
                     lb = cct[6] * r + cct[7] * g + cct[8] * b;
@@ -691,70 +898,48 @@ final class RawDeveloper {
     }
 
     static int renderLook(float r, float g, float b, Look look, int x, int y, int seed, RawArchive.Frame frame, LutManager.Lut3D lut) {
-        String brain = look.brain == null ? "LIKA / FILM" : look.brain;
+        return renderPreparedLook(r, g, b, new PreparedLook(look, frame, lut), x, y, seed);
+    }
 
+    static int renderPreparedLook(float r, float g, float b, PreparedLook prep, int x, int y, int seed) {
         // Clamp negative off-diagonal matrix excursions before computing luminance so near-black
         // read noise never produces an artificially tiny denominator in `contrasted / oldY`.
         r = Math.max(0f, r);
         g = Math.max(0f, g);
         b = Math.max(0f, b);
 
-        if (brain.startsWith("MONO")) {
-            float luma = .2126f * r + .7152f * g + .0722f * b;
+        final int brainId = prep.brainId;
+        if (brainId == BRAIN_ID_MONO) {
+            // Panchromatic silver halide spectral response (Kodak Tri-X 400):
+            // Elevated red/orange sensitivity renders skin tones smooth and luminous while
+            // deepening blue skies for natural cloud separation.
+            float luma = .3300f * r + .5900f * g + .0800f * b;
             r = g = b = luma;
         }
 
         float oldY = Math.max(.0001f, .2126f * r + .7152f * g + .0722f * b);
 
-        float effectiveContrast = look.contrast;
-        float effectivePivot = look.pivot;
-        if (brain.startsWith("KODACHROME")) {
-            effectiveContrast = look.contrast * 1.14f;
-            effectivePivot = Math.max(0.12f, look.pivot * 0.90f);
-        } else if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
-            effectiveContrast = look.contrast * 0.90f;
-            effectivePivot = look.pivot * 1.05f;
-        } else if (brain.startsWith("BLEACH")) {
-            effectiveContrast = look.contrast * 1.30f;
-            effectivePivot = 0.22f;
-        }
-
         float contrasted;
-        float safePivot = clamp(effectivePivot, 0.02f, 0.85f);
-        float safeContrast = clamp(effectiveContrast, 0.35f, 2.50f);
-        String curve = look.toneCurve == null ? "Filmic S-Curve" : look.toneCurve;
-        if (curve.startsWith("Linear")) {
+        if (prep.curveId == CURVE_LINEAR) {
             contrasted = oldY;
-        } else if (curve.startsWith("Log")) {
-            float logY = (float) Math.log1p(oldY * 7.0f) / (float) Math.log1p(7.0f);
-            float logPivot = (float) Math.log1p(safePivot * 7.0f) / (float) Math.log1p(7.0f);
-            contrasted = logY <= 0f ? 0f : logPivot * (float) Math.pow(logY / Math.max(0.01f, logPivot), safeContrast * 0.78f);
-        } else { // Filmic S-Curve: power-law toe around pivot preserves shadow gradation down to true black without exploding read noise
-            float toeContrast = (look.easyMode && oldY < safePivot) ? Math.min(safeContrast, 0.94f) : safeContrast;
-            contrasted = oldY <= 0f ? 0f : safePivot * (float) Math.pow(oldY / safePivot, toeContrast);
+        } else if (prep.curveId == CURVE_LOG) {
+            float logY = (float) Math.log1p(oldY * 7.0f) * INV_LOG1P_7;
+            contrasted = logY <= 0f ? 0f : prep.logPivot * (float) Math.pow(logY * prep.invSafeLogPivot, prep.logContrast);
+        } else {
+            // Filmic S-Curve: power-law toe around pivot preserves shadow gradation down to true black without exploding read noise
+            float gamma = oldY < prep.safePivot ? prep.toeContrast : prep.safeContrast;
+            contrasted = oldY <= 0f ? 0f : prep.safePivot * (float) Math.pow(oldY / prep.safePivot, gamma);
         }
 
         float shadowWeight = 1f - smoothstep(.02f, .44f, contrasted);
-        float shadowDepth = clamp(look.shadows, 0f, 1f);
-        String shadowProf = look.shadowProfile == null ? "Deep Cinema Blacks" : look.shadowProfile;
-        if (shadowProf.startsWith("Lifted") || brain.startsWith("FUJI") || brain.contains("ETERNA")) {
-            shadowDepth *= 0.65f;
+        if (prep.liftedShadows) {
             contrasted = Math.max(0.012f * smoothstep(0.002f, 0.025f, oldY), contrasted);
-        } else if (shadowProf.startsWith("Neutral")) {
-            shadowDepth *= 0.85f;
-        } else if (brain.startsWith("KODACHROME") || brain.startsWith("BLEACH")) {
-            shadowDepth = Math.min(1.2f, shadowDepth * 1.22f);
         }
-        contrasted *= 1f - shadowDepth * .22f * shadowWeight;
+        contrasted *= 1f - prep.shadowDepth * .22f * shadowWeight;
 
-        float shoulder = clamp(look.highlights, 0f, 1f);
-        if (look.easyMode && shoulder < 0.65f) {
-            shoulder = 0.65f;
-        }
-        float knee = look.easyMode ? 0.52f : 0.68f;
-        if (contrasted > knee) {
-            float excess = contrasted - knee;
-            contrasted = knee + excess / (1f + excess * (1.6f + shoulder * 3.8f));
+        if (contrasted > prep.knee) {
+            float excess = contrasted - prep.knee;
+            contrasted = prep.knee + excess / (1f + excess * prep.shoulderFactor);
         }
         float ratio = Math.min(4.0f, contrasted / oldY);
         r *= ratio; g *= ratio; b *= ratio;
@@ -769,48 +954,41 @@ final class RawDeveloper {
         float highlightWeight = smoothstep(.62f, 1f, lightness);
         shadowWeight = 1f - smoothstep(.12f, .50f, lightness);
 
-        float highlightDesat = 1f - .35f * smoothstep(.70f, 1.0f, lightness);
-        String hlRec = look.highlightRecovery == null ? "Adaptive blend" : look.highlightRecovery;
-        if (hlRec.startsWith("Subtractive") || (look.easyMode && !hlRec.startsWith("Hard"))) {
+        float highlightDesat;
+        if (prep.hlRecId == HL_SUBTRACTIVE) {
             highlightDesat = 1f - .48f * smoothstep(.60f, 0.98f, lightness);
-        } else if (hlRec.startsWith("Hard")) {
+        } else if (prep.hlRecId == HL_HARD) {
             highlightDesat = 1.0f;
+        } else {
+            highlightDesat = 1f - .35f * smoothstep(.70f, 1.0f, lightness);
         }
 
-        float satBase = look.saturation;
-        if (brain.startsWith("BLEACH")) {
-            satBase *= 0.32f;
-        } else if (brain.startsWith("KODACHROME")) {
-            satBase *= 1.16f;
-        } else if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
-            satBase *= 0.88f;
-        }
+        float satBase = prep.satBase;
+        float rawChromaSq = a * a + bb * bb;
+        float rawChroma = rawChromaSq > 1e-8f ? (float) Math.sqrt(rawChromaSq) : 0f;
 
         // Detect skin tone hue angle in Oklab:
-        // theta = atan2(bb, a). Skin tones cluster between ~0.45 and ~1.35 radians (~26° to 77°), centering around 0.88 rad (~50°).
-        float rawChroma = (float) Math.sqrt(a * a + bb * bb);
+        // theta = atan2(bb, a). Skin tones cluster between ~0.45 and ~1.35 radians (~26° to 77°),
+        // which lies strictly in Quadrant I (a > 0 && bb > 0) with tan(0.45)=0.483 <= bb/a <= tan(1.35)=4.455.
         float skinFactor = 0f;
-        if (rawChroma > 0.015f) {
-            float hueAngle = (float) Math.atan2(bb, a);
-            if (hueAngle < 0f) hueAngle += (float) (2.0 * Math.PI);
-            if (hueAngle >= 0.45f && hueAngle <= 1.35f) {
+        if (rawChroma > 0.015f && a > 0f && bb > 0f) {
+            float ratioBA = bb / a;
+            if (ratioBA >= 0.483f && ratioBA <= 4.455f) {
+                float hueAngle = (float) Math.atan2(bb, a);
                 float d = Math.abs(hueAngle - 0.88f);
                 skinFactor = smoothstep(0.45f, 0.05f, d);
             }
         }
 
-        boolean applySkinProtection = look.skinProtection || look.easyMode;
-        boolean applySmartVibrance = look.smartVibrance || look.easyMode;
-
         float vibranceBoost = 1.0f;
-        if (applySmartVibrance && !brain.startsWith("MONO") && !brain.startsWith("BLEACH")) {
+        if (prep.applySmartVibrance && brainId != BRAIN_ID_MONO && brainId != BRAIN_ID_BLEACH) {
             // Boost low to medium chroma tones (everyday subjects: food, clothing, nature, foliage)
             // Non-linear boost that tapers off for already saturated tones and protects skin
             float vibranceWeight = (1.0f - skinFactor * 0.85f) * (1.0f - smoothstep(0.12f, 0.35f, rawChroma));
             vibranceBoost += 0.26f * vibranceWeight;
         }
 
-        if (applySkinProtection && skinFactor > 0.05f) {
+        if (prep.applySkinProtection && skinFactor > 0.05f) {
             // Keep skin saturation in an optimal, flattering corridor (avoiding sunburn or overly flushed skin)
             float maxSkinChroma = 0.145f;
             if (rawChroma * satBase > maxSkinChroma) {
@@ -824,59 +1002,76 @@ final class RawDeveloper {
         float chromaScale = clamp(satBase * vibranceBoost, 0f, 1.8f) * (1f - .13f * highlightWeight) * highlightDesat * shadowNoiseGate;
         a *= chromaScale;
         bb *= chromaScale;
-        float chroma = (float) Math.sqrt(a * a + bb * bb);
-        float rollOff = clamp(look.colorRollOff, 0f, 1f);
-        if (rollOff > 0f && chroma > .13f) {
+        float chroma = rawChroma * chromaScale;
+        if (prep.rollOff > 0f && chroma > .13f) {
             float excess = chroma - .13f;
-            float compressed = .13f + excess / (1f + excess * (2f + rollOff * 5.5f));
+            float compressed = .13f + excess / (1f + excess * prep.rollOffSlope);
             float scale = compressed / chroma;
             a *= scale;
             bb *= scale;
         }
 
-        if (!brain.startsWith("MONO")) {
-            float ambientWarmthFactor = 1.0f;
-            boolean fluorescentSpike = false;
-            if (look.whiteBalanceKelvin > 0 && look.whiteBalanceKelvin < 4000) {
-                ambientWarmthFactor = clamp(0.5f + 0.5f * (look.whiteBalanceKelvin - 2800f) / 1200f, 0.35f, 1.0f);
-            } else if (frame != null && frame.wbGains != null && frame.wbGains.length >= 4) {
-                float greenGain = (frame.wbGains[1] + frame.wbGains[2]) * .5f;
-                if (greenGain > 1.35f * frame.wbGains[0] && greenGain > 1.35f * frame.wbGains[3]) {
-                    fluorescentSpike = true;
-                    ambientWarmthFactor = look.easyMode ? 0.50f : 0.65f;
-                }
+        float warmthGate = smoothstep(0.03f, 0.16f, lightness);
+        if (brainId == BRAIN_ID_MONO) {
+            // Allow subtle warm-selenium / cool-silver paper toning on MONO / SILVER when warmth slider is shifted
+            if (Math.abs(prep.look.warmth) > 0.01f) {
+                float silverTone = clamp(prep.look.warmth, -1f, 1f) * warmthGate * (1f - 0.35f * highlightWeight);
+                a += silverTone * 0.004f;
+                bb += silverTone * 0.010f;
             }
-
+        } else {
             // Attenuate synthetic film warmth when the pixel is already warm (e.g. tungsten lighting / warm skin)
             // so we don't crush the blue/green channels in Oklab -> sRGB conversion.
             float alreadyWarmAtten = 1.0f - 0.72f * smoothstep(0.025f, 0.105f, bb);
-            float baseWarmth = brain.startsWith("NEUTRAL") ? 0f : (.42f * ambientWarmthFactor * alreadyWarmAtten);
-            if (brain.startsWith("KODACHROME")) {
-                baseWarmth = 0.48f * ambientWarmthFactor * alreadyWarmAtten;
-            } else if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
-                baseWarmth = 0.20f * ambientWarmthFactor * alreadyWarmAtten;
-            } else if (brain.startsWith("BLEACH")) {
+            float baseWarmth;
+            if (brainId == BRAIN_ID_NEUTRAL) {
+                baseWarmth = 0f;
+            } else if (brainId == BRAIN_ID_KODACHROME) {
+                baseWarmth = 0.48f * prep.ambientWarmthFactor * alreadyWarmAtten;
+            } else if (brainId == BRAIN_ID_FUJI_ETERNA) {
+                baseWarmth = 0.20f * prep.ambientWarmthFactor * alreadyWarmAtten;
+            } else if (brainId == BRAIN_ID_BLEACH) {
                 baseWarmth = 0.04f;
+            } else {
+                baseWarmth = 0.42f * prep.ambientWarmthFactor * alreadyWarmAtten;
             }
 
-            float warmthGate = smoothstep(0.03f, 0.16f, lightness);
-            float warmth = clamp(look.warmth + baseWarmth, -1f, 1f) * warmthGate;
+            float warmth = clamp(prep.look.warmth + baseWarmth, -1f, 1f) * warmthGate;
             a += warmth * (.005f + .003f * shadowWeight + .002f * highlightWeight);
             bb += warmth * (.012f + .005f * shadowWeight + .006f * highlightWeight);
 
             // Illuminant-Adaptive Neutralization in Easy Mode:
             // Neutralizes the yellow-green jaundiced tint under fluorescent lighting
-            if (look.easyMode && fluorescentSpike) {
+            if (prep.look.easyMode && prep.fluorescentSpike) {
                 a += 0.0035f * warmthGate;
                 bb -= 0.0070f * warmthGate;
             }
 
-            if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
+            // Authentic Film Stock Spectral Split-Toning & Hue Couplers:
+            if (brainId == BRAIN_ID_LIKA_FILM) {
+                // Kodak Vision3 500T: subtle tungsten-balanced cool-teal shadow undertow against warm midtones
+                bb -= 0.0035f * shadowWeight * warmthGate;
+            } else if (brainId == BRAIN_ID_KODACHROME) {
+                // Kodachrome 64: rich golden-red couplers in midtones and deep cobalt skies in blues
+                float midWeight = Math.max(0f, 1f - shadowWeight - highlightWeight);
+                a += 0.0035f * midWeight * warmthGate;
+                if (bb < -0.01f) {
+                    // Deepen cyan-blues slightly toward classic reversal cobalt
+                    a += (-bb) * 0.08f * warmthGate;
+                }
+            } else if (brainId == BRAIN_ID_FUJI_ETERNA) {
+                // Fuji Eterna 500T: signature celadon/cyan shadow split-tone and emerald foliage greens
                 bb -= 0.010f * shadowWeight * warmthGate;
                 a -= 0.005f * shadowWeight * warmthGate;
-            }
-            if (brain.startsWith("BLEACH")) {
-                bb -= 0.006f * shadowWeight * warmthGate;
+                if (a < -0.01f && bb > 0.01f) {
+                    // Rotate yellow-green foliage slightly toward Fuji celadon/emerald
+                    float greenStrength = Math.min(-a, bb);
+                    bb -= greenStrength * 0.16f;
+                }
+            } else if (brainId == BRAIN_ID_BLEACH) {
+                // ENR Bleach Bypass: steely cyan-slate shadows and cool metallic undertow
+                bb -= 0.007f * shadowWeight * warmthGate;
+                a -= 0.002f * shadowWeight * warmthGate;
             }
         }
         lightness = clamp(lightness, 0f, 1f);
@@ -899,31 +1094,21 @@ final class RawDeveloper {
             outB = -.00419609f*lp - .70341861f*mp + 1.70761470f*sp;
         }
 
-        float grainAmount = clamp(look.grain, 0f, 1f);
-        if (look.easyMode && frame != null && frame.sensitivityIso > 0) {
-            if (frame.sensitivityIso < 100) {
-                grainAmount *= 0.75f;
-            } else if (frame.sensitivityIso > 800) {
-                grainAmount *= 0.65f;
-            }
-        }
-        if (grainAmount > 0f) {
-            int grainScale = look.grainStructure.startsWith("Coarse") ? 5 : look.grainStructure.startsWith("Soft") ? 2 : 1;
+        if (prep.grainAmount > 0f) {
             float fine = hashNoise(x, y, seed);
-            float coarse = hashNoise(x / (grainScale * 3), y / (grainScale * 3), seed ^ 0x51ed270b);
+            float coarse = hashNoise(x / prep.coarseDiv, y / prep.coarseDiv, seed ^ 0x51ed270b);
             float shadowGrainGate = smoothstep(0.025f, 0.11f, lightness);
-            float texture = (fine * (grainScale == 1 ? .72f : .40f) + coarse * (grainScale == 1 ? .28f : .60f)) * grainAmount * .05f * shadowGrainGate;
-            String gResp = look.grainResponse == null ? "Luminance-weighted" : look.grainResponse;
-            if (!gResp.startsWith("Uniform")) {
+            float texture = (fine * prep.fineWeight + coarse * prep.coarseWeight) * prep.grainAmount * .05f * shadowGrainGate;
+            if (!prep.uniformGrain) {
                 texture *= .38f + .62f * 4f * lightness * (1f - lightness);
             }
             outR += texture; outG += texture; outB += texture;
         }
-        if (lut != null) {
+        if (prep.lut != null) {
             float sR = toSrgb(outR) / 255f;
             float sG = toSrgb(outG) / 255f;
             float sB = toSrgb(outB) / 255f;
-            return lut.applyToRgb(sR, sG, sB, look.lutIntensity);
+            return prep.lut.applyToRgb(sR, sG, sB, prep.lutIntensity);
         }
         return (0xFF << 24) | ((toSrgb(outR) & 0xFF) << 16) | ((toSrgb(outG) & 0xFF) << 8) | (toSrgb(outB) & 0xFF);
     }
@@ -1026,16 +1211,20 @@ final class RawDeveloper {
     }
 
     private static void blur(float[] src, float[] dst, int w, int h, boolean horizontal) {
-        int radius = 2;
-        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
-            float sum = 0f; int count = 0;
-            for (int d = -radius; d <= radius; d++) {
-                int sx = horizontal ? clampIndex(x + d, w) : x;
-                int sy = horizontal ? y : clampIndex(y + d, h);
-                sum += src[sy * w + sx]; count++;
+        final int radius = 2;
+        final float invCount = 1f / (2 * radius + 1);
+        java.util.stream.IntStream.range(0, h).parallel().forEach(y -> {
+            int rowOffset = y * w;
+            for (int x = 0; x < w; x++) {
+                float sum = 0f;
+                for (int d = -radius; d <= radius; d++) {
+                    int sx = horizontal ? clampIndex(x + d, w) : x;
+                    int sy = horizontal ? y : clampIndex(y + d, h);
+                    sum += src[sy * w + sx];
+                }
+                dst[rowOffset + x] = sum * invCount;
             }
-            dst[y * w + x] = sum / count;
-        }
+        });
     }
 
     private static void applySharpen(int[] pixels, int w, int h, float amount) {

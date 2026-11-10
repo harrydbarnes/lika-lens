@@ -73,26 +73,25 @@ public class LookRecipeControl {
         switch (type) {
             case TYPE_EXPOSURE: return 0;
             case TYPE_WHITE_BALANCE: return 0;
-            case TYPE_CONTRAST: return 100;
-            case TYPE_SATURATION: return 100;
-            case TYPE_HIGHLIGHTS: return 50;
-            case TYPE_SHADOWS: return 50;
-            case TYPE_GRAIN: return 0;
-            case TYPE_HALATION: return 0;
-            case TYPE_PIVOT: return 50;
-            case TYPE_SHARPENING: return 50;
-            case TYPE_CHROMA_NR: return 50;
-            case TYPE_VIGNETTE: return 0;
-            case TYPE_WARMTH: return 50;
-            case TYPE_COLOR_ROLL_OFF: return 50;
-            case TYPE_LUT_INTENSITY: return 100;
+            case TYPE_CONTRAST: return AppSettings.DEFAULT_CONTRAST;
+            case TYPE_SATURATION: return AppSettings.DEFAULT_SATURATION;
+            case TYPE_HIGHLIGHTS: return AppSettings.DEFAULT_HIGHLIGHTS;
+            case TYPE_SHADOWS: return AppSettings.DEFAULT_SHADOWS;
+            case TYPE_GRAIN: return AppSettings.DEFAULT_GRAIN;
+            case TYPE_HALATION: return AppSettings.DEFAULT_HALATION;
+            case TYPE_PIVOT: return AppSettings.DEFAULT_PIVOT;
+            case TYPE_SHARPENING: return AppSettings.DEFAULT_SHARPEN;
+            case TYPE_CHROMA_NR: return AppSettings.DEFAULT_COLOR_NR;
+            case TYPE_VIGNETTE: return AppSettings.DEFAULT_VIGNETTE;
+            case TYPE_WARMTH: return AppSettings.DEFAULT_WARMTH;
+            case TYPE_COLOR_ROLL_OFF: return AppSettings.DEFAULT_COLOR_ROLLOFF;
+            case TYPE_LUT_INTENSITY: return AppSettings.DEFAULT_LUT_INTENSITY;
             default: return 0;
         }
     }
 
     public static boolean isLandmarkValue(int type, int selected) {
-        if (type == TYPE_EXPOSURE && selected == 0) return true;
-        if (type == TYPE_WHITE_BALANCE && selected == 0) return true;
+        if (selected == getDefaultValue(type)) return true;
         if (type == TYPE_CONTRAST && selected == 100) return true;
         if (type == TYPE_SATURATION && selected == 100) return true;
         if (type == TYPE_HIGHLIGHTS && (selected == 0 || selected == 50)) return true;
@@ -100,12 +99,10 @@ public class LookRecipeControl {
         if (type == TYPE_GRAIN && selected == 0) return true;
         if (type == TYPE_HALATION && selected == 0) return true;
         if (type == TYPE_PIVOT && selected == 50) return true;
-        if (type == TYPE_SHARPENING && selected == 50) return true;
-        if (type == TYPE_CHROMA_NR && selected == 50) return true;
+        if (type == TYPE_SHARPENING && selected == 0) return true;
+        if (type == TYPE_CHROMA_NR && selected == 0) return true;
         if (type == TYPE_VIGNETTE && selected == 0) return true;
-        if (type == TYPE_WARMTH && selected == 50) return true;
         if (type == TYPE_COLOR_ROLL_OFF && selected == 50) return true;
-        if (type == TYPE_LUT_INTENSITY && selected == 100) return true;
         return false;
     }
 

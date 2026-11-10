@@ -170,16 +170,20 @@ final class LutManager {
         int[] pixels = new int[width * height];
         src.getPixels(pixels, 0, width, 0, 0, width, height);
 
-        for (int i = 0; i < pixels.length; i++) {
-            int p = pixels[i];
-            int a = (p >>> 24) & 0xff;
-            float r = ((p >>> 16) & 0xff) / 255.0f;
-            float g = ((p >>> 8) & 0xff) / 255.0f;
-            float b = (p & 0xff) / 255.0f;
+        java.util.stream.IntStream.range(0, height).parallel().forEach(y -> {
+            int rowOffset = y * width;
+            for (int x = 0; x < width; x++) {
+                int idx = rowOffset + x;
+                int p = pixels[idx];
+                int a = (p >>> 24) & 0xff;
+                float r = ((p >>> 16) & 0xff) * 0.003921569f;
+                float g = ((p >>> 8) & 0xff) * 0.003921569f;
+                float b = (p & 0xff) * 0.003921569f;
 
-            int graded = lut.applyToRgb(r, g, b, intensity);
-            pixels[i] = (a << 24) | (graded & 0x00ffffff);
-        }
+                int graded = lut.applyToRgb(r, g, b, intensity);
+                pixels[idx] = (a << 24) | (graded & 0x00ffffff);
+            }
+        });
 
         Bitmap out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         out.setPixels(pixels, 0, width, 0, 0, width, height);

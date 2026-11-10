@@ -19,11 +19,14 @@ public class LookRecipeControlTest {
     @Test
     public void testGetDefaultValue() {
         assertEquals(0, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_EXPOSURE));
-        assertEquals(100, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_CONTRAST));
-        assertEquals(100, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_SATURATION));
-        assertEquals(50, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_HIGHLIGHTS));
-        assertEquals(50, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_WARMTH));
-        assertEquals(100, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_LUT_INTENSITY));
+        assertEquals(AppSettings.DEFAULT_CONTRAST, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_CONTRAST));
+        assertEquals(AppSettings.DEFAULT_SATURATION, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_SATURATION));
+        assertEquals(AppSettings.DEFAULT_HIGHLIGHTS, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_HIGHLIGHTS));
+        assertEquals(AppSettings.DEFAULT_SHADOWS, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_SHADOWS));
+        assertEquals(AppSettings.DEFAULT_PIVOT, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_PIVOT));
+        assertEquals(AppSettings.DEFAULT_SHARPEN, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_SHARPENING));
+        assertEquals(AppSettings.DEFAULT_WARMTH, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_WARMTH));
+        assertEquals(AppSettings.DEFAULT_LUT_INTENSITY, LookRecipeControl.getDefaultValue(LookRecipeControl.TYPE_LUT_INTENSITY));
     }
 
     @Test
@@ -32,7 +35,11 @@ public class LookRecipeControlTest {
         assertFalse(LookRecipeControl.isLandmarkValue(LookRecipeControl.TYPE_EXPOSURE, 5));
 
         assertTrue(LookRecipeControl.isLandmarkValue(LookRecipeControl.TYPE_CONTRAST, 100));
+        assertTrue(LookRecipeControl.isLandmarkValue(LookRecipeControl.TYPE_CONTRAST, AppSettings.DEFAULT_CONTRAST));
         assertFalse(LookRecipeControl.isLandmarkValue(LookRecipeControl.TYPE_CONTRAST, 110));
+
+        assertTrue(LookRecipeControl.isLandmarkValue(LookRecipeControl.TYPE_SHARPENING, AppSettings.DEFAULT_SHARPEN));
+        assertTrue(LookRecipeControl.isLandmarkValue(LookRecipeControl.TYPE_PIVOT, AppSettings.DEFAULT_PIVOT));
 
         assertTrue(LookRecipeControl.isLandmarkValue(LookRecipeControl.TYPE_WARMTH, 50));
         assertFalse(LookRecipeControl.isLandmarkValue(LookRecipeControl.TYPE_WARMTH, 40));

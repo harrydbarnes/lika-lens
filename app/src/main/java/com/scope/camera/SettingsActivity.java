@@ -230,7 +230,7 @@ public class SettingsActivity extends Activity {
 
         beginSection("RAW DEVELOPMENT", "Tune the render while preserving the original DNG.");
         addChoice("White balance", "Auto uses this frame's sensor estimate", AppSettings.WHITE_BALANCE_MODE,
-                new String[]{"Auto · as shot", "3200 K · tungsten", "4000 K · warm LED", "5000 K · daylight", "5600 K · daylight", "6500 K · overcast", "7500 K · shade"}, "Auto · as shot");
+                new String[]{"Auto · as shot", "2800 K · incandescent", "3200 K · tungsten", "4000 K · warm LED", "5000 K · daylight", "5600 K · daylight", "6500 K · overcast", "7500 K · shade"}, "Auto · as shot");
         addSlider("Exposure trim", "Exposure compensation in 0.1 EV steps", AppSettings.EXPOSURE, -20, 20, AppSettings.DEFAULT_EXPOSURE);
         addSlider("Warmth shift", "Shift the selected brain warmer or cooler", AppSettings.WARMTH, 0, 100, AppSettings.DEFAULT_WARMTH);
         addSlider("Contrast", "Midtone contrast", AppSettings.CONTRAST, 50, 150, AppSettings.DEFAULT_CONTRAST);
@@ -297,9 +297,9 @@ public class SettingsActivity extends Activity {
         addChoice("Exposure mode", "Manual sensor controls require device support", AppSettings.EXPOSURE_MODE,
                 new String[]{"Auto exposure", "Manual exposure"}, "Auto exposure");
         addChoice("Manual shutter", "Used when Manual exposure is selected", AppSettings.MANUAL_SHUTTER,
-                new String[]{"1/30 sec", "1/60 sec", "1/120 sec", "1/240 sec", "1/500 sec", "1/1000 sec"}, "1/120 sec");
+                new String[]{"1/30 sec", "1/60 sec", "1/120 sec", "1/240 sec", "1/500 sec", "1/1000 sec", "1/2000 sec", "1/4000 sec"}, "1/120 sec");
         addChoice("Manual ISO", "Used when Manual exposure is selected", AppSettings.MANUAL_ISO,
-                new String[]{"ISO 50", "ISO 100", "ISO 200", "ISO 400", "ISO 800", "ISO 1600"}, "ISO 100");
+                new String[]{"ISO 50", "ISO 100", "ISO 200", "ISO 400", "ISO 800", "ISO 1600", "ISO 3200"}, "ISO 100");
         addChoice("Self-timer", "Delay before the shutter fires", AppSettings.TIMER,
                 new String[]{"Off", "3 seconds", "10 seconds"}, "Off");
         addChoice("Focus behaviour", "Camera2 autofocus mode", "focus_mode",
@@ -866,10 +866,8 @@ public class SettingsActivity extends Activity {
                 }
                 AppSettings.prefs(this).edit().putString(key, option).apply();
                 if (AppSettings.WHITE_BALANCE_MODE.equals(key)) {
-                    int kelvin = option.startsWith("Auto") ? 0 : option.startsWith("3200") ? 3200 : option.startsWith("4000") ? 4000
-                            : option.startsWith("5000") ? 5000 : option.startsWith("6500") ? 6500
-                            : option.startsWith("7500") ? 7500 : 5600;
-                    AppSettings.prefs(this).edit().putInt(AppSettings.WHITE_BALANCE, kelvin).apply();
+                    int kelvin = AppSettings.parseWhiteBalanceModeKelvin(option);
+                    AppSettings.setWhiteBalanceKelvin(this, kelvin);
                 }
                 valueView.setText(shortValue(option));
                 triggerHeroUpdate();

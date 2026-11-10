@@ -258,4 +258,45 @@ final class AppSettings {
         String dataKey = slot == 1 ? RECIPE_1_DATA : slot == 2 ? RECIPE_2_DATA : RECIPE_3_DATA;
         prefs(context).edit().remove(nameKey).remove(dataKey).apply();
     }
+
+    static int resolveWhiteBalanceKelvin(Context context) {
+        SharedPreferences p = prefs(context);
+        if (p.contains(WHITE_BALANCE)) {
+            int k = p.getInt(WHITE_BALANCE, 0);
+            if (k > 0) return k;
+        }
+        String mode = p.getString(WHITE_BALANCE_MODE, "Auto · as shot");
+        return parseWhiteBalanceModeKelvin(mode);
+    }
+
+    static int parseWhiteBalanceModeKelvin(String mode) {
+        if (mode == null || mode.startsWith("Auto")) return 0;
+        if (mode.startsWith("2800")) return 2800;
+        if (mode.startsWith("3200")) return 3200;
+        if (mode.startsWith("4000")) return 4000;
+        if (mode.startsWith("5000")) return 5000;
+        if (mode.startsWith("5600")) return 5600;
+        if (mode.startsWith("6500")) return 6500;
+        if (mode.startsWith("7500")) return 7500;
+        return 0;
+    }
+
+    static String formatWhiteBalanceMode(int kelvin) {
+        if (kelvin <= 0) return "Auto · as shot";
+        if (kelvin <= 3000) return "2800 K · incandescent";
+        if (kelvin <= 3600) return "3200 K · tungsten";
+        if (kelvin <= 4500) return "4000 K · warm LED";
+        if (kelvin <= 5300) return "5000 K · daylight";
+        if (kelvin <= 6000) return "5600 K · daylight";
+        if (kelvin <= 7000) return "6500 K · overcast";
+        return "7500 K · shade";
+    }
+
+    static void setWhiteBalanceKelvin(Context context, int kelvin) {
+        int clamped = kelvin <= 0 ? 0 : Math.max(2000, Math.min(10000, kelvin));
+        prefs(context).edit()
+                .putInt(WHITE_BALANCE, clamped)
+                .putString(WHITE_BALANCE_MODE, formatWhiteBalanceMode(clamped))
+                .apply();
+    }
 }
