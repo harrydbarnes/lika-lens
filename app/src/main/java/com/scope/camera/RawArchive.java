@@ -30,7 +30,7 @@ import java.util.zip.InflaterInputStream;
 final class RawArchive {
     private static final String TAG = "RawArchive";
     private static final int MAGIC = 0x53524157; // SRAW
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
 
     static final class Frame {
         int width;
@@ -42,6 +42,7 @@ final class RawArchive {
         int dynamicWhiteLevel;
         long exposureTimeNs;
         int sensitivityIso;
+        int postRawSensitivityBoost = 100;
         int aeExposureCompensation;
         float[] blackLevels = new float[4];
         float[] wbGains = new float[]{1f, 1f, 1f, 1f};
@@ -93,6 +94,12 @@ final class RawArchive {
         long exposure = result == null || result.get(CaptureResult.SENSOR_EXPOSURE_TIME) == null
                 ? 0L : result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
         Integer isoValue = result == null ? null : result.get(CaptureResult.SENSOR_SENSITIVITY);
+        Integer postRawBoost = null;
+        if (result != null) {
+            try {
+                postRawBoost = result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST);
+            } catch (Throwable ignored) { }
+        }
         Integer compensation = result == null ? null : result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION);
         RggbChannelVector gains = result == null ? null : result.get(CaptureResult.COLOR_CORRECTION_GAINS);
         Rational[] neutral = result == null ? null : result.get(CaptureResult.SENSOR_NEUTRAL_COLOR_POINT);
@@ -118,6 +125,7 @@ final class RawArchive {
         frame.staticWhiteLevel = staticWhite == null ? 65535 : staticWhite;
         frame.dynamicWhiteLevel = dynamicWhite == null ? -1 : dynamicWhite;
         frame.exposureTimeNs = exposure; frame.sensitivityIso = isoValue == null ? 0 : isoValue;
+        frame.postRawSensitivityBoost = (postRawBoost == null || postRawBoost <= 0) ? 100 : postRawBoost;
         frame.aeExposureCompensation = compensation == null ? 0 : compensation;
         frame.blackLevels = new float[4];
         for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) {
@@ -185,6 +193,7 @@ final class RawArchive {
                 out.writeInt(0);
                 out.writeInt(0);
             }
+            out.writeInt(frame.postRawSensitivityBoost > 0 ? frame.postRawSensitivityBoost : 100);
 
             for (int y = 0; y < height; y++) {
                 int row = y * rowStride;
@@ -214,7 +223,7 @@ final class RawArchive {
         try (DataInputStream in = new DataInputStream(new BufferedInputStream(new InflaterInputStream(new FileInputStream(source))))) {
             int magic = in.readInt();
             int version = in.readInt();
-            if (magic != MAGIC || (version != 1 && version != VERSION)) throw new IOException("Unsupported RAW archive");
+            if (magic != MAGIC || (version != 1 && version != 2 && version != VERSION)) throw new IOException("Unsupported RAW archive");
             Frame frame = new Frame();
             frame.width = in.readInt(); frame.height = in.readInt(); frame.cfa = in.readInt();
             frame.orientation = in.readInt();
@@ -240,6 +249,10 @@ final class RawArchive {
                     frame.lsmGains = new float[count];
                     for (int i = 0; i < count; i++) frame.lsmGains[i] = in.readFloat();
                 }
+            }
+            if (version >= 3) {
+                int boost = in.readInt();
+                frame.postRawSensitivityBoost = boost > 0 ? boost : 100;
             }
             long bytes = (long) frame.width * frame.height * 2L;
             if (frame.width <= 0 || frame.height <= 0 || bytes > Integer.MAX_VALUE

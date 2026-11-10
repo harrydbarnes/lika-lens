@@ -223,8 +223,10 @@ final class RawDeveloper {
         float rawWhite = frame.dynamicWhiteLevel > 0 ? frame.dynamicWhiteLevel : frame.staticWhiteLevel;
         float white = rawWhite <= 0 ? 65535f : rawWhite;
         float[] gains = whiteBalanceGains(frame, look.whiteBalanceKelvin);
-        float exposureScale = (float) Math.pow(2.0, look.exposureEv);
         boolean applyLsm = look.opticalCorrection && frame.lsmGains != null && frame.lsmCols > 1 && frame.lsmRows > 1;
+        float autoSceneGain = computeSceneExposureGain(rawShorts, frame, white, gains, cameraToXyz,
+                crop, orientation, applyLsm, look);
+        float exposureScale = (float) Math.pow(2.0, look.exposureEv) * autoSceneGain;
         int[] allPixels = new int[outW * outH];
         int seed = frame.key == null ? width * 31 + height : frame.key.hashCode();
         LutManager.Lut3D lut = (look.lutName != null && !look.lutName.equals("None") && look.lutIntensity > 0.001f)
@@ -293,11 +295,18 @@ final class RawDeveloper {
     }
 
     /** JPEG fallback keeps the file usable, but cannot undo the phone's baked image processing. */
-    static Bitmap developJpeg(byte[] bytes, Context context) {
+    public static Bitmap developJpeg(byte[] bytes, Context context) {
         return developJpeg(bytes, context, false);
     }
 
-    static Bitmap developJpeg(byte[] bytes, Context context, boolean flipHorizontal) {
+    public static Bitmap developJpeg(byte[] bytes, Context context, boolean flipHorizontal) {
+        Look look = Look.fromPreferences(context);
+        look.flipHorizontal = flipHorizontal;
+        return developJpeg(bytes, look);
+    }
+
+    public static Bitmap developJpeg(byte[] bytes, Look look) {
+        if (bytes == null || bytes.length == 0) return null;
         Bitmap source = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
         if (source == null) return null;
         int maxSide = 3000;
@@ -305,41 +314,60 @@ final class RawDeveloper {
         Bitmap bitmap = scale < 1 ? Bitmap.createScaledBitmap(source,
                 Math.max(1, Math.round(source.getWidth() * scale)), Math.max(1, Math.round(source.getHeight() * scale)), true) : source;
         if (bitmap != source) source.recycle();
-        Look look = Look.fromPreferences(context);
-        look.flipHorizontal = flipHorizontal;
+        return developBitmap(bitmap, look, true);
+    }
+
+    /**
+     * Develops an in-memory Bitmap applying the full look pipeline (color science, LUT, tone curve,
+     * shadows, halation, sharpening, vignette, and optional frame border).
+     */
+    public static Bitmap developBitmap(Bitmap bitmap, Look look, boolean recycleSource) {
+        if (bitmap == null) return null;
+        if (look == null) look = new Look();
+
         float exposureScale = (float) Math.pow(2.0, look.exposureEv);
         float wbRatio = look.whiteBalanceKelvin <= 0 ? 1f : clamp(look.whiteBalanceKelvin / 5600f, .55f, 1.45f);
         float wbShift = (float) Math.sqrt(wbRatio);
         int w = bitmap.getWidth(), h = bitmap.getHeight();
         int[] pixels = new int[w * h];
         bitmap.getPixels(pixels, 0, w, 0, 0, w, h);
+        if (recycleSource && !bitmap.isRecycled()) {
+            bitmap.recycle();
+        }
+
         LutManager.Lut3D lut = (look.lutName != null && !look.lutName.equals("None") && look.lutIntensity > 0.001f)
                 ? LutManager.get(look.lutName) : null;
+        final Look finalLook = look;
         java.util.stream.IntStream.range(0, h).parallel().forEach(y -> {
             int rowOffset = y * w;
             for (int x = 0; x < w; x++) {
-                int srcX = look.flipHorizontal ? (w - 1 - x) : x;
+                int srcX = finalLook.flipHorizontal ? (w - 1 - x) : x;
                 int c = pixels[rowOffset + srcX];
                 float r = srgbToLinear(Color.red(c) / 255f) * exposureScale * wbShift;
                 float g = srgbToLinear(Color.green(c) / 255f) * exposureScale;
                 float b = srgbToLinear(Color.blue(c) / 255f) * exposureScale / wbShift;
-                int rendered = renderLook(r, g, b, look, x, y, 0x53434f50, null, lut);
-                if (look.vignette > 0f) {
+                int rendered = renderLook(r, g, b, finalLook, x, y, 0x53434f50, null, lut);
+                if (finalLook.vignette > 0f) {
                     float nx = w <= 1 ? 0f : x / (float) (w - 1) * 2f - 1f;
                     float ny = h <= 1 ? 0f : y / (float) (h - 1) * 2f - 1f;
-                    float falloff = Math.max(.72f, 1f - look.vignette * .18f * (nx * nx + ny * ny));
+                    float falloff = Math.max(.72f, 1f - finalLook.vignette * .18f * (nx * nx + ny * ny));
                     rendered = scaleColor(rendered, falloff);
                 }
                 pixels[rowOffset + x] = rendered;
             }
         });
-        bitmap.recycle();
+
         float effectiveJpegChromaNr = look.chromaNr;
         if (look.easyMode && effectiveJpegChromaNr < 0.15f) effectiveJpegChromaNr = 0.15f;
         if (effectiveJpegChromaNr > 0f) applyChromaDenoise(pixels, w, h, effectiveJpegChromaNr);
         if (look.halation > 0f) applyHalation(pixels, w, h, look.halation, look.aspectRatio);
         if (look.sharpening > 0f) applySharpen(pixels, w, h, Math.min(.14f, look.sharpening * .14f));
-        return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888);
+
+        Bitmap result = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888);
+        if (look.frameBorder != null && !look.frameBorder.startsWith("None")) {
+            result = applyFrameBorder(result, look, null);
+        }
+        return result;
     }
 
     private static float[] sampleLsm(RawArchive.Frame frame, int sx, int sy) {
@@ -556,16 +584,94 @@ final class RawDeveloper {
         }
     }
 
+    /**
+     * Computes scene-linear exposure normalization for RAW frames.
+     * Applies Camera2 CONTROL_POST_RAW_SENSITIVITY_BOOST and, when Easy Mode is active,
+     * compensates for highlight-protecting RAW metering so midtones match viewfinder perception
+     * while specular highlights roll off naturally through the filmic shoulder.
+     */
+    static float computeSceneExposureGain(short[] rawShorts, RawArchive.Frame frame, float white,
+                                          float[] gains, float[] cameraToXyz, float[] crop,
+                                          int orientation, boolean applyLsm, Look look) {
+        if (frame == null) return 1.0f;
+        float boostScale = frame.postRawSensitivityBoost > 100
+                ? clamp(frame.postRawSensitivityBoost / 100f, 1.0f, 8.0f)
+                : 1.0f;
+        if (look == null || !look.easyMode || rawShorts == null || frame.width <= 0 || frame.height <= 0) {
+            return boostScale;
+        }
+        int width = frame.width, height = frame.height;
+        float cropX = crop != null && crop.length >= 4 ? crop[0] : 0f;
+        float cropY = crop != null && crop.length >= 4 ? crop[1] : 0f;
+        float cropW = crop != null && crop.length >= 4 ? crop[2] : width;
+        float cropH = crop != null && crop.length >= 4 ? crop[3] : height;
+        int gridX = 32, gridY = 24;
+        float[] allLuma = new float[gridX * gridY];
+        float[] midLuma = new float[gridX * gridY];
+        int allCount = 0, midCount = 0;
+
+        for (int gy = 0; gy < gridY; gy++) {
+            float dy = Math.min(cropY + cropH - .5f, cropY + (gy + .5f) * cropH / gridY);
+            for (int gx = 0; gx < gridX; gx++) {
+                float dx = Math.min(cropX + cropW - .5f, cropX + (gx + .5f) * cropW / gridX);
+                int sx, sy;
+                switch (orientation) {
+                    case 90: sx = Math.min(width - 1, (int) dy); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dx)); break;
+                    case 180: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dx)); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dy)); break;
+                    case 270: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dy)); sy = Math.min(height - 1, (int) dx); break;
+                    default: sx = Math.min(width - 1, (int) dx); sy = Math.min(height - 1, (int) dy); break;
+                }
+                float r = interpolate(rawShorts, frame, white, sx, sy, 0);
+                float g = interpolate(rawShorts, frame, white, sx, sy, 1);
+                float b = interpolate(rawShorts, frame, white, sx, sy, 2);
+                if (applyLsm) {
+                    float[] lsm = sampleLsm(frame, sx, sy);
+                    r *= lsm[0];
+                    g *= (lsm[1] + lsm[2]) * 0.5f;
+                    b *= lsm[3];
+                }
+                r *= gains[0] * boostScale;
+                g *= (gains[1] + gains[2]) * .5f * boostScale;
+                b *= gains[3] * boostScale;
+
+                float x = cameraToXyz[0] * r + cameraToXyz[1] * g + cameraToXyz[2] * b;
+                float y = cameraToXyz[3] * r + cameraToXyz[4] * g + cameraToXyz[5] * b;
+                float z = cameraToXyz[6] * r + cameraToXyz[7] * g + cameraToXyz[8] * b;
+                float lr = 3.1339f * x - 1.6169f * y - .4906f * z;
+                float lg = -.9785f * x + 1.9160f * y + .0333f * z;
+                float lb = .0720f * x - .2290f * y + 1.4057f * z;
+                float luma = Math.max(0f, .2126f * lr + .7152f * lg + .0722f * lb);
+                allLuma[allCount++] = luma;
+                if (luma > 0.0005f && luma < 0.85f) {
+                    midLuma[midCount++] = luma;
+                }
+            }
+        }
+        if (midCount < 16 || allCount < 16) return boostScale;
+        java.util.Arrays.sort(allLuma, 0, allCount);
+        java.util.Arrays.sort(midLuma, 0, midCount);
+        float p50 = midLuma[(int) ((midCount - 1) * 0.50f)];
+        float p75 = midLuma[(int) ((midCount - 1) * 0.75f)];
+        float p85 = allLuma[(int) ((allCount - 1) * 0.85f)];
+        float midMetric = 0.55f * p50 + 0.45f * p75;
+        float targetMid = 0.165f;
+        if (midMetric >= targetMid) return boostScale;
+        float neededGain = (float) Math.pow(targetMid / Math.max(0.005f, midMetric), 0.85);
+        float maxHighlightGain = p85 > 0.25f ? (1.10f / Math.max(0.10f, p85)) : 4.2f;
+        float sceneGain = clamp(Math.min(neededGain, Math.max(1.0f, maxHighlightGain)), 1.0f, 4.2f);
+        return boostScale * sceneGain;
+    }
+
     /** A coupled display transform: tonal response, hue, chroma and gamut are shaped together. */
-    private static int renderLook(float r, float g, float b, Look look, int x, int y, int seed) {
+    static int renderLook(float r, float g, float b, Look look, int x, int y, int seed) {
         return renderLook(r, g, b, look, x, y, seed, null, null);
     }
 
-    private static int renderLook(float r, float g, float b, Look look, int x, int y, int seed, RawArchive.Frame frame) {
+    static int renderLook(float r, float g, float b, Look look, int x, int y, int seed, RawArchive.Frame frame) {
         return renderLook(r, g, b, look, x, y, seed, frame, null);
     }
 
-    private static int renderLook(float r, float g, float b, Look look, int x, int y, int seed, RawArchive.Frame frame, LutManager.Lut3D lut) {
+    static int renderLook(float r, float g, float b, Look look, int x, int y, int seed, RawArchive.Frame frame, LutManager.Lut3D lut) {
         String brain = look.brain == null ? "LIKA / FILM" : look.brain;
 
         if (brain.startsWith("MONO")) {
@@ -589,14 +695,17 @@ final class RawDeveloper {
         }
 
         float contrasted;
+        float safePivot = clamp(effectivePivot, 0.02f, 0.85f);
+        float safeContrast = clamp(effectiveContrast, 0.35f, 2.50f);
         String curve = look.toneCurve == null ? "Filmic S-Curve" : look.toneCurve;
         if (curve.startsWith("Linear")) {
             contrasted = oldY;
         } else if (curve.startsWith("Log")) {
             float logY = (float) Math.log1p(oldY * 7.0f) / (float) Math.log1p(7.0f);
-            contrasted = Math.max(0f, (logY - effectivePivot) * (effectiveContrast * 0.75f) + effectivePivot);
-        } else { // Filmic S-Curve
-            contrasted = Math.max(0f, (oldY - effectivePivot) * effectiveContrast + effectivePivot);
+            float logPivot = (float) Math.log1p(safePivot * 7.0f) / (float) Math.log1p(7.0f);
+            contrasted = logY <= 0f ? 0f : logPivot * (float) Math.pow(logY / Math.max(0.01f, logPivot), safeContrast * 0.78f);
+        } else { // Filmic S-Curve: power-law toe around pivot preserves shadow gradation without hard-clipping below pivot
+            contrasted = oldY <= 0f ? 0f : safePivot * (float) Math.pow(oldY / safePivot, safeContrast);
         }
 
         float shadowWeight = 1f - smoothstep(.02f, .44f, contrasted);

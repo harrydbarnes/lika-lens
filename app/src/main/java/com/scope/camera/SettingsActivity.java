@@ -62,8 +62,10 @@ public class SettingsActivity extends Activity {
     private ImageView heroImageView;
     private TextView heroCompareBadge;
     private Bitmap baseHeroBitmap;
+    private Bitmap cachedHeroSource;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile boolean isUpdatingHero = false;
+    private volatile boolean hasPendingHeroUpdate = false;
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -324,7 +326,7 @@ public class SettingsActivity extends Activity {
         beginSection("VIEWFINDER & SHOOTING ERGONOMICS", "Framing aids, exposure telemetry, gesture shortcuts and tactile controls.");
         addSwitch("Live film stock viewfinder preview", "Real-time film color science simulation in the live viewfinder", AppSettings.LIVE_FILM_PREVIEW, true);
         addSwitch("Rangefinder frame lines", "Translucent outside-the-frame context with Leica illuminated brightlines and corner brackets", AppSettings.RANGEFINDER_LINES, false);
-        addSwitch("Pro optical loupe (5×)", "High-magnification focus assist loupe with gold bezel during reticle adjustment", AppSettings.OPTICAL_LOUPE, true);
+        addSwitch("Pro optical loupe (5×)", "High-magnification focus assist loupe with gold bezel during reticle adjustment", AppSettings.OPTICAL_LOUPE, false);
         addChoice("Composition grid", "Choose a guide overlay inside the viewfinder frame", AppSettings.GRID_STYLE,
                 new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");
         addSwitch("Visual level & flat-lay crosshair", "Horizon bar and top-down concentric crosshairs that illuminate gold when level", AppSettings.VISUAL_LEVEL, true);
@@ -478,6 +480,7 @@ public class SettingsActivity extends Activity {
         Uri latest = latestScopeImage();
         baseHeroBitmap = latest == null ? null : decodePreview(latest, dp(640), dp(400));
         if (baseHeroBitmap != null) {
+            cachedHeroSource = Bitmap.createScaledBitmap(baseHeroBitmap, 360, 225, true);
             heroImageView.setImageBitmap(baseHeroBitmap);
             triggerHeroUpdate();
         } else {
@@ -565,27 +568,42 @@ public class SettingsActivity extends Activity {
     }
 
     private void triggerHeroUpdate() {
-        if (heroImageView == null || baseHeroBitmap == null) return;
-        if (isUpdatingHero) return;
-        isUpdatingHero = true;
+        if (heroImageView == null || cachedHeroSource == null || cachedHeroSource.isRecycled()) return;
+        synchronized (this) {
+            hasPendingHeroUpdate = true;
+            if (isUpdatingHero) return;
+            isUpdatingHero = true;
+        }
         new Thread(() -> {
             try {
-                Bitmap small = Bitmap.createScaledBitmap(baseHeroBitmap, 320, 200, true);
-                ByteArrayOutputStream bytesOut = new ByteArrayOutputStream();
-                small.compress(Bitmap.CompressFormat.JPEG, 85, bytesOut);
-                small.recycle();
-                Bitmap developed = RawDeveloper.developJpeg(bytesOut.toByteArray(), SettingsActivity.this);
-                if (developed != null) {
-                    mainHandler.post(() -> {
-                        if (heroImageView != null && (heroCompareBadge == null || heroCompareBadge.getVisibility() != View.VISIBLE)) {
-                            heroImageView.setImageBitmap(developed);
+                while (true) {
+                    synchronized (SettingsActivity.this) {
+                        hasPendingHeroUpdate = false;
+                    }
+                    if (cachedHeroSource == null || cachedHeroSource.isRecycled()) break;
+                    // Develop directly in memory from cachedHeroSource without JPEG re-compression
+                    Bitmap copy = cachedHeroSource.copy(Bitmap.Config.ARGB_8888, true);
+                    RawDeveloper.Look look = RawDeveloper.Look.fromPreferences(SettingsActivity.this);
+                    Bitmap developed = RawDeveloper.developBitmap(copy, look, true);
+                    if (developed != null) {
+                        mainHandler.post(() -> {
+                            if (heroImageView != null && (heroCompareBadge == null || heroCompareBadge.getVisibility() != View.VISIBLE)) {
+                                heroImageView.setImageBitmap(developed);
+                            }
+                        });
+                    }
+                    synchronized (SettingsActivity.this) {
+                        if (!hasPendingHeroUpdate) {
+                            isUpdatingHero = false;
+                            break;
                         }
-                    });
+                    }
                 }
             } catch (Exception e) {
                 Log.w(TAG, "Hero image preview update failed", e);
-            } finally {
-                isUpdatingHero = false;
+                synchronized (SettingsActivity.this) {
+                    isUpdatingHero = false;
+                }
             }
         }).start();
     }
@@ -1195,6 +1213,19 @@ public class SettingsActivity extends Activity {
             paint.setColor(0xff0d1112);
             paint.setStrokeWidth(dp(3));
             canvas.drawLine(w * .47f, h * .1f, w * .47f, h * .65f, paint);
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (cachedHeroSource != null && !cachedHeroSource.isRecycled()) {
+            cachedHeroSource.recycle();
+            cachedHeroSource = null;
+        }
+        if (baseHeroBitmap != null && !baseHeroBitmap.isRecycled()) {
+            baseHeroBitmap.recycle();
+            baseHeroBitmap = null;
         }
     }
 

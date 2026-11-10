@@ -72,4 +72,38 @@ public class CameraExposureHelperTest {
         assertNotNull(CameraExposureHelper.computeCropRect(null, 1.0f));
         assertNotNull(CameraExposureHelper.computeCropRect(null, 2.0f));
     }
+
+    @Test
+    public void testComputeMeteringRectBoundsAndCentering() {
+        Rect cropRegion = new Rect(1000, 750, 3000, 2250); // 2x digital crop on 4000x3000 sensor
+        // Center tap (0.5, 0.5)
+        Rect centerRect = CameraExposureHelper.computeMeteringRect(cropRegion, 0.5f, 0.5f, false, 0.10f);
+        assertNotNull(centerRect);
+        assertTrue("Left must be inside crop region", centerRect.left >= cropRegion.left);
+        assertTrue("Top must be inside crop region", centerRect.top >= cropRegion.top);
+        assertTrue("Right must be inside crop region", centerRect.right <= cropRegion.right);
+        assertTrue("Bottom must be inside crop region", centerRect.bottom <= cropRegion.bottom);
+        assertEquals(cropRegion.centerX(), centerRect.centerX());
+        assertEquals(cropRegion.centerY(), centerRect.centerY());
+
+        // Corner tap (0.0, 0.0) - must clamp cleanly within crop region
+        Rect cornerRect = CameraExposureHelper.computeMeteringRect(cropRegion, 0.0f, 0.0f, false, 0.10f);
+        assertTrue("Corner tap left >= crop left", cornerRect.left >= cropRegion.left);
+        assertTrue("Corner tap top >= crop top", cornerRect.top >= cropRegion.top);
+        assertTrue("Corner tap right <= crop right", cornerRect.right <= cropRegion.right);
+        assertTrue("Corner tap bottom <= crop bottom", cornerRect.bottom <= cropRegion.bottom);
+    }
+
+    @Test
+    public void testComputeMeteringRectFrontCameraMirroring() {
+        Rect cropRegion = new Rect(0, 0, 4000, 3000);
+        // Tapping right side of screen (nx = 0.8f) on rear vs front camera
+        Rect rearRect = CameraExposureHelper.computeMeteringRect(cropRegion, 0.8f, 0.5f, false, 0.10f);
+        Rect frontRect = CameraExposureHelper.computeMeteringRect(cropRegion, 0.8f, 0.5f, true, 0.10f);
+
+        // Rear camera maps nx=0.8 to (1 - 0.8)*3000 = 600
+        // Front camera (mirrored) maps nx=0.8 to 0.8*3000 = 2400
+        assertTrue("Rear sensorY should be in lower third", rearRect.centerY() < 1000);
+        assertTrue("Front sensorY should be in upper third", frontRect.centerY() > 2000);
+    }
 }

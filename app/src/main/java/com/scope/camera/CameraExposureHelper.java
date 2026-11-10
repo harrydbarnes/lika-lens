@@ -145,4 +145,44 @@ public final class CameraExposureHelper {
 
         return new Rect(cropLeft, cropTop, cropLeft + cropWidth, cropTop + cropHeight);
     }
+
+    /**
+     * Computes a bounded metering rectangle within the current crop region for touch-to-focus/AE.
+     * Takes into account sensor rotation, digital zoom crop region, and front camera mirroring.
+     *
+     * @param cropRegion The active sensor crop region (or sensor active array if uncropped).
+     * @param nx Normalized touch X within the framing rectangle [0.0 .. 1.0].
+     * @param ny Normalized touch Y within the framing rectangle [0.0 .. 1.0].
+     * @param isFrontCamera True if front-facing camera with preview mirror.
+     * @param boxFraction Fraction of crop dimension for the metering box (e.g. 0.10f for 10%).
+     * @return Bounded Rect inside cropRegion in sensor coordinates.
+     */
+    public static Rect computeMeteringRect(Rect cropRegion, float nx, float ny, boolean isFrontCamera, float boxFraction) {
+        if (cropRegion == null) return new Rect();
+        float clampedNx = Math.max(0f, Math.min(1f, nx));
+        float clampedNy = Math.max(0f, Math.min(1f, ny));
+
+        int w = cropRegion.width();
+        int h = cropRegion.height();
+        if (w <= 0 || h <= 0) return new Rect(cropRegion);
+
+        // Android camera sensor coordinates:
+        // In default portrait orientation, camera sensor is oriented 90 degrees clockwise (rear).
+        // Tap Y corresponds to sensor X, and tap (1 - X) corresponds to sensor Y.
+        // For front-facing cameras (which are horizontally mirrored for the user preview),
+        // horizontal touch coordinate is mirrored: tap X corresponds to sensor Y.
+        int sensorX = cropRegion.left + Math.round(clampedNy * w);
+        int sensorY = cropRegion.top + Math.round((isFrontCamera ? clampedNx : (1.0f - clampedNx)) * h);
+
+        float fraction = boxFraction > 0f ? boxFraction : 0.10f;
+        int boxW = Math.max(1, Math.min(w, Math.max(50, Math.round(w * fraction))));
+        int boxH = Math.max(1, Math.min(h, Math.max(50, Math.round(h * fraction))));
+
+        int left = Math.max(cropRegion.left, Math.min(cropRegion.right - boxW, sensorX - boxW / 2));
+        int top = Math.max(cropRegion.top, Math.min(cropRegion.bottom - boxH, sensorY - boxH / 2));
+        int right = Math.min(cropRegion.right, left + boxW);
+        int bottom = Math.min(cropRegion.bottom, top + boxH);
+
+        return new Rect(left, top, right, bottom);
+    }
 }

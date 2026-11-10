@@ -87,4 +87,79 @@ public class RawDeveloperTest {
         assertEquals(LutManager.LUT_ANSEL_BW, original.lutName);
         assertEquals(0.70f, original.lutIntensity, 0.001f);
     }
+
+    @Test
+    public void testFilmicToePreservesShadowGradationBelowPivot() {
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.brain = AppSettings.BRAIN_LIKA_FILM;
+        look.contrast = 1.12f;
+        look.pivot = 0.20f;
+        look.shadows = 0.36f;
+        look.grain = 0f;
+        look.warmth = 0f;
+        look.easyMode = true;
+
+        // Test scene-linear shadow tones well below the 0.20 pivot (e.g. 0.02 and 0.05)
+        int darkShadow = RawDeveloper.renderLook(0.02f, 0.02f, 0.02f, look, 0, 0, 1);
+        int midShadow = RawDeveloper.renderLook(0.05f, 0.05f, 0.05f, look, 0, 0, 1);
+        int lowerMidtone = RawDeveloper.renderLook(0.12f, 0.12f, 0.12f, look, 0, 0, 1);
+
+        int rDark = (darkShadow >> 16) & 0xff;
+        int rMid = (midShadow >> 16) & 0xff;
+        int rLowMid = (lowerMidtone >> 16) & 0xff;
+
+        // Shadows below pivot must not be hard-clipped to 0 and must maintain strictly monotonic gradation
+        org.junit.Assert.assertTrue("Shadow at linear 0.02 should not be crushed to black, got " + rDark, rDark > 15);
+        org.junit.Assert.assertTrue("Shadow gradation must be monotonic (0.02 < 0.05)", rMid > rDark + 10);
+        org.junit.Assert.assertTrue("Shadow gradation must be monotonic (0.05 < 0.12)", rLowMid > rMid + 15);
+    }
+
+    @Test
+    public void testSceneExposureGainNormalizesUnderexposedRawAndAppliesPostRawBoost() {
+        RawArchive.Frame frame = new RawArchive.Frame();
+        frame.width = 32;
+        frame.height = 24;
+        frame.staticWhiteLevel = 1023;
+        frame.postRawSensitivityBoost = 200; // 2.0x ISP digital post-RAW boost
+        frame.blackLevels = new float[]{0f, 0f, 0f, 0f};
+        frame.wbGains = new float[]{1f, 1f, 1f, 1f};
+
+        // Populate synthetic sensor samples where raw linear values are ~0.025 (underexposed indoor scene)
+        short[] samples = new short[frame.width * frame.height];
+        java.util.Arrays.fill(samples, (short) 26); // ~0.0254 of 1023 white level
+
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.easyMode = true;
+        float[] identity = new float[]{1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f};
+        float[] crop = new float[]{0f, 0f, 32f, 24f};
+
+        float gainEasy = RawDeveloper.computeSceneExposureGain(
+                samples, frame, 1023f, frame.wbGains, identity, crop, 0, false, look);
+        org.junit.Assert.assertTrue("Easy mode should apply postRawBoost * sceneGain (> 2.5x), got " + gainEasy, gainEasy > 2.5f);
+
+        look.easyMode = false;
+        float gainManual = RawDeveloper.computeSceneExposureGain(
+                samples, frame, 1023f, frame.wbGains, identity, crop, 0, false, look);
+        assertEquals(2.0f, gainManual, 0.01f);
+    }
+
+    @Test
+    public void testDevelopBitmapInMemPipelineAndBorder() {
+        android.graphics.Bitmap testBmp = android.graphics.Bitmap.createBitmap(100, 80, android.graphics.Bitmap.Config.ARGB_8888);
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.brain = AppSettings.BRAIN_LIKA_FILM;
+        look.frameBorder = "None";
+
+        android.graphics.Bitmap devNoBorder = RawDeveloper.developBitmap(testBmp, look, false);
+        assertNotNull(devNoBorder);
+        assertEquals(100, devNoBorder.getWidth());
+        assertEquals(80, devNoBorder.getHeight());
+
+        look.frameBorder = "Museum · White Fine Art";
+        android.graphics.Bitmap devBordered = RawDeveloper.developBitmap(testBmp, look, false);
+        assertNotNull(devBordered);
+        // Border padding adds width and height
+        org.junit.Assert.assertTrue("Bordered bitmap width should expand", devBordered.getWidth() > 100);
+        org.junit.Assert.assertTrue("Bordered bitmap height should expand", devBordered.getHeight() > 80);
+    }
 }

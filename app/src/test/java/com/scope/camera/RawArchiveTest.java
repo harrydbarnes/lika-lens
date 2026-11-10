@@ -19,6 +19,7 @@ public class RawArchiveTest {
         RawArchive.Frame frame = new RawArchive.Frame();
         assertEquals("4:3", frame.aspectRatio);
         assertEquals(2, frame.pixelStride);
+        assertEquals(100, frame.postRawSensitivityBoost);
         assertNotNull(frame.blackLevels);
         assertEquals(4, frame.blackLevels.length);
         assertNotNull(frame.wbGains);
