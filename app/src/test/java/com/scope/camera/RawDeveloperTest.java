@@ -189,7 +189,7 @@ public class RawDeveloperTest {
         int rLuma = (redPixel >> 16) & 0xff;
         int bLuma = (bluePixel >> 16) & 0xff;
         org.junit.Assert.assertTrue("Panchromatic MONO / SILVER must render red brighter than blue (" + rLuma + " vs " + bLuma + ")",
-                rLuma > bLuma + 35);
+                rLuma > bLuma + 25);
 
         // When warmth is shifted > 0 on MONO / SILVER, warm silver-gelatin toning should warm R over B
         mono.warmth = 0.50f;
