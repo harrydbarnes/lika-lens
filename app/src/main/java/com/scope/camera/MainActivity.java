@@ -920,6 +920,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         header.addView(aspectButton, aspectLp);
         aspectButton.setOnClickListener(v -> { hapticClick(v); chooseAspectRatio(); });
 
+        timerButton = pill("◷  OFF", false);
+        LinearLayout.LayoutParams timerLp = new LinearLayout.LayoutParams(dp(54), dp(32));
+        timerLp.leftMargin = dp(6);
+        header.addView(timerButton, timerLp);
+        timerButton.setOnClickListener(v -> { hapticClick(v); cycleTimer(); });
+
         videoFpsButton = pill("24 FPS", true);
         LinearLayout.LayoutParams fpsLp = new LinearLayout.LayoutParams(-2, dp(32));
         fpsLp.leftMargin = dp(6);
@@ -941,11 +947,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         brainLp.leftMargin = dp(6);
         brainButton.setOnClickListener(v -> { hapticClick(v); chooseBrain(); });
         header.addView(brainButton, brainLp);
-        timerButton = pill("◷  OFF", false);
-        LinearLayout.LayoutParams timerLp = new LinearLayout.LayoutParams(dp(54), dp(32));
-        timerLp.leftMargin = dp(6);
-        header.addView(timerButton, timerLp);
-        timerButton.setOnClickListener(v -> { hapticClick(v); cycleTimer(); });
         settingsButton = pill("⚙", false);
         settingsButton.setTextSize(17f);
         settingsButton.setPadding(0, 0, 0, 0);
