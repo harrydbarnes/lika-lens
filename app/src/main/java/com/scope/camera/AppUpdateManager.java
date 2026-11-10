@@ -137,6 +137,31 @@ public final class AppUpdateManager {
         return false;
     }
 
+    public static File getApkFileForTag(Context context, String tagName) {
+        File updateDir = new File(context.getCacheDir(), "updates");
+        if (!updateDir.exists()) updateDir.mkdirs();
+        String safeTag = tagName != null ? tagName.replaceAll("[^a-zA-Z0-9._-]", "_") : "latest";
+        return new File(updateDir, "lika-lens-update-" + safeTag + ".apk");
+    }
+
+    public static void cleanStaleApks(Context context, String activeTag) {
+        try {
+            File updateDir = new File(context.getCacheDir(), "updates");
+            if (!updateDir.exists() || !updateDir.isDirectory()) return;
+            File activeFile = getApkFileForTag(context, activeTag);
+            File[] files = updateDir.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    if (f.isFile() && f.getName().endsWith(".apk")) {
+                        if (!f.getAbsolutePath().equals(activeFile.getAbsolutePath())) {
+                            f.delete();
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
     private static int parseSafeInt(String s) {
         if (s == null) return 0;
         try {
@@ -271,9 +296,10 @@ public final class AppUpdateManager {
      */
     public static void downloadAndInstall(Activity activity, UpdateInfo info, DownloadProgressListener listener) {
         worker.execute(() -> {
-            File updateDir = new File(activity.getCacheDir(), "updates");
-            if (!updateDir.exists()) updateDir.mkdirs();
-            File destFile = new File(updateDir, "lika-lens-update.apk");
+            cleanStaleApks(activity, info.tagName);
+            File destFile = getApkFileForTag(activity, info.tagName);
+            File tempFile = new File(destFile.getParentFile(), destFile.getName() + ".part");
+            if (tempFile.exists()) tempFile.delete();
 
             HttpURLConnection conn = null;
             try {
@@ -307,7 +333,7 @@ public final class AppUpdateManager {
                 if (totalBytes <= 0) totalBytes = info.apkSize;
 
                 try (InputStream input = conn.getInputStream();
-                     FileOutputStream output = new FileOutputStream(destFile)) {
+                     FileOutputStream output = new FileOutputStream(tempFile)) {
                     byte[] buffer = new byte[32 * 1024];
                     long downloaded = 0;
                     int count;
@@ -329,6 +355,9 @@ public final class AppUpdateManager {
                     }
                     output.flush();
                 }
+
+                if (destFile.exists()) destFile.delete();
+                tempFile.renameTo(destFile);
                 destFile.setReadable(true, false);
                 sPendingInstallApk = destFile;
                 sPendingUpdateInfo = info;
@@ -338,6 +367,7 @@ public final class AppUpdateManager {
                     promptInstall(activity, destFile, info);
                 });
             } catch (Exception e) {
+                if (tempFile.exists()) tempFile.delete();
                 Log.e(TAG, "Download failed", e);
                 mainHandler.post(() -> {
                     if (listener != null) listener.onError("Download failed: " + e.getMessage());
@@ -405,6 +435,19 @@ public final class AppUpdateManager {
     public static void onResume(Activity activity) {
         if (activity == null || activity.isFinishing()) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed()) return;
+
+        // If the app has already updated to or past the pending update, clear pending state
+        if (sPendingUpdateInfo != null) {
+            String currentVer = getAppVersionName(activity);
+            int currentCode = getAppVersionCode(activity);
+            if (!isNewerVersion(sPendingUpdateInfo.tagName, currentVer, currentCode)) {
+                cleanStaleApks(activity, "");
+                sPendingInstallApk = null;
+                sPendingUpdateInfo = null;
+                sWaitingForInstallPermission = false;
+                return;
+            }
+        }
 
         if (sWaitingForInstallPermission) {
             sWaitingForInstallPermission = false;
@@ -574,8 +617,7 @@ public final class AppUpdateManager {
         actions.addView(laterBtn, laterLp);
         laterBtn.setOnClickListener(v -> dialog.dismiss());
 
-        File updateDir = new File(activity.getCacheDir(), "updates");
-        File destFile = new File(updateDir, "lika-lens-update.apk");
+        File destFile = getApkFileForTag(activity, info.tagName);
         boolean isAlreadyDownloaded = destFile.exists() && destFile.length() > 1024
                 && (info.apkSize <= 0 || Math.abs(destFile.length() - info.apkSize) < 100000);
         if (isAlreadyDownloaded) {
