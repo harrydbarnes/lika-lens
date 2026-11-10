@@ -42,6 +42,8 @@ import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.DngCreator;
+import android.location.Location;
+import android.location.LocationManager;
 import android.media.ExifInterface;
 import android.media.Image;
 import android.media.ImageReader;
@@ -110,6 +112,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private static final String TAG = "LikaLens";
     private static final int CAMERA_PERMISSION = 41;
     private static final int VIDEO_PERMISSION = 42;
+    private static final int LOCATION_PERMISSION = 43;
     private static final int BG = 0xff0b0d0e;
     private static final int ACCENT = 0xffd7b574;
     private static final int MUTED = 0xffa0aaa4;
@@ -143,6 +146,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private TextView shutterValueText;
     private TextView isoValueText;
     private TextView whiteBalanceValueText;
+    private TextView framesValueText;
+    private TextView framesTopLabel;
+    private View framesBox;
+    private volatile boolean timerCountdownRunning = false;
+    private volatile boolean timerTorchActive = false;
+    private final Handler timerHandler = new Handler(Looper.getMainLooper());
+    private Runnable timerCountdownRunnable;
+    private long lastDirtyLensAlertAt = 0L;
+    private int dirtyLensAccumulator = 0;
     private TextView zoomSliderValue;
     private final List<TextView> lensButtons = new ArrayList<>();
     private CompositionGrid gridOverlay;
@@ -411,18 +423,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 boolean wantHist = AppSettings.getBoolean(MainActivity.this, AppSettings.HISTOGRAM, false);
                 boolean wantZebra = AppSettings.getBoolean(MainActivity.this, AppSettings.ZEBRA, false);
                 boolean wantPeak = AppSettings.getBoolean(MainActivity.this, AppSettings.FOCUS_PEAKING, false);
-                if (wantHist || wantZebra || wantPeak) {
+                boolean wantDirty = AppSettings.getBoolean(MainActivity.this, AppSettings.DIRTY_LENS_WARNING, true);
+                if (wantHist || wantZebra || wantPeak || wantDirty) {
                     try {
                         Bitmap sample = textureView.getBitmap(64, 48);
                         if (sample != null) {
-                            computeExposureAids(sample, wantHist, wantZebra, wantPeak);
+                            computeExposureAids(sample, wantHist, wantZebra, wantPeak, wantDirty);
                             sample.recycle();
                             gridOverlay.invalidate();
                         }
                     } catch (Throwable t) {
                         Log.w(TAG, "Failed to sample texture for exposure aids", t);
                     }
-                    textureView.postDelayed(this, 110L);
+                    textureView.postDelayed(this, (wantHist || wantZebra || wantPeak) ? 110L : 450L);
                     return;
                 }
             }
@@ -430,7 +443,50 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     };
 
-    private void computeExposureAids(Bitmap bmp, boolean wantHist, boolean wantZebra, boolean wantPeak) {
+    private void checkDirtyLens(int[] luma, int w, int h) {
+        int total = w * h;
+        long sumLuma = 0;
+        int minLuma = 255;
+        int maxLuma = 0;
+        for (int i = 0; i < total; i++) {
+            int y = luma[i];
+            sumLuma += y;
+            if (y < minLuma) minLuma = y;
+            if (y > maxLuma) maxLuma = y;
+        }
+        int meanLuma = (int) (sumLuma / total);
+        if (meanLuma < 55 || meanLuma > 225) {
+            dirtyLensAccumulator = 0;
+            return;
+        }
+        long gradientSum = 0;
+        int edgeCount = 0;
+        for (int y = 1; y < h - 1; y++) {
+            int row = y * w;
+            for (int x = 1; x < w - 1; x++) {
+                int idx = row + x;
+                gradientSum += Math.abs(luma[idx + 1] - luma[idx - 1]) + Math.abs(luma[idx + w] - luma[idx - w]);
+                edgeCount += 2;
+            }
+        }
+        float avgGradient = edgeCount > 0 ? ((float) gradientSum / edgeCount) : 0f;
+        boolean hasSmudgeBloom = (minLuma > 36 && maxLuma >= 210 && avgGradient < 4.4f);
+        if (hasSmudgeBloom) {
+            dirtyLensAccumulator++;
+            if (dirtyLensAccumulator >= 6) {
+                long now = SystemClock.elapsedRealtime();
+                if (now - lastDirtyLensAlertAt > 90_000L) {
+                    lastDirtyLensAlertAt = now;
+                    dirtyLensAccumulator = 0;
+                    runOnUiThread(() -> showMessage("Wipe lens · Smudge or haze detected"));
+                }
+            }
+        } else {
+            dirtyLensAccumulator = Math.max(0, dirtyLensAccumulator - 1);
+        }
+    }
+
+    private void computeExposureAids(Bitmap bmp, boolean wantHist, boolean wantZebra, boolean wantPeak, boolean wantDirty) {
         int w = bmp.getWidth();
         int h = bmp.getHeight();
         int total = w * h;
@@ -490,6 +546,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     }
                 }
             }
+        }
+        if (wantDirty && !isFrontCamera()) {
+            checkDirtyLens(luma, w, h);
         }
     }
 
@@ -625,8 +684,28 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
         }
         startBackgroundThread();
+        String launchMode = AppSettings.get(this, AppSettings.LAUNCH_MODE, "Photo (default)");
+        String intentAction = getIntent() != null ? getIntent().getAction() : null;
+        boolean isVideoIntent = MediaStore.INTENT_ACTION_VIDEO_CAMERA.equals(intentAction)
+                || MediaStore.ACTION_VIDEO_CAPTURE.equals(intentAction);
+        boolean launchInVideo = isVideoIntent;
+        if (!isVideoIntent) {
+            if ("Cinematic Video".equals(launchMode)) {
+                launchInVideo = true;
+            } else if ("Last used".equals(launchMode)) {
+                launchInVideo = AppSettings.getBoolean(this, AppSettings.LAST_USED_MODE, false);
+            }
+        }
+        if (launchInVideo) {
+            root.post(() -> setVideoMode(true));
+        }
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
+        } else if (AppSettings.getBoolean(this, AppSettings.LOCATION, false)) {
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
+                    && checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, LOCATION_PERMISSION);
+            }
         }
     }
 
@@ -1062,15 +1141,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         View shutterBox = readoutView("SHUTTER", "AUTO");
         View isoBox = readoutView("ISO", "AUTO");
         View wbBox = readoutView("WB", "AUTO");
+        framesBox = readoutView("FRAMES", "--");
         shutterBox.setOnClickListener(v -> { hapticClick(v); chooseShutterSpeed(); });
         shutterBox.setOnLongClickListener(v -> { toggleAeLock(); return true; });
         isoBox.setOnClickListener(v -> { hapticClick(v); chooseManualIso(); });
         isoBox.setOnLongClickListener(v -> { toggleAeLock(); return true; });
         wbBox.setOnClickListener(v -> { hapticClick(v); chooseWhiteBalance(); });
         wbBox.setOnLongClickListener(v -> { toggleAeLock(); return true; });
+        framesBox.setOnClickListener(v -> { hapticClick(v); showMessage(AppSettings.formatStorageInfo(MainActivity.this)); });
+        framesBox.setOnLongClickListener(v -> { hapticClick(v); showMessage(AppSettings.formatStorageInfo(MainActivity.this)); return true; });
         telemetry.addView(shutterBox, new LinearLayout.LayoutParams(0, -2, 1));
         telemetry.addView(isoBox, new LinearLayout.LayoutParams(0, -2, 1));
         telemetry.addView(wbBox, new LinearLayout.LayoutParams(0, -2, 1));
+        telemetry.addView(framesBox, new LinearLayout.LayoutParams(0, -2, 1));
         telemetry.setClickable(true);
         telemetry.setContentDescription("Exposure telemetry. Tap SHUTTER, ISO, or WB to adjust; long-press to lock exposure.");
         telemetry.setOnLongClickListener(v -> { toggleAeLock(); return true; });
@@ -1665,6 +1748,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void setVideoMode(boolean enabled) {
         if (videoRecording || videoStarting || videoMode == enabled) return;
         videoMode = enabled;
+        AppSettings.prefs(this).edit().putBoolean(AppSettings.LAST_USED_MODE, enabled).apply();
         if (quickAdjustPanel != null) quickAdjustPanel.setVisibility(View.GONE);
         updateVideoModeUi();
         updateQuickButtons();
@@ -1996,6 +2080,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (recordAudio) mediaRecorder.setAudioEncodingBitRate(160_000);
             int orientHint = lockedVideoOrientation >= 0 ? lockedVideoOrientation : jpegOrientation();
             mediaRecorder.setOrientationHint(orientHint);
+            Location loc = getCaptureLocation();
+            if (loc != null) {
+                mediaRecorder.setLocation((float) loc.getLatitude(), (float) loc.getLongitude());
+            }
             mediaRecorder.setOutputFile(videoTempFile.getAbsolutePath());
             mediaRecorder.prepare();
 
@@ -2472,6 +2560,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if ("SHUTTER".equals(name)) shutterValueText = bottom;
         if ("ISO".equals(name)) isoValueText = bottom;
         if ("WB".equals(name) || "WHITE BALANCE".equals(name)) whiteBalanceValueText = bottom;
+        if ("FRAMES".equals(name) || "ROLL".equals(name)) {
+            framesTopLabel = top;
+            framesValueText = bottom;
+        }
         box.addView(top);
         box.addView(bottom);
         return box;
@@ -3272,6 +3364,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             showMessage("Camera is starting up…");
             return;
         }
+        if (timerCountdownRunning) {
+            cancelTimerCountdown();
+            return;
+        }
         if (captureSession == null || captureInFlight) {
             return;
         }
@@ -3279,14 +3375,74 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             showMessage("Developing previous frames…");
             return;
         }
-        captureInFlight = true;
         if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
         int timer = parseTimer(AppSettings.get(this, AppSettings.TIMER, "Off"));
-        captureButton.setAlpha(.65f);
         if (timer > 0) {
-            showMessage("Capturing in " + timer + "…");
-            cameraHandler.postDelayed(this::triggerCaptureWithScreenFlashIfNeeded, timer * 1000L);
-        } else triggerCaptureWithScreenFlashIfNeeded();
+            startTimerCountdown(timer);
+        } else {
+            captureInFlight = true;
+            captureButton.setAlpha(.65f);
+            triggerCaptureWithScreenFlashIfNeeded();
+        }
+    }
+
+    private void startTimerCountdown(int totalSeconds) {
+        timerCountdownRunning = true;
+        captureInFlight = true;
+        if (captureButton != null) captureButton.setAlpha(0.65f);
+        final boolean useTorch = AppSettings.getBoolean(this, AppSettings.TIMER_LIGHT, true) && flashSupported && !isFrontCamera();
+
+        timerCountdownRunnable = new Runnable() {
+            int remaining = totalSeconds;
+            @Override
+            public void run() {
+                if (!timerCountdownRunning) {
+                    cancelTimerCountdown();
+                    return;
+                }
+                if (remaining <= 0) {
+                    timerCountdownRunning = false;
+                    setTimerTorchPulse(false);
+                    triggerCaptureWithScreenFlashIfNeeded();
+                    return;
+                }
+                showMessage(String.format(Locale.US, "⏱ %ds", remaining));
+                hapticDetent();
+                if (useTorch) {
+                    setTimerTorchPulse(true);
+                    timerHandler.postDelayed(() -> setTimerTorchPulse(false), 120L);
+                    if (remaining <= 2) {
+                        timerHandler.postDelayed(() -> {
+                            if (timerCountdownRunning) {
+                                setTimerTorchPulse(true);
+                                timerHandler.postDelayed(() -> setTimerTorchPulse(false), 100L);
+                            }
+                        }, 500L);
+                    }
+                }
+                remaining--;
+                timerHandler.postDelayed(this, 1000L);
+            }
+        };
+        timerHandler.post(timerCountdownRunnable);
+    }
+
+    private void cancelTimerCountdown() {
+        timerCountdownRunning = false;
+        captureInFlight = false;
+        if (timerCountdownRunnable != null) {
+            timerHandler.removeCallbacks(timerCountdownRunnable);
+            timerCountdownRunnable = null;
+        }
+        setTimerTorchPulse(false);
+        if (captureButton != null) captureButton.setAlpha(1.0f);
+        showMessage("Timer canceled");
+    }
+
+    private void setTimerTorchPulse(boolean active) {
+        if (timerTorchActive == active) return;
+        timerTorchActive = active;
+        refreshPreviewRequest();
     }
 
     private void triggerCaptureWithScreenFlashIfNeeded() {
@@ -3408,6 +3564,33 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         return cropped;
     }
 
+    private Location getCaptureLocation() {
+        if (!AppSettings.getBoolean(this, AppSettings.LOCATION, false)) return null;
+        if (AppSettings.getBoolean(this, AppSettings.STRIP_GEO, false)) return null;
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
+                && checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return null;
+        }
+        try {
+            LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
+            if (lm == null) return null;
+            Location best = null;
+            List<String> providers = lm.getProviders(true);
+            if (providers != null) {
+                for (String p : providers) {
+                    Location l = lm.getLastKnownLocation(p);
+                    if (l != null && (best == null || l.getTime() > best.getTime())) {
+                        best = l;
+                    }
+                }
+            }
+            return best;
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to query capture location", t);
+            return null;
+        }
+    }
+
     private void writeDng(Image image, TotalCaptureResult result, CameraCharacteristics captureCharacteristics, String name, String subfolder) throws Exception {
         if (result == null || captureCharacteristics == null) throw new IllegalStateException("Missing capture metadata");
         OutputTarget target = createOutput(name, "image/x-adobe-dng", subfolder);
@@ -3415,6 +3598,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         DngCreator creator = null;
         try {
             creator = new DngCreator(captureCharacteristics, result);
+            Location loc = getCaptureLocation();
+            if (loc != null) {
+                creator.setLocation(loc);
+            }
             try (OutputStream stream = target.open()) {
                 creator.writeImage(stream, image);
             }
@@ -3474,7 +3661,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 }
 
                 boolean stripGeo = AppSettings.getBoolean(this, AppSettings.STRIP_GEO, false);
-                if (stripGeo) {
+                boolean writeLocation = AppSettings.getBoolean(this, AppSettings.LOCATION, false);
+                if (stripGeo || !writeLocation) {
                     exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE, null);
                     exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE_REF, null);
                     exif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE, null);
@@ -3484,6 +3672,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     exif.setAttribute(ExifInterface.TAG_GPS_TIMESTAMP, null);
                     exif.setAttribute(ExifInterface.TAG_GPS_DATESTAMP, null);
                     exif.setAttribute(ExifInterface.TAG_GPS_PROCESSING_METHOD, null);
+                } else {
+                    Location loc = getCaptureLocation();
+                    if (loc != null) {
+                        exif.setGpsInfo(loc);
+                    }
                 }
                 exif.saveAttributes();
             } catch (Exception exifError) {
@@ -4647,7 +4840,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
             return;
         }
-        if (mode.startsWith("Torch")) {
+        if (timerTorchActive && !isFrontCamera()) {
+            builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH);
+        } else if (mode.startsWith("Torch")) {
             builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH);
         } else if (!preview && mode.startsWith("Auto")
                 && !AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual")) {
@@ -4701,6 +4896,23 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (whiteBalanceValueText != null) {
             whiteBalanceValueText.setText(wb <= 0 ? "AUTO" : wb + " K");
             whiteBalanceValueText.setTextColor(wb > 0 ? ACCENT : 0xfff0f1ea);
+        }
+        if (framesValueText != null && framesBox != null) {
+            boolean showFrames = AppSettings.getBoolean(this, AppSettings.FRAME_COUNTER, true);
+            framesBox.setVisibility(showFrames ? View.VISIBLE : View.GONE);
+            if (showFrames) {
+                if (videoMode) {
+                    if (framesTopLabel != null) framesTopLabel.setText("REEL");
+                    long mins = AppSettings.getEstimatedRemainingVideoMinutes(this);
+                    long h = mins / 60;
+                    long m = mins % 60;
+                    framesValueText.setText(h > 0 ? (h + "h" + m + "m") : (m + "m"));
+                } else {
+                    if (framesTopLabel != null) framesTopLabel.setText("FRAMES");
+                    long count = AppSettings.getEstimatedRemainingFrames(this);
+                    framesValueText.setText(count > 9999 ? "9999+" : String.valueOf(count));
+                }
+            }
         }
         updateTelemetryVisibility();
     }
@@ -5621,6 +5833,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void closeCamera() {
+        if (timerCountdownRunning) cancelTimerCountdown();
         if (!switchingVideoCamera && (videoRecording || videoStarting || mediaRecorder != null)) stopVideoRecording(false);
         if (zoomAnimator != null) { zoomAnimator.cancel(); zoomAnimator = null; }
         if (textureView != null) textureView.animate().cancel();
@@ -5676,6 +5889,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         else if (requestCode == CAMERA_PERMISSION) {
             cameraState.setText("CAMERA PERMISSION REQUIRED");
             showMessage("Allow camera access to use Lika Lens.");
+        }
+        if (requestCode == LOCATION_PERMISSION) {
+            boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted) showMessage("GPS geotagging active");
         }
     }
 }

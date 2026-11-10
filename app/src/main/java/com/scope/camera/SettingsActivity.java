@@ -1,9 +1,11 @@
 package com.scope.camera;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.ContentUris;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -283,6 +285,8 @@ public class SettingsActivity extends Activity {
 
     private void populateCameraSettings() {
         beginSection("CAPTURE", "Sensor, focus behaviour and timing.");
+        addChoice("App launch mode", "Camera mode when opening Lika Lens", AppSettings.LAUNCH_MODE,
+                AppSettings.LAUNCH_MODES, "Photo (default)");
         addChoice("Frame shape", "Match the viewfinder guide and rendered JPEG; keep the DNG full-frame", AppSettings.ASPECT_RATIO,
                 AppSettings.ASPECT_RATIOS, "4:3");
         addChoice("Default lens", "Camera lens selected on app launch", AppSettings.DEFAULT_LENS,
@@ -290,6 +294,7 @@ public class SettingsActivity extends Activity {
         addChoice("Flash mode", "Rear LED flash or front warm Retina screen illumination", AppSettings.FLASH,
                 new String[]{"Off", "Auto", "Torch"}, "Off");
         addSwitch("Mirror front camera", "Save front-camera selfies horizontally flipped as previewed", AppSettings.MIRROR_FRONT, true);
+        addSwitch("Show dirty lens warning", "Display a prompt if lens smudges or diffuse haze reduce contrast", AppSettings.DIRTY_LENS_WARNING, true);
         addChoice("Stabilization", "Optical (OIS) and electronic video stabilization", AppSettings.STABILIZATION,
                 new String[]{"Cinema OIS + EIS", "Optical only (OIS)", "Off (Tripod / Gimbal)"}, "Cinema OIS + EIS");
         addChoice("RAW capture size", "Uses the largest RAW stream the camera supports", AppSettings.RAW_SIZE,
@@ -302,6 +307,7 @@ public class SettingsActivity extends Activity {
                 new String[]{"ISO 50", "ISO 100", "ISO 200", "ISO 400", "ISO 800", "ISO 1600", "ISO 3200"}, "ISO 100");
         addChoice("Self-timer", "Delay before the shutter fires", AppSettings.TIMER,
                 new String[]{"Off", "3 seconds", "10 seconds"}, "Off");
+        addSwitch("Timer countdown light", "Pulse rear LED flash rhythmically during self-timer countdown", AppSettings.TIMER_LIGHT, true);
         addChoice("Focus behaviour", "Camera2 autofocus mode", "focus_mode",
                 new String[]{"Continuous picture autofocus", "Single autofocus"}, "Continuous picture autofocus");
         addChoice("Anti-banding / flicker", "Compensate for AC artificial lighting cycles", AppSettings.ANTI_BANDING,
@@ -349,6 +355,7 @@ public class SettingsActivity extends Activity {
                 new String[]{"Shutter", "Zoom", "Volume", "Off"}, "Shutter");
         addSwitch("Shutter ocular wink", "Blackout pulse during optical leaf shutter exposure", AppSettings.SHUTTER_WINK, true);
         addSwitch("Exposure telemetry HUD", "Display live shutter speed, ISO, and white balance metering on the viewfinder", AppSettings.SHOW_TELEMETRY, false);
+        addSwitch("Storage frame counter in HUD", "Show estimated remaining film frames in the exposure telemetry strip", AppSettings.FRAME_COUNTER, true);
         addInfo("Grid guides", "The frame outline and grid help compose the shot. They are not saved into the photo.", 0xffaab3ad);
         boolean hasRaw = AppSettings.getBoolean(this, AppSettings.RAW_SUPPORTED, false);
         addInfo("RAW sensor support", hasRaw ? "Available on the last opened camera" : "Not confirmed yet · open the camera to detect support", hasRaw ? ACCENT : 0xffdfb56f);
@@ -374,7 +381,8 @@ public class SettingsActivity extends Activity {
         addChoice("File name prefix", "Organise Lika Lens captures in Photos", AppSettings.FILE_PREFIX,
                 new String[]{"LIKA", "STILLS", "REEL", "CUSTOM…"}, "LIKA");
         addSwitch("Save rendered JPEG to Photos", "Add the developed still to Pictures/Lika Lens", AppSettings.AUTO_EXPORT, true);
-        addSwitch("Write location metadata", "Location permission and metadata support are not enabled in this build", AppSettings.LOCATION, false);
+        addSwitch("Write location metadata", "Embed GPS coordinates in JPEG and DNG digital negatives", AppSettings.LOCATION, false);
+        addInfo("Device storage & roll capacity", AppSettings.formatStorageInfo(this), ACCENT);
 
         beginSection("ANIMATED GIF CREATOR", "Stop-motion loops and video to animated GIF export.");
         addChoice("Default GIF frame rate", "Playback speed for exported animated GIFs", AppSettings.GIF_FPS,
@@ -984,17 +992,35 @@ public class SettingsActivity extends Activity {
         row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
         Switch toggle = new Switch(this);
         toggle.setButtonTintList(android.content.res.ColorStateList.valueOf(ACCENT));
-        toggle.setChecked(AppSettings.getBoolean(this, key, fallback));
-        if (AppSettings.LOCATION.equals(key)) toggle.setEnabled(false);
+        final boolean isLocation = AppSettings.LOCATION.equals(key);
+        boolean hasLocationPerm = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        toggle.setChecked(AppSettings.getBoolean(this, key, fallback) && (!isLocation || hasLocationPerm));
         toggle.setOnCheckedChangeListener((button, checked) -> {
             if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
                 toggle.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+            }
+            if (isLocation && checked) {
+                if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
+                        && checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, 1002);
+                }
             }
             AppSettings.prefs(this).edit().putBoolean(key, checked).apply();
             triggerHeroUpdate();
         });
         row.addView(toggle);
         addRowToCurrentCard(row);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1002) {
+            boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            AppSettings.prefs(this).edit().putBoolean(AppSettings.LOCATION, granted).apply();
+            rebuildContent();
+        }
     }
 
     private void addInfo(String title, String detailText, int color) {

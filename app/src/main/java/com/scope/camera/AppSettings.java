@@ -2,7 +2,11 @@ package com.scope.camera;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Environment;
+import android.os.StatFs;
 import android.util.Log;
+import java.io.File;
+import java.util.Locale;
 
 final class AppSettings {
     private static final String TAG = "AppSettings";
@@ -102,6 +106,12 @@ final class AppSettings {
     static final String OPTICAL_LOUPE = "optical_loupe";
     static final String HISTOGRAM_MODE = "histogram_mode";
     static final String SHOW_TELEMETRY = "show_telemetry";
+    static final String TIMER_LIGHT = "timer_light";
+    static final String DIRTY_LENS_WARNING = "dirty_lens_warning";
+    static final String LAUNCH_MODE = "launch_mode";
+    static final String[] LAUNCH_MODES = {"Photo (default)", "Cinematic Video", "Last used"};
+    static final String LAST_USED_MODE = "last_used_mode";
+    static final String FRAME_COUNTER = "frame_counter";
 
     // Custom Film Recipes (User Presets)
     static final String RECIPE_1_NAME = "recipe_1_name";
@@ -298,5 +308,37 @@ final class AppSettings {
                 .putInt(WHITE_BALANCE, clamped)
                 .putString(WHITE_BALANCE_MODE, formatWhiteBalanceMode(clamped))
                 .apply();
+    }
+
+    static long getAvailableStorageBytes(Context context) {
+        try {
+            File path = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
+            if (!path.exists()) path = context.getFilesDir();
+            StatFs stat = new StatFs(path.getPath());
+            return stat.getAvailableBytes();
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    static long getEstimatedRemainingFrames(Context context) {
+        long bytes = getAvailableStorageBytes(context);
+        return Math.max(0L, bytes / (28L * 1024L * 1024L)); // ~28MB per DNG + rendered JPEG
+    }
+
+    static long getEstimatedRemainingVideoMinutes(Context context) {
+        long bytes = getAvailableStorageBytes(context);
+        return Math.max(0L, bytes / (180L * 1024L * 1024L)); // ~180MB/min at 24Mbps
+    }
+
+    static String formatStorageInfo(Context context) {
+        long bytes = getAvailableStorageBytes(context);
+        double gb = bytes / (1024.0 * 1024.0 * 1024.0);
+        long frames = getEstimatedRemainingFrames(context);
+        long mins = getEstimatedRemainingVideoMinutes(context);
+        long h = mins / 60;
+        long m = mins % 60;
+        String videoStr = h > 0 ? (h + "h " + m + "m") : (m + "m");
+        return String.format(Locale.US, "%.1f GB available · ~%d film frames (or ~%s video)", gb, frames, videoStr);
     }
 }
