@@ -181,4 +181,31 @@ public final class WindowMetricsHelper {
         }
         return insets;
     }
+
+    /**
+     * Returns the bounding rectangle of the top display cutout (such as a selfie camera punch-hole or notch),
+     * or null if there is no top cutout.
+     */
+    public static Rect getTopCutoutRect(View rootView) {
+        if (rootView == null) return null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            WindowInsets wi = rootView.getRootWindowInsets();
+            if (wi != null) {
+                DisplayCutout cutout = wi.getDisplayCutout();
+                if (cutout != null) {
+                    for (Rect r : cutout.getBoundingRects()) {
+                        if (r.top <= cutout.getSafeInsetTop() && r.height() > 0) {
+                            return new Rect(r);
+                        }
+                    }
+                    if (cutout.getSafeInsetTop() > 0) {
+                        int cx = rootView.getWidth() / 2;
+                        int size = cutout.getSafeInsetTop();
+                        return new Rect(cx - size, 0, cx + size, size);
+                    }
+                }
+            }
+        }
+        return null;
+    }
 }
