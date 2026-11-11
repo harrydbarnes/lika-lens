@@ -273,7 +273,7 @@ public class RawDeveloperTest {
         RawDeveloper.Look restoredMed = RawDeveloper.Look.fromJson(jsonMed);
         assertNotNull(restoredMed);
         assertEquals("Medium Format 6×6 Rebate", restoredMed.frameBorder);
-        org.junit.Assert.assertNull(RawDeveloper.applyFrameBorder(null, restoredMed, null, "", ""));
+        org.junit.Assert.assertNull(RawDeveloper.applyFrameBorder(null, restoredMed, null));
 
         RawDeveloper.Look lookCinema = new RawDeveloper.Look();
         lookCinema.frameBorder = "Cinemascope 2.39:1 Matte";
@@ -281,6 +281,6 @@ public class RawDeveloperTest {
         RawDeveloper.Look restoredCinema = RawDeveloper.Look.fromJson(jsonCinema);
         assertNotNull(restoredCinema);
         assertEquals("Cinemascope 2.39:1 Matte", restoredCinema.frameBorder);
-        org.junit.Assert.assertNull(RawDeveloper.applyFrameBorder(null, restoredCinema, null, "", ""));
+        org.junit.Assert.assertNull(RawDeveloper.applyFrameBorder(null, restoredCinema, null));
     }
 }
