@@ -28,4 +28,39 @@ public class AppSettingsTest {
         assertTrue(AppSettings.BRAIN_CHOICES.length >= 6);
         assertEquals(AppSettings.BRAIN_CHOICES.length, AppSettings.BRAIN_DESCRIPTIONS.length);
     }
+
+    @Test
+    public void testStabilizationAndAudioChoices() {
+        assertNotNull(AppSettings.STABILIZATION_CHOICES);
+        assertTrue(AppSettings.STABILIZATION_CHOICES.length >= 5);
+        boolean hasLocked = false;
+        boolean hasActive = false;
+        for (String s : AppSettings.STABILIZATION_CHOICES) {
+            if (s.startsWith("Locked")) hasLocked = true;
+            if (s.startsWith("Active")) hasActive = true;
+        }
+        assertTrue("STABILIZATION_CHOICES must include Locked", hasLocked);
+        assertTrue("STABILIZATION_CHOICES must include Active", hasActive);
+
+        assertNotNull(AppSettings.VIDEO_AUDIO_CHOICES);
+        boolean hasSpeech = false;
+        for (String a : AppSettings.VIDEO_AUDIO_CHOICES) {
+            if (a.contains("Speech")) hasSpeech = true;
+        }
+        assertTrue("VIDEO_AUDIO_CHOICES must include Speech enhanced", hasSpeech);
+        assertNotNull(AppSettings.SPEECH_ENHANCEMENT);
+    }
+
+    @Test
+    public void testFrameBorderChoices() {
+        assertNotNull(AppSettings.FRAME_BORDER_CHOICES);
+        boolean hasMediumFormat = false;
+        boolean hasCinemascope = false;
+        for (String b : AppSettings.FRAME_BORDER_CHOICES) {
+            if (b.contains("Medium Format")) hasMediumFormat = true;
+            if (b.contains("Cinemascope")) hasCinemascope = true;
+        }
+        assertTrue("FRAME_BORDER_CHOICES must include Medium Format 6x6 Rebate", hasMediumFormat);
+        assertTrue("FRAME_BORDER_CHOICES must include Cinemascope 2.39:1 Matte", hasCinemascope);
+    }
 }

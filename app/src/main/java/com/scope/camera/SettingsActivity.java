@@ -256,7 +256,7 @@ public class SettingsActivity extends Activity {
         addSlider("Halation", "Warm response around bright highlights", AppSettings.HALATION, 0, 100, AppSettings.DEFAULT_HALATION);
         addSlider("Vignette", "Subtle edge fall-off", AppSettings.VIGNETTE, 0, 100, AppSettings.DEFAULT_VIGNETTE);
         addChoice("Frame border", "Optional film rebate or museum matte border on export", AppSettings.FRAME_BORDER,
-                new String[]{"None", "35mm Film Rebate", "Museum Matte"}, "None");
+                AppSettings.FRAME_BORDER_CHOICES, "None");
         addSwitch("Optical lens correction", "Apply sensor lens shading map and geometric distortion correction", AppSettings.OPTICAL_CORRECTION, true);
 
         beginSection("CUSTOM FILM RECIPES", "Store and manage personalized look presets.");
@@ -299,7 +299,7 @@ public class SettingsActivity extends Activity {
         addSwitch("Mirror front camera", "Save front-camera selfies horizontally flipped as previewed", AppSettings.MIRROR_FRONT, true);
         addSwitch("Show dirty lens warning", "Display a prompt if lens smudges or diffuse haze reduce contrast", AppSettings.DIRTY_LENS_WARNING, true);
         addChoice("Stabilization", "Optical (OIS) and electronic video stabilization", AppSettings.STABILIZATION,
-                new String[]{"Cinema OIS + EIS", "Optical only (OIS)", "Off (Tripod / Gimbal)"}, "Cinema OIS + EIS");
+                AppSettings.STABILIZATION_CHOICES, "Cinema OIS + EIS");
         addChoice("RAW capture size", "Uses the largest RAW stream the camera supports", AppSettings.RAW_SIZE,
                 new String[]{"Maximum sensor resolution", "12 MP · faster development"}, "Maximum sensor resolution");
         addChoice("Exposure mode", "Manual sensor controls require device support", AppSettings.EXPOSURE_MODE,
@@ -330,7 +330,8 @@ public class SettingsActivity extends Activity {
                 new String[]{"H.264 · Universal", "HEVC (H.265) · High Efficiency"}, "H.264 · Universal");
         addSwitch("10-bit HLG HDR video", "Record 10-bit High Dynamic Range video when supported by the sensor", AppSettings.VIDEO_HDR, false);
         addChoice("Audio source", "Microphone processing during video recording", AppSettings.VIDEO_AUDIO,
-                new String[]{"Camcorder · Stereo", "Unprocessed · Raw Mic", "Voice · Filtered", "Muted · MOS (No Audio)"}, "Camcorder · Stereo");
+                AppSettings.VIDEO_AUDIO_CHOICES, "Camcorder · Stereo");
+        addSwitch("Speech enhancement & wind filter", "Reduce background wind, traffic and ambient noise while boosting voice clarity", AppSettings.SPEECH_ENHANCEMENT, true);
         addSwitch("Directional audio zoom", "Focus microphone pickup toward the subject when zooming in", AppSettings.AUDIO_ZOOM, true);
         addInfo("Mid-Take Camera Switching", "Switch between front/rear cameras or lenses while recording. Segments are stitched automatically into a single video.", ACCENT);
         addInfo("180° Shutter Rule", "In 24 fps cinematic mode, the app targets a 1/48s exposure interval for authentic motion cadence.", 0xffaab3ad);

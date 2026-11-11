@@ -264,4 +264,23 @@ public class RawDeveloperTest {
         org.junit.Assert.assertTrue("Pull -1 should lift shadow tones (got box=" + sBoxR + " pull=" + sPullR + ")",
                 sPullR >= sBoxR);
     }
+
+    @Test
+    public void testFrameBorderSerializationAndNullHandling() {
+        RawDeveloper.Look lookMed = new RawDeveloper.Look();
+        lookMed.frameBorder = "Medium Format 6×6 Rebate";
+        String jsonMed = lookMed.toJson();
+        RawDeveloper.Look restoredMed = RawDeveloper.Look.fromJson(jsonMed);
+        assertNotNull(restoredMed);
+        assertEquals("Medium Format 6×6 Rebate", restoredMed.frameBorder);
+        org.junit.Assert.assertNull(RawDeveloper.applyFrameBorder(null, restoredMed, null, "", ""));
+
+        RawDeveloper.Look lookCinema = new RawDeveloper.Look();
+        lookCinema.frameBorder = "Cinemascope 2.39:1 Matte";
+        String jsonCinema = lookCinema.toJson();
+        RawDeveloper.Look restoredCinema = RawDeveloper.Look.fromJson(jsonCinema);
+        assertNotNull(restoredCinema);
+        assertEquals("Cinemascope 2.39:1 Matte", restoredCinema.frameBorder);
+        org.junit.Assert.assertNull(RawDeveloper.applyFrameBorder(null, restoredCinema, null, "", ""));
+    }
 }

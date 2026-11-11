@@ -144,13 +144,34 @@ final class AppSettings {
     static final String STRIP_GEO = "strip_geo";
     static final String CUSTOM_PREFIX_VALUE = "custom_prefix_value";
     static final String FRAME_BORDER = "frame_border";
+    static final String[] FRAME_BORDER_CHOICES = {
+            "None",
+            "35mm Film Rebate",
+            "Medium Format 6×6 Rebate",
+            "Cinemascope 2.39:1 Matte",
+            "Museum Matte"
+    };
 
     // Optical, Hardware & Video Keys
     static final String OPTICAL_CORRECTION = "optical_correction";
     static final String MIRROR_FRONT = "mirror_front";
     static final String STABILIZATION = "stabilization";
+    static final String[] STABILIZATION_CHOICES = {
+            "Cinema OIS + EIS",
+            "Locked (Tripod)",
+            "Active (Action run)",
+            "Optical only (OIS)",
+            "Off (Gimbal / Manual)"
+    };
     static final String VIDEO_CODEC = "video_codec";
     static final String VIDEO_AUDIO = "video_audio";
+    static final String[] VIDEO_AUDIO_CHOICES = {
+            "Camcorder · Stereo",
+            "Speech enhanced · Wind filter",
+            "Unprocessed · Raw Mic",
+            "Muted · MOS (No Audio)"
+    };
+    static final String SPEECH_ENHANCEMENT = "speech_enhancement";
     static final String VIDEO_HDR = "video_hdr";
     static final String AUDIO_ZOOM = "audio_zoom";
 

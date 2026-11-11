@@ -134,6 +134,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private TextView videoModeButton;
     private TextView videoFpsButton;
     private TextView videoAspectButton;
+    private TextView videoStabButton;
     private TextView recordingLockButton;
     private TextView videoPauseButton;
     private TextView videoSnapButton;
@@ -170,6 +171,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private float smoothPitchAngle = 0f;
     private float smoothTiltX = 0f;
     private float smoothTiltY = 0f;
+    private float lockedVideoPitch = 0f;
+    private float lockedVideoRoll = 0f;
+    private boolean hasLockedVideoAnchor = false;
+    private long lastTripodCropUpdateAt = 0L;
 
     private final SensorEventListener sensorEventListener = new SensorEventListener() {
         @Override
@@ -238,6 +243,20 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         if (gridOverlay != null) {
             gridOverlay.postInvalidate();
+        }
+        if (videoRecording && captureSession != null && previewRequest != null) {
+            String stab = AppSettings.get(this, AppSettings.STABILIZATION, "Cinema OIS + EIS");
+            if (stab.startsWith("Locked") && hasLockedVideoAnchor) {
+                long now = SystemClock.uptimeMillis();
+                if (now - lastTripodCropUpdateAt > 40L) {
+                    lastTripodCropUpdateAt = now;
+                    try {
+                        applyZoom(previewRequest);
+                        captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
         }
     }
 
@@ -1136,6 +1155,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         header.addView(videoAspectButton, vaspectLp);
         videoAspectButton.setOnClickListener(v -> { hapticClick(v); cycleVideoAspect(); });
 
+        videoStabButton = pill("OIS+EIS", false);
+        LinearLayout.LayoutParams vstabLp = new LinearLayout.LayoutParams(-2, dp(32));
+        vstabLp.leftMargin = dp(6);
+        videoStabButton.setVisibility(View.GONE);
+        header.addView(videoStabButton, vstabLp);
+        videoStabButton.setOnClickListener(v -> { hapticClick(v); cycleVideoStabilization(); });
+
         topSpacer = new View(this);
         header.addView(topSpacer, new LinearLayout.LayoutParams(0, 1, 1));
         brainButton = pill("FILM  ⌄", true);
@@ -1892,6 +1918,38 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (textureView != null) configureTransform(textureView.getWidth(), textureView.getHeight());
     }
 
+    private void cycleVideoStabilization() {
+        String current = AppSettings.get(this, AppSettings.STABILIZATION, "Cinema OIS + EIS");
+        int currentIndex = 0;
+        for (int i = 0; i < AppSettings.STABILIZATION_CHOICES.length; i++) {
+            if (AppSettings.STABILIZATION_CHOICES[i].equalsIgnoreCase(current)) {
+                currentIndex = i;
+                break;
+            }
+        }
+        int nextIndex = (currentIndex + 1) % AppSettings.STABILIZATION_CHOICES.length;
+        String next = AppSettings.STABILIZATION_CHOICES[nextIndex];
+        AppSettings.prefs(this).edit().putString(AppSettings.STABILIZATION, next).apply();
+        if (next.startsWith("Locked")) {
+            lockedVideoPitch = smoothPitchAngle;
+            lockedVideoRoll = smoothRollAngle;
+            hasLockedVideoAnchor = true;
+        } else {
+            hasLockedVideoAnchor = false;
+        }
+        updateQuickButtons();
+        updateReadouts();
+        if (captureSession != null && previewRequest != null) {
+            try {
+                applyOpticalSettings(previewRequest, videoMode);
+                applyZoom(previewRequest);
+                captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+            } catch (Throwable ignored) {
+            }
+        }
+        showMessage("Stabilization: " + next);
+    }
+
     private void updateVideoModeUi() {
         if (photoModeButton == null) return;
         styleModeButton(photoModeButton, !videoMode);
@@ -1903,6 +1961,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (easyButton != null) easyButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (videoFpsButton != null) videoFpsButton.setVisibility(videoMode ? View.VISIBLE : View.GONE);
         if (videoAspectButton != null) videoAspectButton.setVisibility(videoMode ? View.VISIBLE : View.GONE);
+        if (videoStabButton != null) videoStabButton.setVisibility(videoMode ? View.VISIBLE : View.GONE);
         updateContextualStatus();
         boolean activeVideoTake = (videoRecording || switchingVideoCamera) && !videoScreenLocked;
         if (recordingLockButton != null) recordingLockButton.setVisibility(activeVideoTake ? View.VISIBLE : View.GONE);
@@ -1932,6 +1991,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (galleryButton != null) galleryButton.setEnabled(idleControlsAvailable);
         if (videoFpsButton != null) videoFpsButton.setEnabled(idleControlsAvailable);
         if (videoAspectButton != null) videoAspectButton.setEnabled(idleControlsAvailable);
+        if (videoStabButton != null) videoStabButton.setEnabled(idleControlsAvailable);
         for (TextView lens : lensButtons) lens.setEnabled(liveSwitchAvailable);
         boolean zoomAvailable = !videoStarting && !switchingVideoCamera && !videoScreenLocked;
         if (zoomSlider != null) zoomSlider.setEnabled(zoomAvailable);
@@ -2161,9 +2221,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             mediaRecorder = new MediaRecorder();
             if (recordAudio) {
                 int audioSrc = MediaRecorder.AudioSource.CAMCORDER;
+                boolean speechEnhance = AppSettings.getBoolean(this, AppSettings.SPEECH_ENHANCEMENT, true);
                 if (audioPref.startsWith("Unprocessed") && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                     audioSrc = MediaRecorder.AudioSource.UNPROCESSED;
-                } else if (audioPref.startsWith("Voice")) {
+                } else if (audioPref.contains("Speech") || audioPref.startsWith("Voice") || speechEnhance) {
                     audioSrc = MediaRecorder.AudioSource.VOICE_RECOGNITION;
                 }
                 try {
@@ -2286,6 +2347,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         videoRecording = true;
                         videoPaused = false;
                         videoStartedAt = SystemClock.elapsedRealtime();
+                        String stabPref = AppSettings.get(this, AppSettings.STABILIZATION, "Cinema OIS + EIS");
+                        if (stabPref.startsWith("Locked")) {
+                            lockedVideoPitch = smoothPitchAngle;
+                            lockedVideoRoll = smoothRollAngle;
+                            hasLockedVideoAnchor = true;
+                        } else {
+                            hasLockedVideoAnchor = false;
+                        }
                         runOnUiThread(() -> {
                             configureTransform(textureView.getWidth(), textureView.getHeight());
                             textureView.animate().alpha(1f).setDuration(140).start();
@@ -2355,9 +2424,23 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private String videoProfileLabel() {
-        return VideoRecordingCoordinator.formatProfileLabel(videoSize,
+        String base = VideoRecordingCoordinator.formatProfileLabel(videoSize,
                 AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)"),
                 AppSettings.get(this, AppSettings.VIDEO_ASPECT, "16:9 Widescreen"));
+        String stab = AppSettings.get(this, AppSettings.STABILIZATION, "Cinema OIS + EIS");
+        if (stab.startsWith("Locked")) {
+            base += " · 🔒 LOCKED";
+        } else if (stab.startsWith("Active")) {
+            base += " · ⚡ ACTIVE";
+        }
+        String audioPref = AppSettings.get(this, AppSettings.VIDEO_AUDIO, "Camcorder · Stereo");
+        boolean speechEnhance = AppSettings.getBoolean(this, AppSettings.SPEECH_ENHANCEMENT, true);
+        if (!audioPref.startsWith("Muted")) {
+            if (audioPref.contains("Speech") || audioPref.startsWith("Voice") || speechEnhance) {
+                base += " · 🎙 VOICE";
+            }
+        }
+        return base;
     }
 
     private void failVideoStart(String message) {
@@ -2370,6 +2453,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         videoRecording = false;
         videoPaused = false;
         videoScreenLocked = false;
+        hasLockedVideoAnchor = false;
+        lockedVideoPitch = 0f;
+        lockedVideoRoll = 0f;
         releaseMediaRecorder();
         closeSessionOnly();
         releaseRecordingPreviewSurface();
@@ -2422,6 +2508,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         videoScreenLocked = false;
         unlockHolding = false;
         lockedVideoOrientation = -1;
+        hasLockedVideoAnchor = false;
+        lockedVideoPitch = 0f;
+        lockedVideoRoll = 0f;
         releaseMediaRecorder();
         closeSessionOnly();
         releaseRecordingPreviewSurface();
@@ -3011,6 +3100,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (videoAspectButton != null) {
             String vAsp = AppSettings.get(this, AppSettings.VIDEO_ASPECT, "16:9 Widescreen");
             videoAspectButton.setText(vAsp.contains("2.39") ? "2.39:1" : "16:9");
+        }
+        if (videoStabButton != null) {
+            String stab = AppSettings.get(this, AppSettings.STABILIZATION, "Cinema OIS + EIS");
+            if (stab.startsWith("Locked")) {
+                videoStabButton.setText("🔒 LOCKED");
+                videoStabButton.setTextColor(ACCENT);
+            } else if (stab.startsWith("Active")) {
+                videoStabButton.setText("⚡ ACTIVE");
+                videoStabButton.setTextColor(ACCENT);
+            } else if (stab.startsWith("Optical")) {
+                videoStabButton.setText("OIS ONLY");
+                videoStabButton.setTextColor(0xffe9ede6);
+            } else if (stab.startsWith("Off")) {
+                videoStabButton.setText("STAB OFF");
+                videoStabButton.setTextColor(0xff888888);
+            } else {
+                videoStabButton.setText("OIS+EIS");
+                videoStabButton.setTextColor(0xffe9ede6);
+            }
         }
         if (timerButton != null) {
             String timer = AppSettings.get(this, AppSettings.TIMER, "Off");
@@ -4978,7 +5086,42 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (characteristics == null || builder == null) return;
         Rect active = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
         if (active == null) return;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+
+        String stab = AppSettings.get(this, AppSettings.STABILIZATION, "Cinema OIS + EIS");
+        boolean isLockedTripod = stab.startsWith("Locked") && (videoRecording || videoStarting) && hasLockedVideoAnchor;
+
+        if (isLockedTripod) {
+            float effectiveZoom = Math.max(1.08f, requestedZoom * 1.08f);
+            int cropW = Math.max(1, Math.round(active.width() / effectiveZoom));
+            int cropH = Math.max(1, Math.round(active.height() / effectiveZoom));
+
+            float dPitch = smoothPitchAngle - lockedVideoPitch;
+            float dRoll = smoothRollAngle - lockedVideoRoll;
+            if (Math.abs(dPitch) > 4.5f) {
+                lockedVideoPitch += (dPitch - Math.signum(dPitch) * 4.5f) * 0.15f;
+                dPitch = smoothPitchAngle - lockedVideoPitch;
+            }
+            if (Math.abs(dRoll) > 4.5f) {
+                lockedVideoRoll += (dRoll - Math.signum(dRoll) * 4.5f) * 0.15f;
+                dRoll = smoothRollAngle - lockedVideoRoll;
+            }
+
+            float pxPerDeg = active.height() / 65.0f;
+            int maxShiftX = (active.width() - cropW) / 2;
+            int maxShiftY = (active.height() - cropH) / 2;
+            int shiftX = Math.max(-maxShiftX, Math.min(maxShiftX, Math.round(-dRoll * pxPerDeg)));
+            int shiftY = Math.max(-maxShiftY, Math.min(maxShiftY, Math.round(dPitch * pxPerDeg)));
+
+            int left = active.centerX() + shiftX - cropW / 2;
+            int top = active.centerY() + shiftY - cropH / 2;
+            builder.set(CaptureRequest.SCALER_CROP_REGION, new Rect(left, top, left + cropW, top + cropH));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                try {
+                    builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1.0f);
+                } catch (Throwable ignored) {
+                }
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             Range<Float> ratioRange = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
             if (ratioRange != null) {
                 float minRatio = ratioRange.getLower();
@@ -4995,15 +5138,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 } else {
                     builder.set(CaptureRequest.SCALER_CROP_REGION, active);
                 }
-                return;
+            } else {
+                applyDigitalCrop(builder, active);
             }
+        } else {
+            applyDigitalCrop(builder, active);
         }
-        float digital = Math.max(1f, requestedZoom / Math.max(.1f, physicalFocalFactor));
-        int cropW = Math.max(1, Math.round(active.width() / digital));
-        int cropH = Math.max(1, Math.round(active.height() / digital));
-        int left = active.centerX() - cropW / 2;
-        int top = active.centerY() - cropH / 2;
-        builder.set(CaptureRequest.SCALER_CROP_REGION, new Rect(left, top, left + cropW, top + cropH));
 
         if ((videoRecording || videoStarting) && mediaRecorder != null
                 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
@@ -5014,6 +5154,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             } catch (Throwable ignored) {
             }
         }
+    }
+
+    private void applyDigitalCrop(CaptureRequest.Builder builder, Rect active) {
+        float digital = Math.max(1f, requestedZoom / Math.max(.1f, physicalFocalFactor));
+        int cropW = Math.max(1, Math.round(active.width() / digital));
+        int cropH = Math.max(1, Math.round(active.height() / digital));
+        int left = active.centerX() - cropW / 2;
+        int top = active.centerY() - cropH / 2;
+        builder.set(CaptureRequest.SCALER_CROP_REGION, new Rect(left, top, left + cropW, top + cropH));
     }
 
     private void setFocusMode(CaptureRequest.Builder builder) {
@@ -5037,7 +5186,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (characteristics == null || builder == null) return;
         String stab = AppSettings.get(this, AppSettings.STABILIZATION, "Cinema OIS + EIS");
         boolean wantOis = !stab.startsWith("Off");
-        boolean wantEis = isVideo && stab.startsWith("Cinema");
+        boolean wantEis = isVideo && (stab.startsWith("Cinema") || stab.startsWith("Locked") || stab.startsWith("Active"));
 
         int[] oisModes = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION);
         if (oisModes != null) {

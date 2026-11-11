@@ -698,28 +698,63 @@ final class RawDeveloper {
     static Bitmap applyFrameBorder(Bitmap src, Look look, RawArchive.Frame frame) {
         if (src == null || look == null || look.frameBorder == null || look.frameBorder.startsWith("None")) return src;
         int w = src.getWidth(), h = src.getHeight();
-        int padSide = Math.max(16, Math.round(Math.min(w, h) * 0.045f));
-        int padBottom = Math.max(36, Math.round(Math.min(w, h) * 0.115f));
+        String border = look.frameBorder;
+        boolean museum = border.startsWith("Museum");
+        boolean mediumFormat = border.contains("Medium Format");
+        boolean cinemascope = border.contains("Cinemascope");
+
+        int padSide, padTop, padBottom;
+        if (mediumFormat) {
+            padSide = Math.max(26, Math.round(Math.min(w, h) * 0.075f));
+            padTop = padSide;
+            padBottom = Math.max(34, Math.round(Math.min(w, h) * 0.095f));
+        } else if (cinemascope) {
+            padSide = Math.max(16, Math.round(w * 0.025f));
+            float currentAspect = w / (float) Math.max(1, h);
+            int desiredTotalH = currentAspect < 2.35f
+                    ? Math.round(w / 2.39f)
+                    : Math.round(h * 1.14f);
+            int extraH = Math.max(dpToPx(48, Math.min(w, h)), desiredTotalH - h);
+            padTop = extraH / 2;
+            padBottom = extraH - padTop;
+        } else {
+            padSide = Math.max(16, Math.round(Math.min(w, h) * 0.045f));
+            padTop = padSide;
+            padBottom = Math.max(36, Math.round(Math.min(w, h) * 0.115f));
+        }
+
         int outW = w + padSide * 2;
-        int outH = h + padSide + padBottom;
-        boolean museum = look.frameBorder.startsWith("Museum");
+        int outH = h + padTop + padBottom;
         Bitmap bordered = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bordered);
-        canvas.drawColor(museum ? 0xFFF7F5EF : 0xFF0A0C0D);
-        canvas.drawBitmap(src, padSide, padSide, null);
+        int bgColor = museum ? 0xFFF7F5EF : cinemascope ? 0xFF000000 : mediumFormat ? 0xFF060708 : 0xFF0A0C0D;
+        canvas.drawColor(bgColor);
+        canvas.drawBitmap(src, padSide, padTop, null);
 
         Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         linePaint.setStyle(Paint.Style.STROKE);
         linePaint.setStrokeWidth(Math.max(1f, Math.min(w, h) * 0.002f));
-        linePaint.setColor(museum ? 0x331A1D1E : 0x55D7B574);
-        canvas.drawRect(padSide, padSide, padSide + w, padSide + h, linePaint);
+        linePaint.setColor(museum ? 0x331A1D1E : cinemascope ? 0x22FFFFFF : 0x55D7B574);
+        canvas.drawRect(padSide, padTop, padSide + w, padTop + h, linePaint);
+
+        if (mediumFormat) {
+            // Authentic Hasselblad film gate notches: two characteristic semicircular magazine cutouts along the left edge
+            Paint notchPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            notchPaint.setColor(bgColor);
+            notchPaint.setStyle(Paint.Style.FILL);
+            float notchR = Math.max(5f, padSide * 0.28f);
+            float n1Y = padTop + h * 0.33f;
+            float n2Y = padTop + h * 0.67f;
+            canvas.drawCircle(padSide, n1Y, notchR, notchPaint);
+            canvas.drawCircle(padSide, n2Y, notchR, notchPaint);
+        }
 
         Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         textPaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
-        float textSize = Math.max(11f, (padBottom - padSide) * 0.30f);
+        float textSize = Math.max(10f, Math.min(padBottom, padTop) * 0.32f);
         textPaint.setTextSize(textSize);
         textPaint.setLetterSpacing(0.14f);
-        textPaint.setColor(museum ? 0xFF1F2324 : 0xFFD7B574);
+        textPaint.setColor(museum ? 0xFF1F2324 : cinemascope ? 0xFFECEEEA : 0xFFD7B574);
 
         String brainName = look.brain == null ? "LIKA / FILM" : look.brain;
         String meta = brainName;
@@ -733,17 +768,48 @@ final class RawDeveloper {
             if (!shutter.isEmpty()) meta += "  ·  " + shutter;
             if (!iso.isEmpty()) meta += "  ·  " + iso;
         }
-        float textY = padSide + h + (padBottom * 0.58f);
-        canvas.drawText(meta, padSide, textY, textPaint);
 
-        String rightTag = museum ? "LIKA LENS ARCHIVE" : "► 500T  ·  KODAK SAFETY FILM";
-        float rightWidth = textPaint.measureText(rightTag);
-        if (padSide + rightWidth < outW - padSide - textPaint.measureText(meta) - 24) {
-            textPaint.setColor(museum ? 0xFF767D79 : 0x99D7B574);
-            canvas.drawText(rightTag, outW - padSide - rightWidth, textY, textPaint);
+        if (mediumFormat) {
+            // Medium Format 120 edge markings
+            Paint topTextPaint = new Paint(textPaint);
+            topTextPaint.setColor(0x99D7B574);
+            topTextPaint.setTextSize(textSize * 0.90f);
+            String topTag = "▲ 120 FILM  ·  HASSELBLAD 500 C/M  ·  PORTRA 400";
+            canvas.drawText(topTag, padSide, padTop * 0.62f, topTextPaint);
+
+            float textY = padTop + h + (padBottom * 0.60f);
+            String bottomTag = "● 12 ●  " + meta;
+            canvas.drawText(bottomTag, padSide, textY, textPaint);
+        } else if (cinemascope) {
+            // Cinemascope 2.39:1 slate markings
+            float textY = padTop + h + (padBottom * 0.62f);
+            String slate = "SCENE A · TAKE 1 · 24 FPS · 180° SHUTTER";
+            canvas.drawText(slate, padSide, textY, textPaint);
+            String rightCinema = "LIKA CINEMASCOPE · " + meta;
+            float rw = textPaint.measureText(rightCinema);
+            if (padSide + rw < outW - padSide - 16) {
+                Paint subPaint = new Paint(textPaint);
+                subPaint.setColor(0x88FFFFFF);
+                canvas.drawText(rightCinema, outW - padSide - rw, textY, subPaint);
+            }
+        } else {
+            // 35mm film rebate or Museum matte
+            float textY = padTop + h + (padBottom * 0.58f);
+            canvas.drawText(meta, padSide, textY, textPaint);
+
+            String rightTag = museum ? "LIKA LENS ARCHIVE" : "► 500T  ·  KODAK SAFETY FILM";
+            float rightWidth = textPaint.measureText(rightTag);
+            if (padSide + rightWidth < outW - padSide - textPaint.measureText(meta) - 24) {
+                textPaint.setColor(museum ? 0xFF767D79 : 0x99D7B574);
+                canvas.drawText(rightTag, outW - padSide - rightWidth, textY, textPaint);
+            }
         }
         src.recycle();
         return bordered;
+    }
+
+    private static int dpToPx(int dp, int baseDim) {
+        return Math.max(16, Math.round(dp * (baseDim / 1000f)));
     }
 
     private static float interpolate(short[] raw, RawArchive.Frame frame, float white,
