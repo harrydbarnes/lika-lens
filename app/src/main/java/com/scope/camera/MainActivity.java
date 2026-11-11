@@ -185,26 +185,42 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (event.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
                 float[] rotationMatrix = new float[9];
                 SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
-                float[] orientation = new float[3];
-                SensorManager.getOrientation(rotationMatrix, orientation);
-                float pitchDegrees = (float) Math.toDegrees(orientation[1]);
-                float rollDegrees = (float) Math.toDegrees(orientation[2]);
-                devicePitchAngle = pitchDegrees;
-                smoothPitchAngle = smoothPitchAngle * 0.82f + pitchDegrees * 0.18f;
-                smoothTiltX = smoothTiltX * 0.80f + (float) Math.sin(orientation[2]) * 0.20f;
-                smoothTiltY = smoothTiltY * 0.80f + (float) Math.sin(orientation[1]) * 0.20f;
-                updateHorizonRoll(rollDegrees);
+                // In rotationMatrix, row 2 represents the world Up vector (0, 0, 1) in device coordinates:
+                // rotationMatrix[6] = Up.x, rotationMatrix[7] = Up.y, rotationMatrix[8] = Up.z
+                float upX = rotationMatrix[6];
+                float upY = rotationMatrix[7];
+                float upZ = rotationMatrix[8];
+
+                // Elevation tilt relative to the horizon:
+                // 0° when aiming at the horizon (optical axis horizontal)
+                // +90° when aiming straight down at table / -90° straight up at sky
+                float tiltDegrees = (float) Math.toDegrees(Math.asin(Math.max(-1f, Math.min(1f, upZ))));
+                devicePitchAngle = tiltDegrees;
+                smoothPitchAngle = smoothPitchAngle * 0.82f + tiltDegrees * 0.18f;
+
+                smoothTiltX = smoothTiltX * 0.80f + upX * 0.20f;
+                smoothTiltY = smoothTiltY * 0.80f + upY * 0.20f;
+
+                // Roll angle around the camera optical axis (device Z)
+                float rollAngle = (float) Math.toDegrees(Math.atan2(upX, upY));
+                updateHorizonRoll(rollAngle);
             } else if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
                 float ax = event.values[0];
                 float ay = event.values[1];
                 float az = event.values.length > 2 ? event.values[2] : 0f;
                 float norm = Math.max(0.1f, (float) Math.sqrt(ax * ax + ay * ay + az * az));
-                float pitchDeg = (float) Math.toDegrees(Math.asin(Math.max(-1f, Math.min(1f, az / norm))));
-                devicePitchAngle = pitchDeg;
-                smoothPitchAngle = smoothPitchAngle * 0.82f + pitchDeg * 0.18f;
-                smoothTiltX = smoothTiltX * 0.80f + (ax / norm) * 0.20f;
-                smoothTiltY = smoothTiltY * 0.80f + (ay / norm) * 0.20f;
-                float angle = (float) Math.toDegrees(Math.atan2(ax, ay));
+                float upX = ax / norm;
+                float upY = ay / norm;
+                float upZ = az / norm;
+
+                float tiltDeg = (float) Math.toDegrees(Math.asin(Math.max(-1f, Math.min(1f, upZ))));
+                devicePitchAngle = tiltDeg;
+                smoothPitchAngle = smoothPitchAngle * 0.82f + tiltDeg * 0.18f;
+
+                smoothTiltX = smoothTiltX * 0.80f + upX * 0.20f;
+                smoothTiltY = smoothTiltY * 0.80f + upY * 0.20f;
+
+                float angle = (float) Math.toDegrees(Math.atan2(upX, upY));
                 updateHorizonRoll(angle);
             }
         }
