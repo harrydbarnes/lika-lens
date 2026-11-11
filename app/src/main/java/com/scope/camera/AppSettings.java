@@ -112,6 +112,15 @@ final class AppSettings {
     static final String[] LAUNCH_MODES = {"Photo (default)", "Cinematic Video", "Last used"};
     static final String LAST_USED_MODE = "last_used_mode";
     static final String FRAME_COUNTER = "frame_counter";
+    static final String PALM_TIMER = "palm_timer";
+    static final String FILM_PUSH_PULL = "film_push_pull";
+    static final String[] FILM_PUSH_PULL_CHOICES = {
+            "Box Speed · EI 400 (Standard)",
+            "+1 Stop Push · EI 800 (Steep Contrast & Grain)",
+            "+2 Stop Push · EI 1600 (Gritty Night Stock)",
+            "-1 Stop Pull · EI 200 (Soft Pastel Latitude)"
+    };
+    static final String ULTRA_HDR = "ultra_hdr";
 
     // Custom Film Recipes (User Presets)
     static final String RECIPE_1_NAME = "recipe_1_name";
@@ -142,6 +151,8 @@ final class AppSettings {
     static final String STABILIZATION = "stabilization";
     static final String VIDEO_CODEC = "video_codec";
     static final String VIDEO_AUDIO = "video_audio";
+    static final String VIDEO_HDR = "video_hdr";
+    static final String AUDIO_ZOOM = "audio_zoom";
 
     // Animated GIF Keys
     static final String GIF_FPS = "gif_fps";

@@ -216,6 +216,8 @@ public class SettingsActivity extends Activity {
         beginSection("PROCESSING BRAIN", "The look is developed from sensor data after capture.");
         addChoice("Rendering brain", "Choose the image-making approach", AppSettings.BRAIN,
                 AppSettings.BRAIN_CHOICES, AppSettings.BRAIN_LIKA_FILM);
+        addChoice("Film push / pull rating", "Emulate chemical push/pull development latitude & grain", AppSettings.FILM_PUSH_PULL,
+                AppSettings.FILM_PUSH_PULL_CHOICES, AppSettings.FILM_PUSH_PULL_CHOICES[0]);
         addChoice("Capture output", "DNG stays untouched; Lika Lens develops the JPEG", AppSettings.CAPTURE_FORMAT,
                 new String[]{"RAW + rendered JPEG", "DNG only", "Rendered JPEG only"}, "RAW + rendered JPEG");
         addSwitch("Keep sensor original", "Save the untouched RAW file beside the render", AppSettings.KEEP_RAW, true);
@@ -223,6 +225,7 @@ public class SettingsActivity extends Activity {
         beginSection("COLOUR PIPELINE & TONE MAPPING", "Transfer functions, contrast geometry and gamut control.");
         addChoice("Colour space", "Target display gamut", AppSettings.COLOR_SPACE,
                 new String[]{"sRGB · Standard Display", "Display P3 · Wide Gamut", "Rec. 709 · Cinema Broadcast"}, "sRGB · Standard Display");
+        addSwitch("Ultra HDR gainmap", "Embed ISO 21496-1 HDR gainmap so film highlights and halation glow on OLED displays", AppSettings.ULTRA_HDR, true);
         addChoice("Tone curve", "Transfer curve geometry", AppSettings.TONE_CURVE,
                 new String[]{"Filmic S-Curve", "Linear Response", "Log / Flat"}, "Filmic S-Curve");
         addChoice("Shadow profile", "Toe response and shadow depth", AppSettings.SHADOW_PROFILE,
@@ -308,6 +311,7 @@ public class SettingsActivity extends Activity {
         addChoice("Self-timer", "Delay before the shutter fires", AppSettings.TIMER,
                 new String[]{"Off", "3 seconds", "10 seconds"}, "Off");
         addSwitch("Timer countdown light", "Pulse rear LED flash rhythmically during self-timer countdown", AppSettings.TIMER_LIGHT, true);
+        addSwitch("Palm gesture timer", "Show an open palm to the camera to start a 3-second hands-free countdown", AppSettings.PALM_TIMER, false);
         addChoice("Focus behaviour", "Camera2 autofocus mode", "focus_mode",
                 new String[]{"Continuous picture autofocus", "Single autofocus"}, "Continuous picture autofocus");
         addChoice("Anti-banding / flicker", "Compensate for AC artificial lighting cycles", AppSettings.ANTI_BANDING,
@@ -324,8 +328,10 @@ public class SettingsActivity extends Activity {
                 new String[]{"High · 24 Mbps", "Ultra · 35 Mbps", "Standard · 14 Mbps"}, "High · 24 Mbps");
         addChoice("Video codec", "Compression standard for recorded video", AppSettings.VIDEO_CODEC,
                 new String[]{"H.264 · Universal", "HEVC (H.265) · High Efficiency"}, "H.264 · Universal");
+        addSwitch("10-bit HLG HDR video", "Record 10-bit High Dynamic Range video when supported by the sensor", AppSettings.VIDEO_HDR, false);
         addChoice("Audio source", "Microphone processing during video recording", AppSettings.VIDEO_AUDIO,
                 new String[]{"Camcorder · Stereo", "Unprocessed · Raw Mic", "Voice · Filtered", "Muted · MOS (No Audio)"}, "Camcorder · Stereo");
+        addSwitch("Directional audio zoom", "Focus microphone pickup toward the subject when zooming in", AppSettings.AUDIO_ZOOM, true);
         addInfo("Mid-Take Camera Switching", "Switch between front/rear cameras or lenses while recording. Segments are stitched automatically into a single video.", ACCENT);
         addInfo("180° Shutter Rule", "In 24 fps cinematic mode, the app targets a 1/48s exposure interval for authentic motion cadence.", 0xffaab3ad);
 

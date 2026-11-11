@@ -40,6 +40,8 @@ public class RawDeveloperTest {
         original.frameBorder = "35mm Negative";
         original.lutName = LutManager.LUT_PORTRA;
         original.lutIntensity = 0.85f;
+        original.filmPushPull = AppSettings.FILM_PUSH_PULL_CHOICES[1];
+        original.ultraHdr = true;
 
         String json = original.toJson();
         assertNotNull("JSON serialization failed", json);
@@ -62,6 +64,8 @@ public class RawDeveloperTest {
         assertEquals(original.lutName, restored.lutName);
         assertEquals(original.lutIntensity, restored.lutIntensity, 0.001f);
         assertEquals(original.frameBorder, restored.frameBorder);
+        assertEquals(original.filmPushPull, restored.filmPushPull);
+        assertEquals(original.ultraHdr, restored.ultraHdr);
     }
 
     @Test
@@ -208,5 +212,56 @@ public class RawDeveloperTest {
         assertEquals(7500, AppSettings.parseWhiteBalanceModeKelvin("7500 K · shade"));
         assertEquals("3200 K · tungsten", AppSettings.formatWhiteBalanceMode(3200));
         assertEquals("Auto · as shot", AppSettings.formatWhiteBalanceMode(0));
+    }
+
+    @Test
+    public void testLookPushPullAndUltraHdrSerialization() {
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.filmPushPull = AppSettings.FILM_PUSH_PULL_CHOICES[1]; // +1 Stop Push
+        look.ultraHdr = true;
+
+        String json = look.toJson();
+        assertNotNull(json);
+
+        RawDeveloper.Look restored = RawDeveloper.Look.fromJson(json);
+        assertNotNull(restored);
+        assertEquals(look.filmPushPull, restored.filmPushPull);
+        assertEquals(look.ultraHdr, restored.ultraHdr);
+
+        RawDeveloper.Look copy = look.copy();
+        assertNotNull(copy);
+        assertEquals(look.filmPushPull, copy.filmPushPull);
+        assertEquals(look.ultraHdr, copy.ultraHdr);
+    }
+
+    @Test
+    public void testFilmPushPullModifiesContrastAndShadows() {
+        RawDeveloper.Look box = new RawDeveloper.Look();
+        box.brain = AppSettings.BRAIN_LIKA_FILM;
+        box.filmPushPull = AppSettings.FILM_PUSH_PULL_CHOICES[0]; // Box Speed
+        box.grain = 0f;
+
+        RawDeveloper.Look push = box.copy();
+        push.filmPushPull = AppSettings.FILM_PUSH_PULL_CHOICES[1]; // +1 Stop Push
+
+        RawDeveloper.Look pull = box.copy();
+        pull.filmPushPull = AppSettings.FILM_PUSH_PULL_CHOICES[3]; // -1 Stop Pull
+
+        // Shadow sample (linear 0.04) and highlight sample (linear 0.55)
+        int shadowBox = RawDeveloper.renderLook(0.04f, 0.04f, 0.04f, box, 0, 0, 1);
+        int shadowPush = RawDeveloper.renderLook(0.04f, 0.04f, 0.04f, push, 0, 0, 1);
+        int shadowPull = RawDeveloper.renderLook(0.04f, 0.04f, 0.04f, pull, 0, 0, 1);
+
+        int sBoxR = (shadowBox >> 16) & 0xff;
+        int sPushR = (shadowPush >> 16) & 0xff;
+        int sPullR = (shadowPull >> 16) & 0xff;
+
+        // Pushed film should develop deeper shadows (lower pixel value) than box speed
+        org.junit.Assert.assertTrue("Push +1 should deepen shadow tones (got box=" + sBoxR + " push=" + sPushR + ")",
+                sPushR <= sBoxR);
+
+        // Pulled film should open shadows (higher pixel value) than box speed
+        org.junit.Assert.assertTrue("Pull -1 should lift shadow tones (got box=" + sBoxR + " pull=" + sPullR + ")",
+                sPullR >= sBoxR);
     }
 }

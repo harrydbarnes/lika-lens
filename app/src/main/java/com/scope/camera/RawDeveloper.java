@@ -51,6 +51,8 @@ final class RawDeveloper {
         String lutName = "None";
         float lutIntensity = 1.0f;
         String colorSpace = "sRGB · Standard Display";
+        String filmPushPull = "Box Speed · EI 400 (Standard)";
+        boolean ultraHdr = true;
 
         static Look fromPreferences(Context context) {
             Look look = new Look();
@@ -83,6 +85,8 @@ final class RawDeveloper {
             look.lutName = AppSettings.get(context, AppSettings.LUT_NAME, "None");
             look.lutIntensity = AppSettings.getInt(context, AppSettings.LUT_INTENSITY, AppSettings.DEFAULT_LUT_INTENSITY) / 100f;
             look.colorSpace = AppSettings.get(context, AppSettings.COLOR_SPACE, "sRGB · Standard Display");
+            look.filmPushPull = AppSettings.get(context, AppSettings.FILM_PUSH_PULL, "Box Speed · EI 400 (Standard)");
+            look.ultraHdr = AppSettings.getBoolean(context, AppSettings.ULTRA_HDR, true);
             return look;
         }
 
@@ -108,6 +112,8 @@ final class RawDeveloper {
             c.lutName = lutName;
             c.lutIntensity = lutIntensity;
             c.colorSpace = colorSpace;
+            c.filmPushPull = filmPushPull;
+            c.ultraHdr = ultraHdr;
             return c;
         }
 
@@ -144,6 +150,8 @@ final class RawDeveloper {
                 o.put("lutName", lutName != null ? lutName : "None");
                 o.put("lutIntensity", (double) lutIntensity);
                 if (colorSpace != null) o.put("colorSpace", colorSpace);
+                if (filmPushPull != null) o.put("filmPushPull", filmPushPull);
+                o.put("ultraHdr", ultraHdr);
                 return o.toString();
             } catch (JSONException e) {
                 return null;
@@ -185,6 +193,8 @@ final class RawDeveloper {
                 if (o.has("lutName")) look.lutName = o.getString("lutName");
                 if (o.has("lutIntensity")) look.lutIntensity = (float) o.getDouble("lutIntensity");
                 if (o.has("colorSpace")) look.colorSpace = o.getString("colorSpace");
+                if (o.has("filmPushPull")) look.filmPushPull = o.getString("filmPushPull");
+                if (o.has("ultraHdr")) look.ultraHdr = o.getBoolean("ultraHdr");
                 return look;
             } catch (JSONException e) {
                 return null;
@@ -258,6 +268,11 @@ final class RawDeveloper {
                 this.brainId = BRAIN_ID_LIKA_FILM;
             }
 
+            String pushPull = this.look.filmPushPull == null ? "Box Speed" : this.look.filmPushPull;
+            boolean push1 = pushPull.startsWith("+1");
+            boolean push2 = pushPull.startsWith("+2");
+            boolean pull1 = pushPull.startsWith("-1");
+
             float effectiveContrast = this.look.contrast;
             float effectivePivot = this.look.pivot;
             if (this.brainId == BRAIN_ID_KODACHROME) {
@@ -270,9 +285,19 @@ final class RawDeveloper {
                 effectiveContrast = this.look.contrast * 1.30f;
                 effectivePivot = 0.22f;
             }
+            if (push1) {
+                effectiveContrast *= 1.14f;
+                effectivePivot *= 0.92f;
+            } else if (push2) {
+                effectiveContrast *= 1.28f;
+                effectivePivot *= 0.85f;
+            } else if (pull1) {
+                effectiveContrast *= 0.86f;
+                effectivePivot *= 1.12f;
+            }
             this.safePivot = clamp(effectivePivot, 0.02f, 0.85f);
             this.safeContrast = clamp(effectiveContrast, 0.35f, 2.50f);
-            this.toeContrast = this.look.easyMode ? Math.min(this.safeContrast, 0.94f) : this.safeContrast;
+            this.toeContrast = (this.look.easyMode && !push1 && !push2) ? Math.min(this.safeContrast, 0.94f) : this.safeContrast;
 
             String curve = this.look.toneCurve == null ? "Filmic S-Curve" : this.look.toneCurve;
             if (curve.startsWith("Linear")) {
@@ -288,9 +313,9 @@ final class RawDeveloper {
 
             String shadowProf = this.look.shadowProfile == null ? "Deep Cinema Blacks" : this.look.shadowProfile;
             float sDepth = clamp(this.look.shadows, 0f, 1f);
-            if (shadowProf.startsWith("Lifted") || this.brainId == BRAIN_ID_FUJI_ETERNA) {
-                this.liftedShadows = true;
-                sDepth *= 0.65f;
+            if (shadowProf.startsWith("Lifted") || this.brainId == BRAIN_ID_FUJI_ETERNA || pull1) {
+                this.liftedShadows = !push1 && !push2;
+                sDepth *= pull1 ? 0.55f : 0.65f;
             } else {
                 this.liftedShadows = false;
                 if (shadowProf.startsWith("Neutral")) {
@@ -299,12 +324,15 @@ final class RawDeveloper {
                     sDepth = Math.min(1.2f, sDepth * 1.22f);
                 }
             }
+            if (push1) sDepth = Math.min(1.3f, sDepth * 1.20f);
+            else if (push2) sDepth = Math.min(1.45f, sDepth * 1.38f);
             this.shadowDepth = sDepth;
 
             float shoulder = clamp(this.look.highlights, 0f, 1f);
             if (this.look.easyMode && shoulder < 0.65f) {
                 shoulder = 0.65f;
             }
+            if (pull1) shoulder = Math.min(1.0f, shoulder + 0.18f);
             this.knee = this.look.easyMode ? 0.52f : 0.68f;
             this.shoulderFactor = 1.6f + shoulder * 3.8f;
 
@@ -325,6 +353,9 @@ final class RawDeveloper {
             } else if (this.brainId == BRAIN_ID_FUJI_ETERNA) {
                 sb *= 0.88f;
             }
+            if (push1) sb *= 1.06f;
+            else if (push2) sb *= 0.94f;
+            else if (pull1) sb *= 0.90f;
             this.satBase = sb;
 
             this.rollOff = clamp(this.look.colorRollOff, 0f, 1f);
@@ -354,9 +385,14 @@ final class RawDeveloper {
                     gAmt *= 0.65f;
                 }
             }
+            if (push1) gAmt = clamp(gAmt * 1.35f + 0.04f, 0f, 1f);
+            else if (push2) gAmt = clamp(gAmt * 1.75f + 0.09f, 0f, 1f);
+            else if (pull1) gAmt *= 0.65f;
             this.grainAmount = gAmt;
             String gStruct = this.look.grainStructure == null ? "Fine · 35 mm" : this.look.grainStructure;
-            this.grainScale = gStruct.startsWith("Coarse") ? 5 : gStruct.startsWith("Soft") ? 2 : 1;
+            int baseScale = gStruct.startsWith("Coarse") ? 5 : gStruct.startsWith("Soft") ? 2 : 1;
+            if (push2 && baseScale < 2) baseScale = 2;
+            this.grainScale = baseScale;
             this.coarseDiv = this.grainScale * 3;
             this.fineWeight = this.grainScale == 1 ? .72f : .40f;
             this.coarseWeight = this.grainScale == 1 ? .28f : .60f;
@@ -482,27 +518,80 @@ final class RawDeveloper {
         if (look.halation > 0f) applyHalation(allPixels, outW, outH, look.halation, aspect);
         if (look.sharpening > 0f) applySharpen(allPixels, outW, outH, Math.min(.14f, look.sharpening * .14f));
 
-        Bitmap bitmap = createColorSpaceAwareBitmap(allPixels, outW, outH, look.colorSpace);
+        Bitmap bitmap = createColorSpaceAwareBitmap(allPixels, outW, outH, look);
         if (look.frameBorder != null && !look.frameBorder.startsWith("None")) {
             bitmap = applyFrameBorder(bitmap, look, frame);
         }
         return bitmap;
     }
 
-    private static Bitmap createColorSpaceAwareBitmap(int[] pixels, int w, int h, String colorSpace) {
+    private static Bitmap createColorSpaceAwareBitmap(int[] pixels, int w, int h, Look look) {
+        String colorSpace = look != null ? look.colorSpace : null;
+        Bitmap bmp = null;
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O
                 && colorSpace != null && colorSpace.contains("Display P3")) {
             try {
                 android.graphics.ColorSpace p3 = android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.DISPLAY_P3);
                 if (p3 != null) {
-                    Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888, false, p3);
+                    bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888, false, p3);
                     bmp.setPixels(pixels, 0, w, 0, 0, w, h);
-                    return bmp;
                 }
             } catch (Throwable ignored) {
             }
         }
-        return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888);
+        if (bmp == null) {
+            bmp = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888);
+        }
+        if (look != null && look.ultraHdr && android.os.Build.VERSION.SDK_INT >= 34) {
+            attachUltraHdrGainmap(bmp, pixels, w, h, look);
+        }
+        return bmp;
+    }
+
+    /**
+     * Generates and attaches an ISO 21496-1 Ultra HDR Gainmap on Android 14+ (API 34+) so bright
+     * film highlights and warm halation blooms radiate with true optical HDR headroom on OLED displays.
+     */
+    private static void attachUltraHdrGainmap(Bitmap bmp, int[] pixels, int w, int h, Look look) {
+        if (bmp == null || pixels == null || w < 8 || h < 8) return;
+        if (android.os.Build.VERSION.SDK_INT < 34) return;
+        try {
+            int gw = Math.max(4, w / 4);
+            int gh = Math.max(4, h / 4);
+            byte[] gainBytes = new byte[gw * gh];
+            float halBoost = 1.0f + clamp(look.halation, 0f, 1f) * 0.45f;
+            for (int gy = 0; gy < gh; gy++) {
+                int sy = Math.min(h - 1, (gy * h) / gh);
+                int rowOff = sy * w;
+                int gRowOff = gy * gw;
+                for (int gx = 0; gx < gw; gx++) {
+                    int sx = Math.min(w - 1, (gx * w) / gw);
+                    int c = pixels[rowOff + sx];
+                    int r = (c >> 16) & 0xFF;
+                    int g = (c >> 8) & 0xFF;
+                    int b = c & 0xFF;
+                    float luma = (0.26f * r + 0.64f * g + 0.10f * b) / 255f;
+                    float peak = Math.max(r, Math.max(g, b)) / 255f;
+                    float sig = luma * 0.65f + peak * 0.35f;
+                    float gain = smoothstep(0.60f, 0.99f, sig) * halBoost;
+                    int v = Math.min(255, Math.max(0, Math.round(clamp(gain, 0f, 1f) * 255f)));
+                    gainBytes[gRowOff + gx] = (byte) v;
+                }
+            }
+            Bitmap gainBmp = Bitmap.createBitmap(gw, gh, Bitmap.Config.ALPHA_8);
+            gainBmp.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(gainBytes));
+            android.graphics.Gainmap gainmap = new android.graphics.Gainmap(gainBmp);
+            float maxHdrRatio = 2.35f;
+            gainmap.setRatioMin(1.0f, 1.0f, 1.0f);
+            gainmap.setRatioMax(maxHdrRatio, maxHdrRatio, maxHdrRatio);
+            gainmap.setGamma(1.0f, 1.0f, 1.0f);
+            gainmap.setEpsilonSdr(0.01f, 0.01f, 0.01f);
+            gainmap.setEpsilonHdr(0.01f, 0.01f, 0.01f);
+            gainmap.setMinDisplayRatioForHdrTransition(1.0f);
+            gainmap.setDisplayRatioForFullHdr(maxHdrRatio);
+            bmp.setGainmap(gainmap);
+        } catch (Throwable ignored) {
+        }
     }
 
     /** JPEG fallback keeps the file usable, but cannot undo the phone's baked image processing. */
@@ -579,7 +668,7 @@ final class RawDeveloper {
         if (look.halation > 0f) applyHalation(pixels, w, h, look.halation, look.aspectRatio);
         if (look.sharpening > 0f) applySharpen(pixels, w, h, Math.min(.14f, look.sharpening * .14f));
 
-        Bitmap result = createColorSpaceAwareBitmap(pixels, w, h, look.colorSpace);
+        Bitmap result = createColorSpaceAwareBitmap(pixels, w, h, look);
         if (look.frameBorder != null && !look.frameBorder.startsWith("None")) {
             result = applyFrameBorder(result, look, null);
         }

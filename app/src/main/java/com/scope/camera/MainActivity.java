@@ -156,6 +156,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private Runnable timerCountdownRunnable;
     private long lastDirtyLensAlertAt = 0L;
     private int dirtyLensAccumulator = 0;
+    private long palmTriggerCooldownUntil = 0L;
+    private int palmGestureAccumulator = 0;
     private TextView zoomSliderValue;
     private final List<TextView> lensButtons = new ArrayList<>();
     private CompositionGrid gridOverlay;
@@ -425,24 +427,135 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 boolean wantZebra = AppSettings.getBoolean(MainActivity.this, AppSettings.ZEBRA, false);
                 boolean wantPeak = AppSettings.getBoolean(MainActivity.this, AppSettings.FOCUS_PEAKING, false);
                 boolean wantDirty = AppSettings.getBoolean(MainActivity.this, AppSettings.DIRTY_LENS_WARNING, true);
-                if (wantHist || wantZebra || wantPeak || wantDirty) {
+                boolean wantPalm = AppSettings.getBoolean(MainActivity.this, AppSettings.PALM_TIMER, false)
+                        && !videoMode && !videoRecording && !timerCountdownRunning && !captureInFlight;
+                if (wantHist || wantZebra || wantPeak || wantDirty || wantPalm) {
                     try {
                         Bitmap sample = textureView.getBitmap(64, 48);
                         if (sample != null) {
-                            computeExposureAids(sample, wantHist, wantZebra, wantPeak, wantDirty);
+                            computeExposureAids(sample, wantHist, wantZebra, wantPeak, wantDirty, wantPalm);
                             sample.recycle();
                             gridOverlay.invalidate();
                         }
                     } catch (Throwable t) {
                         Log.w(TAG, "Failed to sample texture for exposure aids", t);
                     }
-                    textureView.postDelayed(this, (wantHist || wantZebra || wantPeak) ? 110L : 450L);
+                    textureView.postDelayed(this, (wantHist || wantZebra || wantPeak || wantPalm) ? 120L : 450L);
                     return;
                 }
             }
             if (textureView != null) textureView.postDelayed(this, 450L);
         }
     };
+
+    private void checkPalmGesture(int[] px, int w, int h) {
+        long now = SystemClock.elapsedRealtime();
+        if (now < palmTriggerCooldownUntil || timerCountdownRunning || captureInFlight || videoMode || videoRecording) {
+            palmGestureAccumulator = 0;
+            return;
+        }
+        int yStart = Math.max(2, (int) (h * 0.08f));
+        int yEnd = Math.min(h - 2, (int) (h * 0.78f));
+        int xStart = Math.max(2, (int) (w * 0.08f));
+        int xEnd = Math.min(w - 2, (int) (w * 0.92f));
+        int skinCount = 0;
+        int minX = w, maxX = 0, minY = h, maxY = 0;
+
+        for (int y = yStart; y < yEnd; y++) {
+            int row = y * w;
+            for (int x = xStart; x < xEnd; x++) {
+                int c = px[row + x];
+                int r = (c >> 16) & 0xff;
+                int g = (c >> 8) & 0xff;
+                int b = c & 0xff;
+                if (isSkinTonePixel(r, g, b)) {
+                    skinCount++;
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+
+        int frameArea = w * h;
+        int boxW = maxX - minX + 1;
+        int boxH = maxY - minY + 1;
+        if (skinCount < frameArea * 0.035f || skinCount > frameArea * 0.30f || boxW < 8 || boxH < 9) {
+            palmGestureAccumulator = Math.max(0, palmGestureAccumulator - 1);
+            return;
+        }
+
+        float aspect = boxW / (float) boxH;
+        if (aspect < 0.48f || aspect > 1.55f) {
+            palmGestureAccumulator = Math.max(0, palmGestureAccumulator - 1);
+            return;
+        }
+
+        // Distinguish an open 5-finger raised palm from a solid oval face:
+        // Across the upper third of the hand bounding box (finger region), horizontal scanlines
+        // exhibit multiple skin-to-background finger transitions (>= 3 fingers separated by gaps).
+        int fingerZoneTop = minY + Math.max(1, boxH / 10);
+        int fingerZoneBottom = minY + Math.max(3, (boxH * 42) / 100);
+        int maxRunsInRow = 0;
+        int multiFingerRows = 0;
+        for (int y = fingerZoneTop; y <= fingerZoneBottom && y < h; y++) {
+            int row = y * w;
+            int runs = 0;
+            boolean inSkin = false;
+            for (int x = minX; x <= maxX && x < w; x++) {
+                int c = px[row + x];
+                boolean skin = isSkinTonePixel((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
+                if (skin && !inSkin) {
+                    runs++;
+                    inSkin = true;
+                } else if (!skin) {
+                    inSkin = false;
+                }
+            }
+            if (runs > maxRunsInRow) maxRunsInRow = runs;
+            if (runs >= 3) multiFingerRows++;
+        }
+
+        // Also check palm base solidity in the lower-middle half of the bounding box
+        int palmMidY = minY + (boxH * 62) / 100;
+        int palmSkinPixels = 0;
+        if (palmMidY < h) {
+            int row = palmMidY * w;
+            for (int x = minX; x <= maxX && x < w; x++) {
+                int c = px[row + x];
+                if (isSkinTonePixel((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff)) {
+                    palmSkinPixels++;
+                }
+            }
+        }
+        float palmSolidity = palmSkinPixels / (float) Math.max(1, boxW);
+
+        if (maxRunsInRow >= 3 && multiFingerRows >= 2 && palmSolidity >= 0.35f) {
+            palmGestureAccumulator++;
+            if (palmGestureAccumulator >= 4) {
+                palmGestureAccumulator = 0;
+                palmTriggerCooldownUntil = now + 8000L;
+                runOnUiThread(() -> {
+                    if (!timerCountdownRunning && !captureInFlight && !videoMode && !videoRecording) {
+                        showMessage("✋ Palm detected · 3s timer");
+                        startTimerCountdown(3);
+                    }
+                });
+            }
+        } else {
+            palmGestureAccumulator = Math.max(0, palmGestureAccumulator - 1);
+        }
+    }
+
+    private static boolean isSkinTonePixel(int r, int g, int b) {
+        int max = Math.max(r, Math.max(g, b));
+        int min = Math.min(r, Math.min(g, b));
+        return r > 85 && g > 38 && b > 20
+                && r > g && g >= (b - 10)
+                && (max - min) > 16
+                && (r - g) >= 10 && (r - b) >= 18;
+    }
 
     private void checkDirtyLens(int[] luma, int w, int h) {
         int total = w * h;
@@ -487,7 +600,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
-    private void computeExposureAids(Bitmap bmp, boolean wantHist, boolean wantZebra, boolean wantPeak, boolean wantDirty) {
+    private void computeExposureAids(Bitmap bmp, boolean wantHist, boolean wantZebra, boolean wantPeak, boolean wantDirty, boolean wantPalm) {
         int w = bmp.getWidth();
         int h = bmp.getHeight();
         int total = w * h;
@@ -550,6 +663,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         if (wantDirty && !isFrontCamera()) {
             checkDirtyLens(luma, w, h);
+        }
+        if (wantPalm) {
+            checkPalmGesture(px, w, h);
         }
     }
 
@@ -2059,16 +2175,39 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
             mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
             String codecPref = AppSettings.get(this, AppSettings.VIDEO_CODEC, "H.264 · Universal");
-            boolean wantHevc = codecPref.contains("HEVC") && !isContinuation;
+            boolean wantHdr10 = AppSettings.getBoolean(this, AppSettings.VIDEO_HDR, false)
+                    && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    && !isContinuation
+                    && isHlg10Supported();
+            boolean wantHevc = (codecPref.contains("HEVC") || wantHdr10) && !isContinuation;
+            boolean usingHevc = false;
             try {
                 mediaRecorder.setVideoEncoder(wantHevc ? MediaRecorder.VideoEncoder.HEVC : MediaRecorder.VideoEncoder.H264);
+                usingHevc = wantHevc;
             } catch (RuntimeException fallbackH264) {
                 mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+                wantHdr10 = false;
+            }
+            if (wantHdr10 && usingHevc && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                try {
+                    mediaRecorder.setVideoEncodingProfileLevel(
+                            android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
+                            android.media.MediaCodecInfo.CodecProfileLevel.HEVCMainTierLevel41);
+                } catch (RuntimeException hdrFallback) {
+                    wantHdr10 = false;
+                }
             }
             if (recordAudio) {
                 mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
                 mediaRecorder.setAudioChannels(2);
                 mediaRecorder.setAudioSamplingRate(48000);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && AppSettings.getBoolean(this, AppSettings.AUDIO_ZOOM, true)) {
+                    try {
+                        float micZoom = Math.max(0f, Math.min(1f, (requestedZoom - 1.0f) / 4.0f));
+                        mediaRecorder.setPreferredMicrophoneFieldDimension(micZoom);
+                    } catch (Throwable ignored) {
+                    }
+                }
             }
             mediaRecorder.setVideoSize(videoSize.getWidth(), videoSize.getHeight());
             String fpsChoice = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
@@ -2077,6 +2216,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
             String bitrateChoice = AppSettings.get(this, AppSettings.VIDEO_BITRATE, "High · 24 Mbps");
             int bitrate = VideoRecordingCoordinator.computeBitrate(bitrateChoice);
+            if (wantHdr10) bitrate = Math.round(bitrate * 1.25f);
             mediaRecorder.setVideoEncodingBitRate(bitrate);
             if (recordAudio) mediaRecorder.setAudioEncodingBitRate(160_000);
             int orientHint = lockedVideoOrientation >= 0 ? lockedVideoOrientation : jpegOrientation();
@@ -2093,7 +2233,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
             recordingPreviewSurface = new Surface(texture);
             List<Surface> outputs = Arrays.asList(recordingPreviewSurface, mediaRecorder.getSurface());
-            cameraDevice.createCaptureSession(outputs, new CameraCaptureSession.StateCallback() {
+            CameraCaptureSession.StateCallback sessionCallback = new CameraCaptureSession.StateCallback() {
                 @Override public void onConfigured(CameraCaptureSession session) {
                     if (cameraDevice == null || mediaRecorder == null) {
                         session.close();
@@ -2162,10 +2302,52 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     session.close();
                     failVideoStart("This camera could not configure video recording.");
                 }
-            }, cameraHandler);
+            };
+
+            boolean configuredHdrSession = false;
+            if (wantHdr10 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                try {
+                    android.hardware.camera2.params.OutputConfiguration previewOut =
+                            new android.hardware.camera2.params.OutputConfiguration(recordingPreviewSurface);
+                    android.hardware.camera2.params.OutputConfiguration videoOut =
+                            new android.hardware.camera2.params.OutputConfiguration(mediaRecorder.getSurface());
+                    videoOut.setDynamicRangeProfile(android.hardware.camera2.params.DynamicRangeProfiles.HLG10);
+                    List<android.hardware.camera2.params.OutputConfiguration> outConfigs = Arrays.asList(previewOut, videoOut);
+                    java.util.concurrent.Executor camExec = command -> {
+                        if (cameraHandler != null) cameraHandler.post(command);
+                    };
+                    android.hardware.camera2.params.SessionConfiguration sessionConfig =
+                            new android.hardware.camera2.params.SessionConfiguration(
+                                    android.hardware.camera2.params.SessionConfiguration.SESSION_REGULAR,
+                                    outConfigs,
+                                    camExec,
+                                    sessionCallback);
+                    cameraDevice.createCaptureSession(sessionConfig);
+                    configuredHdrSession = true;
+                } catch (Throwable hdrSessionErr) {
+                    configuredHdrSession = false;
+                }
+            }
+            if (!configuredHdrSession) {
+                cameraDevice.createCaptureSession(outputs, sessionCallback, cameraHandler);
+            }
         } catch (Exception e) {
             failVideoStart("Video recording could not start.");
         }
+    }
+
+    private boolean isHlg10Supported() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || characteristics == null) return false;
+        try {
+            android.hardware.camera2.params.DynamicRangeProfiles profiles =
+                    characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES);
+            if (profiles != null) {
+                return profiles.getSupportedProfiles().contains(
+                        android.hardware.camera2.params.DynamicRangeProfiles.HLG10);
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
     }
 
     private Size chooseVideoSize(Size[] sizes) {
@@ -3800,6 +3982,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 descList.add("Custom User Recipe · Slot " + i);
             }
         }
+        String curPushPull = AppSettings.get(this, AppSettings.FILM_PUSH_PULL, AppSettings.FILM_PUSH_PULL_CHOICES[0]);
+        brainList.add("+ FILM PUSH / PULL RATING...");
+        descList.add("Current: " + curPushPull);
         brainList.add("+ SAVE CURRENT AS RECIPE");
         descList.add("Store current quick adjust parameters into recipe slot");
         brainList.add("+ 3D LUT COLOR GRADE...");
@@ -3813,6 +3998,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         showCustomBottomSheet("PROCESSING BRAIN & RECIPES", brains, descriptions, checked, index -> {
             String picked = brains[index];
+            if (picked.startsWith("+ FILM PUSH")) {
+                showPushPullDialog();
+                return;
+            }
             if (picked.startsWith("+ 3D LUT")) {
                 showLutDialog();
                 return;
@@ -3841,6 +4030,30 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         });
     }
 
+    private void showPushPullDialog() {
+        String[] items = AppSettings.FILM_PUSH_PULL_CHOICES;
+        String[] subs = {
+                "Nominal box speed · balanced tonal latitude & fine grain",
+                "Develop +1 stop · steeper S-curve, punchy contrast & grain",
+                "Develop +2 stops · deep crushed blacks & coarse night grain",
+                "Overexpose & pull -1 stop · open pastel shadows & soft highlights"
+        };
+        String current = AppSettings.get(this, AppSettings.FILM_PUSH_PULL, items[0]);
+        int checked = 0;
+        for (int i = 0; i < items.length; i++) {
+            if (items[i].equals(current)) {
+                checked = i;
+                break;
+            }
+        }
+        showCustomBottomSheet("FILM PUSH / PULL PROCESSING", items, subs, checked, index -> {
+            String picked = items[index];
+            AppSettings.prefs(this).edit().putString(AppSettings.FILM_PUSH_PULL, picked).apply();
+            showMessage("FILM PROCESS: " + picked.split("·")[0].trim());
+            updateBrainButton();
+        });
+    }
+
     private void showLutDialog() {
         List<String> luts = LutManager.getAvailableLutNames(this);
         String current = AppSettings.get(this, AppSettings.LUT_NAME, "None");
@@ -3863,6 +4076,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void applyCustomRecipeToPreferences(RawDeveloper.Look look) {
         if (look.lutName != null) {
             AppSettings.prefs(this).edit().putString(AppSettings.LUT_NAME, look.lutName).apply();
+        }
+        if (look.filmPushPull != null) {
+            AppSettings.prefs(this).edit().putString(AppSettings.FILM_PUSH_PULL, look.filmPushPull).apply();
         }
         AppSettings.prefs(this).edit()
                 .putInt(AppSettings.WARMTH, Math.round(look.warmth * 50f + 50f))
@@ -4062,6 +4278,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (brainButton != null) {
             String brain = AppSettings.brain(this);
             String lut = AppSettings.get(this, AppSettings.LUT_NAME, "None");
+            String pushPull = AppSettings.get(this, AppSettings.FILM_PUSH_PULL, AppSettings.FILM_PUSH_PULL_CHOICES[0]);
             String label;
             if (brain.startsWith("[RECIPE")) label = "RCP" + brain.charAt(8);
             else if (brain.startsWith("KODACHROME")) label = "KODA";
@@ -4070,6 +4287,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             else if (brain.startsWith("MONO")) label = "MONO";
             else if (brain.startsWith("NEUTRAL")) label = "RAW";
             else label = "FILM";
+            if (pushPull.startsWith("+1")) label += " +1";
+            else if (pushPull.startsWith("+2")) label += " +2";
+            else if (pushPull.startsWith("-1")) label += " -1";
             if (!"None".equalsIgnoreCase(lut)) {
                 label += " · LUT";
             }
@@ -4090,8 +4310,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
 
         RawDeveloper.Look look = RawDeveloper.Look.fromPreferences(this);
+        String pp = look.filmPushPull != null ? look.filmPushPull : "";
+        boolean hasPushPull = pp.startsWith("+1") || pp.startsWith("+2") || pp.startsWith("-1");
         if (AppSettings.BRAIN_NEUTRAL_RAW.equals(brain) && "None".equalsIgnoreCase(activeLut)
-                && !isCustomLookActive() && look.whiteBalanceKelvin <= 0) {
+                && !isCustomLookActive() && look.whiteBalanceKelvin <= 0 && !hasPushPull) {
             textureView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
             textureView.invalidate();
             return;
@@ -4149,7 +4371,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             cm.postConcat(film);
         }
 
-        // Incorporate user developer adjustments (exposureEv, contrast, shadows, warmth, saturation, manual Kelvin WB)
+        // Incorporate user developer adjustments (exposureEv, contrast, shadows, warmth, saturation, manual Kelvin WB, push/pull)
         float evDelta = look.exposureEv - (AppSettings.DEFAULT_EXPOSURE / 10f);
         float evScale = (float) Math.pow(2.0, evDelta * 0.45f);
         float contrastRatio = look.contrast / (AppSettings.DEFAULT_CONTRAST / 100f);
@@ -4159,6 +4381,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             warmthDelta += Math.max(-0.6f, Math.min(0.6f, (look.whiteBalanceKelvin - 5600f) / 3600f));
         }
         float satRatio = look.saturation / (AppSettings.DEFAULT_SATURATION / 100f);
+        if (pp.startsWith("+1")) {
+            contrastRatio *= 1.14f;
+            shadowDelta += 0.14f;
+            satRatio *= 1.06f;
+        } else if (pp.startsWith("+2")) {
+            contrastRatio *= 1.28f;
+            shadowDelta += 0.28f;
+            satRatio *= 0.92f;
+        } else if (pp.startsWith("-1")) {
+            contrastRatio *= 0.88f;
+            shadowDelta -= 0.18f;
+            satRatio *= 0.94f;
+        }
 
         if (Math.abs(satRatio - 1.0f) > 0.02f && !brain.startsWith("MONO")) {
             ColorMatrix satMatrix = new ColorMatrix();
@@ -4769,6 +5004,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         int left = active.centerX() - cropW / 2;
         int top = active.centerY() - cropH / 2;
         builder.set(CaptureRequest.SCALER_CROP_REGION, new Rect(left, top, left + cropW, top + cropH));
+
+        if ((videoRecording || videoStarting) && mediaRecorder != null
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                && AppSettings.getBoolean(this, AppSettings.AUDIO_ZOOM, true)) {
+            try {
+                float micZoom = Math.max(0f, Math.min(1f, (requestedZoom - 1.0f) / 4.0f));
+                mediaRecorder.setPreferredMicrophoneFieldDimension(micZoom);
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     private void setFocusMode(CaptureRequest.Builder builder) {
