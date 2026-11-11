@@ -39,6 +39,8 @@ public class LookRecipeControl {
     public interface OnChangeListener {
         void onValueChanged(int type, int value, boolean fromUser, boolean isTrackingTouch);
         void onReset(int type);
+        default void onTrackingStarted() { }
+        default void onTrackingStopped() { }
     }
 
     public final int type;
@@ -228,6 +230,7 @@ public class LookRecipeControl {
 
         final int[] lastHapticVal = {current};
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            private boolean tracking;
             @Override
             public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
                 int selected = min + progress;
@@ -242,21 +245,25 @@ public class LookRecipeControl {
                     }
                 }
                 if (listener != null) {
-                    listener.onValueChanged(type, selected, fromUser, false);
+                    listener.onValueChanged(type, selected, fromUser, tracking);
                 }
             }
 
             @Override
             public void onStartTrackingTouch(SeekBar bar) {
+                tracking = true;
                 if (listener != null) {
+                    listener.onTrackingStarted();
                     listener.onValueChanged(type, min + bar.getProgress(), true, true);
                 }
             }
 
             @Override
             public void onStopTrackingTouch(SeekBar bar) {
+                tracking = false;
                 if (listener != null) {
                     listener.onValueChanged(type, min + bar.getProgress(), true, false);
+                    listener.onTrackingStopped();
                 }
             }
         });

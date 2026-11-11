@@ -1168,8 +1168,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         header.addView(aspectButton, aspectLp);
         aspectButton.setOnClickListener(v -> { hapticClick(v); chooseAspectRatio(); });
 
-        timerButton = pill("◷  OFF", false);
-        LinearLayout.LayoutParams timerLp = new LinearLayout.LayoutParams(dp(54), dp(32));
+        timerButton = pill("◷", false);
+        LinearLayout.LayoutParams timerLp = new LinearLayout.LayoutParams(dp(38), dp(32));
         timerLp.leftMargin = dp(6);
         header.addView(timerButton, timerLp);
         timerButton.setOnClickListener(v -> { hapticClick(v); cycleTimer(); });
@@ -1198,10 +1198,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         topSpacer = new View(this);
         header.addView(topSpacer, new LinearLayout.LayoutParams(0, 1, 1));
         brainButton = pill("FILM  ⌄", true);
-        LinearLayout.LayoutParams brainLp = new LinearLayout.LayoutParams(dp(62), dp(32));
-        brainLp.leftMargin = dp(6);
         brainButton.setOnClickListener(v -> { hapticClick(v); chooseBrain(); });
-        header.addView(brainButton, brainLp);
+        // The look selector sits by the shutter deck, leaving the privacy lane clear.
         settingsButton = pill("⚙", false);
         settingsButton.setTextSize(17f);
         settingsButton.setPadding(0, 0, 0, 0);
@@ -1441,6 +1439,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         lookRow.setGravity(Gravity.CENTER_VERTICAL);
         lookRow.setClipToPadding(false);
         lookRow.setClipChildren(false);
+        LinearLayout.LayoutParams lookLp = new LinearLayout.LayoutParams(dp(62), dp(32));
+        lookLp.rightMargin = dp(8);
+        lookRow.addView(brainButton, lookLp);
 
         modeNote = label("INTELLIGENT AUTO", 8, 0xffc9d0c8, false);
         modeNote.setLetterSpacing(.06f);
@@ -1599,7 +1600,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
         int screenWidth = root != null && root.getWidth() > 0 ? root.getWidth() : getResources().getDisplayMetrics().widthPixels;
         int screenHeight = root != null && root.getHeight() > 0 ? root.getHeight() : getResources().getDisplayMetrics().heightPixels;
-        int topSafe = computeTopSafe(safeInsets, cutoutRect, screenWidth);
+        int topSafe = computeTopSafe(safeInsets, cutoutRect);
 
         if (topSpacer != null) {
             if (cutoutRect != null) {
@@ -1624,7 +1625,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 FrameLayout.LayoutParams headerLp = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP);
                 headerLp.topMargin = topSafe;
                 int leftPad = dp(14) + safeInsets.left;
-                int rightPad = dp(14) + safeInsets.right;
+                int rightPad = dp(14) + Math.max(safeInsets.right, privacyRightInset(topSafe));
                 if (cutoutRect != null) {
                     float cutoutCenterX = (cutoutRect.left + cutoutRect.right) / 2f;
                     if (cutoutCenterX < screenWidth / 3f) {
@@ -1721,7 +1722,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (header.getParent() != null) ((ViewGroup) header.getParent()).removeView(header);
                 FrameLayout.LayoutParams headerLp = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP);
                 headerLp.topMargin = topSafe;
-                header.setPadding(dp(14) + safeInsets.left, 0, dp(14) + safeInsets.right, 0);
+                header.setPadding(dp(14) + safeInsets.left, 0, dp(14) + Math.max(safeInsets.right, privacyRightInset(topSafe)), 0);
                 overlay.addView(header, headerLp);
             }
 
@@ -3155,7 +3156,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         if (timerButton != null) {
             String timer = AppSettings.get(this, AppSettings.TIMER, "Off");
-            timerButton.setText("◷  " + (timer.startsWith("3") ? "3S" : timer.startsWith("10") ? "10S" : "OFF"));
+            timerButton.setText(timer.startsWith("3") ? "◷ 3s" : timer.startsWith("10") ? "◷ 10s" : "◷");
+            timerButton.setContentDescription("Self timer: " + timer);
         }
         if (flashButton != null) {
             boolean flashAvailable = flashSupported || isFrontCamera();
@@ -3370,21 +3372,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         return AppSettings.parseAspectRatio(AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3"));
     }
 
-    private int computeTopSafe(Rect safeInsets, Rect cutoutRect, int screenWidth) {
+    private int privacyRightInset(int headerTop) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || root == null) return 0;
+        WindowInsets insets = root.getRootWindowInsets();
+        Rect privacy = insets == null ? null : insets.getPrivacyIndicatorBounds();
+        if (privacy == null || privacy.isEmpty() || privacy.bottom <= headerTop
+                || privacy.top >= headerTop + dp(32)) return 0;
+        // Reserve only Android's top-right indicator bounds; keep left controls anchored.
+        int width = root.getWidth() > 0 ? root.getWidth() : getResources().getDisplayMetrics().widthPixels;
+        return Math.max(0, width - privacy.left + dp(6));
+    }
+
+    private int computeTopSafe(Rect safeInsets, Rect cutoutRect) {
+        int screenWidth = root != null && root.getWidth() > 0 ? root.getWidth() : getResources().getDisplayMetrics().widthPixels;
         if (cutoutRect != null) {
-            float cutoutCenterX = (cutoutRect.left + cutoutRect.right) / 2f;
-            boolean isCentered = Math.abs(cutoutCenterX - screenWidth / 2f) < dp(50);
-            if (cutoutRect.width() > dp(120) && cutoutRect.height() > dp(36)) {
-                return cutoutRect.bottom + dp(6);
-            }
-            if (isCentered && cutoutRect.height() <= dp(44)) {
-                int alignedTop = (int) (cutoutRect.centerY() - dp(16));
-                return Math.max(dp(8), alignedTop);
-            }
+            boolean centered = Math.abs(cutoutRect.centerX() - screenWidth / 2f) < dp(50);
+            if (cutoutRect.width() > dp(120) && cutoutRect.height() > dp(36)) return cutoutRect.bottom + dp(6);
+            if (centered && cutoutRect.height() <= dp(44)) return Math.max(dp(8), cutoutRect.centerY() - dp(16));
         }
-        if (safeInsets.top <= dp(24)) {
-            return Math.max(dp(10), safeInsets.top + dp(6));
-        }
+        if (safeInsets.top <= dp(24)) return Math.max(dp(10), safeInsets.top + dp(6));
         return Math.max(dp(8), (safeInsets.top - dp(32)) / 2);
     }
 
@@ -3396,7 +3402,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (!isWide) {
             Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
             Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
-            int topSafe = computeTopSafe(safeInsets, cutoutRect, (int) width);
+            int topSafe = computeTopSafe(safeInsets, cutoutRect);
             float topZoneBottom = topSafe + dp(34);
             float viewfinderTopMin = topZoneBottom + dp(10);
 

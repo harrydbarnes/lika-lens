@@ -657,7 +657,15 @@ public class PhotoViewerActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == EDIT_REQUEST && resultCode == RESULT_OK) loadPhoto();
+        if (requestCode == EDIT_REQUEST && resultCode == RESULT_OK) {
+            if (data != null && data.getData() != null) {
+                photoUri = data.getData();
+                photoName = data.getStringExtra(EXTRA_NAME);
+                refreshPhotoList();
+                if (currentIndex >= 0) { stepPhoto(0); return; }
+            }
+            loadPhoto();
+        }
     }
 
     private void loadPhoto() {

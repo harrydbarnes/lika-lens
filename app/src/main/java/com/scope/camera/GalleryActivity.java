@@ -12,6 +12,7 @@ import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.widget.FrameLayout;
+import android.app.AlertDialog;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -31,6 +32,11 @@ public class GalleryActivity extends Activity {
     private static final int IMPORT_REQUEST = 50;
     private LinearLayout list;
     private TextView countView;
+    private LinearLayout filters;
+    private String activeFilter = "All";
+    private TextView selectionActionButton;
+    private boolean exporting;
+    private final android.os.Handler mainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private ScrollView scroll;
     private int savedScrollY;
 
@@ -95,47 +101,35 @@ public class GalleryActivity extends Activity {
         LinearLayout title = new LinearLayout(this);
         title.setOrientation(LinearLayout.VERTICAL);
         title.setPadding(dp(8), 0, 0, 0);
-        title.addView(text("LIBRARY", 14, 0xfff0f2eb, true));
-        countView = text("0 PHOTOS", 8, 0xff89948e, false);
+        title.addView(text("Library", 18, 0xfff0f2eb, true));
+        countView = text("0 PHOTOS", 11, 0xff89948e, false);
         countView.setPadding(0, dp(3), 0, 0);
         title.addView(countView);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
 
-        TextView gifButton = pill("GIF", false);
-        gifButton.setPadding(dp(8), 0, dp(8), 0);
-        LinearLayout.LayoutParams gifLp = new LinearLayout.LayoutParams(-2, dp(30));
-        gifLp.leftMargin = dp(4);
-        header.addView(gifButton, gifLp);
-        gifButton.setOnClickListener(v -> { hapticClick(v); handleGifButtonClick(); });
+        TextView selectButton = pill("Select", false);
+        selectButton.setPadding(dp(14), 0, dp(14), 0);
+        header.addView(selectButton, new LinearLayout.LayoutParams(-2, dp(44)));
+        selectButton.setOnClickListener(v -> { hapticClick(v); if (isSelectionMode) exitSelectionMode(); else enterSelectionMode(); });
 
-        TextView pasteButton = pill("PASTE", false);
-        pasteButton.setPadding(dp(8), 0, dp(8), 0);
-        LinearLayout.LayoutParams pasteLp = new LinearLayout.LayoutParams(-2, dp(30));
-        pasteLp.leftMargin = dp(4);
-        header.addView(pasteButton, pasteLp);
-        pasteButton.setOnClickListener(v -> { hapticClick(v); showBatchPasteLookDialog(); });
-
-        TextView contactSheetButton = pill("PROOF SHEET", false);
-        contactSheetButton.setPadding(dp(8), 0, dp(8), 0);
-        LinearLayout.LayoutParams sheetLp = new LinearLayout.LayoutParams(-2, dp(30));
-        sheetLp.leftMargin = dp(4);
-        header.addView(contactSheetButton, sheetLp);
-        contactSheetButton.setOnClickListener(v -> { hapticClick(v); generateContactSheet(); });
-
-        TextView importButton = pill("IMPORT", true);
-        importButton.setPadding(dp(8), 0, dp(8), 0);
-        LinearLayout.LayoutParams importLp = new LinearLayout.LayoutParams(-2, dp(30));
+        TextView importButton = pill("Import", true);
+        importButton.setPadding(dp(14), 0, dp(14), 0);
+        LinearLayout.LayoutParams importLp = new LinearLayout.LayoutParams(-2, dp(44));
         importLp.leftMargin = dp(4);
         header.addView(importButton, importLp);
         importButton.setOnClickListener(v -> { hapticClick(v); chooseImport(); });
         page.addView(header);
+        filters = new LinearLayout(this);
+        filters.setPadding(dp(16), dp(4), dp(16), dp(10));
+        refreshFilters();
+        page.addView(filters);
 
         scroll = new ScrollView(this);
         scroll.setFillViewport(false);
         scroll.setVerticalScrollBarEnabled(false);
         list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(dp(14), dp(3), dp(14), dp(25));
+        list.setPadding(dp(14), dp(3), dp(14), dp(isSelectionMode ? 110 : 25));
         scroll.addView(list);
         page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         root.addView(page, new FrameLayout.LayoutParams(-1, -1));
@@ -148,42 +142,62 @@ public class GalleryActivity extends Activity {
         selectionBar.setPadding(dp(16), dp(10), dp(16), dp(10));
         selectionBar.setVisibility(View.GONE);
 
-        selectionCountView = text("0 FRAMES SELECTED", 9, 0xffedf0e9, true);
+        selectionCountView = text("0 selected", 11, 0xffedf0e9, true);
         selectionCountView.setLetterSpacing(0.08f);
         selectionBar.addView(selectionCountView, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        TextView cancelBtn = pill("CANCEL", false);
-        selectionBar.addView(cancelBtn, new LinearLayout.LayoutParams(-2, dp(32)));
+        TextView cancelBtn = pill("Cancel", false);
+        cancelBtn.setPadding(dp(12), 0, dp(12), 0);
+        selectionBar.addView(cancelBtn, new LinearLayout.LayoutParams(-2, dp(44)));
         cancelBtn.setOnClickListener(v -> { hapticClick(v); exitSelectionMode(); });
 
-        TextView createGifBtn = pill("CREATE GIF ➔", true);
-        LinearLayout.LayoutParams cgLp = new LinearLayout.LayoutParams(-2, dp(32));
-        cgLp.leftMargin = dp(8);
-        selectionBar.addView(createGifBtn, cgLp);
-        createGifBtn.setOnClickListener(v -> { hapticClick(v); launchGifStudioWithSelection(); });
+        selectionActionButton = pill("Actions", true);
+        LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(-2, dp(44));
+        actionsLp.leftMargin = dp(8);
+        selectionActionButton.setPadding(dp(16), 0, dp(16), 0);
+        selectionBar.addView(selectionActionButton, actionsLp);
+        selectionActionButton.setOnClickListener(v -> { hapticClick(v); showSelectionActions(); });
 
         int maxBarW = Math.min(dp(440), getResources().getDisplayMetrics().widthPixels - dp(32));
         FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(maxBarW, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         barLp.bottomMargin = dp(16);
         root.addView(selectionBar, barLp);
 
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int bottom = android.os.Build.VERSION.SDK_INT >= 30
+                    ? insets.getInsets(android.view.WindowInsets.Type.navigationBars()).bottom
+                    : insets.getSystemWindowInsetBottom();
+            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) selectionBar.getLayoutParams();
+            params.bottomMargin = Math.max(dp(16), bottom + dp(12));
+            selectionBar.setLayoutParams(params);
+            return insets;
+        });
         setContentView(root);
     }
 
     private void loadPhotos() {
         if (list == null) return;
         list.removeAllViews();
-        List<PhotoRepository.Photo> photos = PhotoRepository.all(this);
-        countView.setText(String.format(Locale.US, "%02d PHOTOS", photos.size()));
+        list.setPadding(list.getPaddingLeft(), dp(3), list.getPaddingRight(), dp(isSelectionMode ? 110 : 25));
+        List<PhotoRepository.Photo> allPhotos = PhotoRepository.all(this);
+        List<PhotoRepository.Photo> photos = new ArrayList<>();
+        for (PhotoRepository.Photo photo : allPhotos) {
+            String key = PhotoRepository.archiveKey(photo.name);
+            if ("All".equals(activeFilter)
+                    || ("RAW".equals(activeFilter) && RawArchive.exists(this, key))
+                    || ("Edited".equals(activeFilter) && PhotoEditStore.hasEdits(this, key))
+                    || ("GIFs".equals(activeFilter) && photo.isGif)) photos.add(photo);
+        }
+        countView.setText(String.format(Locale.US, "%02d %s", photos.size(), photos.size() == 1 ? "PHOTO" : "PHOTOS"));
         if (photos.isEmpty()) {
             LinearLayout empty = new LinearLayout(this);
             empty.setOrientation(LinearLayout.VERTICAL);
             empty.setGravity(Gravity.CENTER);
             empty.setPadding(dp(28), dp(82), dp(28), dp(40));
-            TextView title = text("NO FRAMES YET", 11, 0xffd8ded6, true);
+            TextView title = text("All".equals(activeFilter) ? "NO PHOTOS YET" : ("GIFs".equals(activeFilter) ? "NO GIFS YET" : "NO " + activeFilter.toUpperCase(Locale.US) + " PHOTOS"), 13, 0xffd8ded6, true);
             title.setGravity(Gravity.CENTER);
             empty.addView(title);
-            TextView hint = text("Capture a frame or import an image to start your library.", 10, 0xff89948e, false);
+            TextView hint = text("All".equals(activeFilter) ? "Capture a photo or tap Import to start your library." : "Choose All to see the rest of your library.", 12, 0xff89948e, false);
             hint.setGravity(Gravity.CENTER);
             hint.setPadding(0, dp(10), 0, 0);
             empty.addView(hint);
@@ -202,7 +216,7 @@ public class GalleryActivity extends Activity {
             if (!day.equals(currentDay)) {
                 completeRow(row, columns);
                 currentDay = day;
-                TextView heading = text(day.toUpperCase(Locale.getDefault()), 8, 0xffbbc1ba, true);
+                TextView heading = text(day.toUpperCase(Locale.getDefault()), 11, 0xffbbc1ba, true);
                 heading.setLetterSpacing(.12f);
                 LinearLayout.LayoutParams headingLp = new LinearLayout.LayoutParams(-1, dp(30));
                 headingLp.topMargin = dp(4);
@@ -291,9 +305,7 @@ public class GalleryActivity extends Activity {
                 selectedUris.add(photo.uri);
                 updateSelectionBar();
                 loadPhotos();
-                Toast.makeText(this, "Selected frame 1. Tap more frames to create a GIF.", Toast.LENGTH_SHORT).show();
-            } else {
-                confirmDeleteTile(photo);
+                Toast.makeText(this, "Photo selected. Tap more photos, then choose Actions.", Toast.LENGTH_SHORT).show();
             }
             return true;
         });
@@ -316,7 +328,7 @@ public class GalleryActivity extends Activity {
         selectedUris.clear();
         updateSelectionBar();
         loadPhotos();
-        Toast.makeText(this, "Tap frames in sequence to select them for your GIF", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Select photos, then choose Actions", Toast.LENGTH_SHORT).show();
     }
 
     private void exitSelectionMode() {
@@ -328,12 +340,16 @@ public class GalleryActivity extends Activity {
 
     private void updateSelectionBar() {
         if (selectionBar == null) return;
+        if (selectionActionButton != null) {
+            selectionActionButton.setEnabled(!selectedUris.isEmpty() && !exporting);
+            selectionActionButton.setAlpha(selectionActionButton.isEnabled() ? 1f : 0.45f);
+        }
         if (isSelectionMode && !selectedUris.isEmpty()) {
             selectionBar.setVisibility(View.VISIBLE);
-            selectionCountView.setText(String.format(Locale.US, "%d FRAMES SELECTED", selectedUris.size()));
+            selectionCountView.setText(String.format(Locale.US, "%d selected", selectedUris.size()));
         } else if (isSelectionMode) {
             selectionBar.setVisibility(View.VISIBLE);
-            selectionCountView.setText("SELECT 2+ FRAMES FOR GIF");
+            selectionCountView.setText("SELECT PHOTOS");
         } else {
             selectionBar.setVisibility(View.GONE);
         }
@@ -422,7 +438,7 @@ public class GalleryActivity extends Activity {
     }
 
     private TextView pill(String value, boolean active) {
-        TextView view = text(value, 8, active ? 0xffd7b574 : 0xffd8ded7, true);
+        TextView view = text(value, 11, active ? 0xffd7b574 : 0xffd8ded7, true);
         view.setGravity(Gravity.CENTER);
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(active ? 0xff1d1d1a : 0xff202626);
@@ -441,7 +457,7 @@ public class GalleryActivity extends Activity {
     }
 
     private void generateContactSheet() {
-        List<PhotoRepository.Photo> photos = PhotoRepository.all(this);
+        List<PhotoRepository.Photo> photos = selectedPhotos();
         if (photos.isEmpty()) {
             Toast.makeText(this, "No photos to generate proof sheet", Toast.LENGTH_SHORT).show();
             return;
@@ -467,7 +483,112 @@ public class GalleryActivity extends Activity {
     }
 
     private void showBatchPasteLookDialog() {
-        GalleryDialogs.showBatchPasteLookDialog(this, this::loadPhotos);
+        List<PhotoRepository.Photo> photos = selectedPhotos();
+        List<PhotoRepository.Photo> editable = new ArrayList<>();
+        for (PhotoRepository.Photo photo : photos) {
+            if (RawArchive.exists(this, PhotoRepository.archiveKey(photo.name))) editable.add(photo);
+        }
+        if (!PhotoEditStore.hasClipboard(this)) {
+            new AlertDialog.Builder(this).setTitle("No copied look")
+                    .setMessage("Open a RAW photo in Edit and choose Copy look from its menu.")
+                    .setPositiveButton("OK", null).show();
+            return;
+        }
+        if (editable.isEmpty()) {
+            new AlertDialog.Builder(this).setTitle("RAW original required")
+                    .setMessage("None of the selected photos has an editable RAW original.")
+                    .setPositiveButton("OK", null).show();
+            return;
+        }
+        RawDeveloper.Look copied = PhotoEditStore.pasteFromClipboard(this);
+        new AlertDialog.Builder(this).setTitle("Apply copied look?")
+                .setMessage("Save new editable copies of " + editable.size() + " selected RAW photos. Originals stay unchanged."
+                        + (editable.size() < photos.size() ? " Photos without RAW data will be skipped." : ""))
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save copies", (d, w) -> applyCopiedLook(editable, copied)).show();
+    }
+
+    private void refreshFilters() {
+        filters.removeAllViews();
+        for (String name : new String[]{"All", "RAW", "Edited", "GIFs"}) {
+            TextView filter = pill(name, name.equals(activeFilter));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(44), 1f);
+            if (filters.getChildCount() > 0) lp.leftMargin = dp(6);
+            filters.addView(filter, lp);
+            filter.setOnClickListener(v -> {
+                hapticClick(v);
+                activeFilter = name;
+                savedScrollY = 0;
+                refreshFilters();
+                loadPhotos();
+            });
+        }
+    }
+
+    private List<PhotoRepository.Photo> selectedPhotos() {
+        List<PhotoRepository.Photo> photos = new ArrayList<>();
+        List<PhotoRepository.Photo> all = PhotoRepository.all(this);
+        for (Uri uri : selectedUris) {
+            for (PhotoRepository.Photo photo : all) if (photo.uri.equals(uri)) { photos.add(photo); break; }
+        }
+        return photos;
+    }
+
+    private void showSelectionActions() {
+        if (selectedUris.isEmpty() || exporting) return;
+        new AlertDialog.Builder(this).setTitle(selectedUris.size() + " photos selected")
+                .setItems(new String[]{"Share", "Apply copied look…", "Create GIF…", "Proof sheet…", "Video to GIF…", "Delete selected…"}, (d, which) -> {
+                    if (which == 0) shareSelection();
+                    else if (which == 1) showBatchPasteLookDialog();
+                    else if (which == 2) launchGifStudioWithSelection();
+                    else if (which == 3) generateContactSheet();
+                    else if (which == 4) {
+                        Intent video = new Intent(this, GifStudioActivity.class);
+                        video.putExtra(GifStudioActivity.EXTRA_VIDEO_URI, "");
+                        startActivity(video);
+                    } else new AlertDialog.Builder(this).setTitle("Delete selected photos?")
+                            .setMessage("Delete " + selectedUris.size() + " selected photos and their RAW originals? This cannot be undone.")
+                            .setNegativeButton("Cancel", null).setPositiveButton("Delete", (dialog, choice) -> {
+                                for (PhotoRepository.Photo photo : selectedPhotos())
+                                    PhotoRepository.delete(this, photo.uri, photo.name, PhotoRepository.archiveKey(photo.name));
+                                exitSelectionMode();
+                            }).show();
+                }).show();
+    }
+
+    private void shareSelection() {
+        Intent share = new Intent(Intent.ACTION_SEND_MULTIPLE);
+        share.setType("image/*");
+        share.putParcelableArrayListExtra(Intent.EXTRA_STREAM, new ArrayList<>(selectedUris));
+        android.content.ClipData clip = android.content.ClipData.newUri(getContentResolver(), "Lika Lens", selectedUris.get(0));
+        for (int i = 1; i < selectedUris.size(); i++) clip.addItem(new android.content.ClipData.Item(selectedUris.get(i)));
+        share.setClipData(clip);
+        share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        startActivity(Intent.createChooser(share, "Share photos"));
+    }
+
+    private void applyCopiedLook(List<PhotoRepository.Photo> photos, RawDeveloper.Look look) {
+        exporting = true;
+        updateSelectionBar();
+        selectionCountView.setText("SAVING COPIES…");
+        android.content.Context context = getApplicationContext();
+        new Thread(() -> {
+            int saved = 0;
+            for (PhotoRepository.Photo photo : photos) {
+                try {
+                    String key = PhotoRepository.archiveKey(photo.name);
+                    PhotoCopyExporter.export(context, key, RawArchive.read(context, key), look.copy());
+                    saved++;
+                } catch (Exception e) { android.util.Log.e("GalleryActivity", "Could not export selected photo", e); }
+            }
+            final int completed = saved;
+            mainHandler.post(() -> {
+                exporting = false;
+                if (isFinishing() || isDestroyed()) return;
+                exitSelectionMode();
+                Toast.makeText(this, "Saved " + completed + " of " + photos.size() + " copies. Originals unchanged.", Toast.LENGTH_LONG).show();
+            });
+        }, "LibraryLookExport").start();
     }
 
 

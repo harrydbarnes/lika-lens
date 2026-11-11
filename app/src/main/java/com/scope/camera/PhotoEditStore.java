@@ -8,10 +8,24 @@ final class PhotoEditStore {
     private static final String PREFS = "scope_photo_edits";
     private PhotoEditStore() { }
 
+    static boolean hasEdits(Context context, String key) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(prefix(key) + "edited", false);
+    }
+
+    static void saveEdited(Context context, String key, RawDeveloper.Look look) {
+        save(context, key, look);
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(prefix(key) + "edited", true).apply();
+    }
+
     static RawDeveloper.Look load(Context context, String key) {
         RawDeveloper.Look look = RawDeveloper.Look.fromPreferences(context);
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String prefix = prefix(key);
+        String recipe = prefs.getString(prefix + "recipe_json", null);
+        if (recipe != null) {
+            RawDeveloper.Look saved = RawDeveloper.Look.fromJson(recipe);
+            if (saved != null) return saved;
+        }
         look.brain = prefs.getString(prefix + "brain", look.brain);
         look.grainStructure = prefs.getString(prefix + "grain_structure", look.grainStructure);
         look.exposureEv = prefs.getFloat(prefix + "exposure", look.exposureEv);
@@ -43,6 +57,7 @@ final class PhotoEditStore {
     static void save(Context context, String key, RawDeveloper.Look look) {
         String p = prefix(key);
         SharedPreferences.Editor editor = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString(p + "recipe_json", look.toJson())
                 .putString(p + "brain", look.brain)
                 .putString(p + "grain_structure", look.grainStructure)
                 .putFloat(p + "exposure", look.exposureEv)
@@ -75,7 +90,7 @@ final class PhotoEditStore {
     static void reset(Context context, String key) {
         String p = prefix(key);
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        prefs.edit().remove(p + "brain").remove(p + "grain_structure")
+        prefs.edit().remove(p + "recipe_json").remove(p + "brain").remove(p + "grain_structure")
                 .remove(p + "exposure").remove(p + "warmth").remove(p + "pivot").remove(p + "contrast").remove(p + "saturation")
                 .remove(p + "color_rolloff")
                 .remove(p + "highlights").remove(p + "shadows").remove(p + "grain")

@@ -1,6 +1,9 @@
 package com.scope.camera;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.widget.PopupMenu;
+import android.text.TextUtils;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.drawable.GradientDrawable;
@@ -22,7 +25,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.util.Log;
 
-import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -56,7 +58,12 @@ public class PhotoEditorActivity extends Activity {
     private TextView loupeBadge;
     private boolean isLoupe1to1 = false;
     private boolean isScrubbing = false;
-    private LinearLayout brainBar;
+    private ScrollView controlsScroll;
+    private final LookEditHistory history = new LookEditHistory();
+    private TextView undoButton, redoButton;
+    private boolean sliderGesture, advancedLooks, saving;
+    private RawDeveloper.Look initialLook;
+    private volatile int thumbnailGeneration;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -67,6 +74,9 @@ public class PhotoEditorActivity extends Activity {
         photoUri = uri == null ? null : Uri.parse(uri);
         LutManager.init(this);
         look = PhotoEditStore.load(this, archiveKey);
+        initialLook = look.copy();
+        if (android.os.Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::requestCloseEditor);
         build();
         loadSource();
     }
@@ -78,13 +88,13 @@ public class PhotoEditorActivity extends Activity {
     }
 
     private LinearLayout tabBar;
-    private String activeTab = "TONE";
+    private String activeTab = "Looks";
 
     private void startComparing() {
         if (rawOriginalBitmap == null || isComparing) return;
         isComparing = true;
         if (compareBadge != null) compareBadge.setVisibility(View.VISIBLE);
-        if (compareButton != null) compareButton.setTextColor(ACCENT);
+        if (compareButton != null) { compareButton.setTextColor(ACCENT); compareButton.setText("Original"); compareButton.setSelected(true); }
         preview.setImageBitmap(rawOriginalBitmap);
         if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
             preview.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
@@ -95,7 +105,7 @@ public class PhotoEditorActivity extends Activity {
         if (!isComparing) return;
         isComparing = false;
         if (compareBadge != null) compareBadge.setVisibility(View.GONE);
-        if (compareButton != null) compareButton.setTextColor(0xffd8ded7);
+        if (compareButton != null) { compareButton.setTextColor(0xffd8ded7); compareButton.setText("Compare"); compareButton.setSelected(false); }
         if (currentGradedBitmap != null) {
             preview.setImageBitmap(currentGradedBitmap);
         }
@@ -104,27 +114,13 @@ public class PhotoEditorActivity extends Activity {
         }
     }
 
-    private void refreshBrainBar() {
-        if (brainBar == null) return;
-        brainBar.removeAllViews();
-        String currentBrain = look.brain == null ? AppSettings.BRAIN_LIKA_FILM : look.brain;
-        String[] brains = AppSettings.BRAIN_CHOICES;
-        for (int i = 0; i < brains.length; i++) {
-            String b = brains[i];
-            boolean active = currentBrain.equals(b);
-            TextView pill = pill(b, active);
-            pill.setPadding(dp(12), dp(6), dp(12), dp(6));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(30));
-            if (i > 0) lp.leftMargin = dp(6);
-            brainBar.addView(pill, lp);
-            pill.setOnClickListener(v -> {
-                hapticClick(v);
-                applyBrainPreset(b);
-            });
-        }
-    }
-
     private void applyBrainPreset(String preset) {
+        recordEdit();
+        look = presetLook(preset);
+        refreshEditingState();
+    }
+    private RawDeveloper.Look presetLook(String preset) {
+        RawDeveloper.Look look = this.look.copy();
         look.brain = preset;
         if (AppSettings.BRAIN_MONO_SILVER.equals(preset) || "MONOCHROME".equals(preset)) {
             look.brain = AppSettings.BRAIN_MONO_SILVER;
@@ -192,9 +188,7 @@ public class PhotoEditorActivity extends Activity {
             look.toneCurve = "Filmic S-Curve";
             look.shadowProfile = "Deep Cinema Blacks";
         }
-        refreshBrainBar();
-        populateControls();
-        queuePreview();
+        return look;
     }
 
     private void build() {
@@ -208,73 +202,21 @@ public class PhotoEditorActivity extends Activity {
         TextView back = text("‹", 28, 0xffedf0e9, true);
         back.setGravity(Gravity.CENTER);
         header.addView(back, new LinearLayout.LayoutParams(dp(36), dp(40)));
-        back.setOnClickListener(v -> { hapticClick(v); finish(); });
-        TextView title = text("DEVELOP", 13, 0xfff1f2ec, true);
-        title.setPadding(dp(8), 0, 0, 0);
+        back.setOnClickListener(v -> { hapticClick(v); requestCloseEditor(); });
+        TextView title = text("Edit photo", 16, 0xfff1f2ec, true);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        title.setPadding(dp(8), 0, dp(8), 0);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-
-        compareButton = pill("RAW", false);
-        LinearLayout.LayoutParams compLp = new LinearLayout.LayoutParams(dp(44), dp(32));
-        compLp.leftMargin = dp(4);
-        header.addView(compareButton, compLp);
-        compareButton.setOnTouchListener((v, event) -> {
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    startComparing();
-                    return true;
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    stopComparing();
-                    return true;
-            }
-            return false;
-        });
-
-        TextView copyBtn = pill("COPY", false);
-        LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(dp(46), dp(32));
-        copyLp.leftMargin = dp(4);
-        header.addView(copyBtn, copyLp);
-        copyBtn.setOnClickListener(v -> {
-            hapticClick(v);
-            PhotoEditStore.copyToClipboard(this, look);
-            Toast.makeText(this, "Look recipe copied", Toast.LENGTH_SHORT).show();
-        });
-
-        TextView pasteBtn = pill("PASTE", false);
-        LinearLayout.LayoutParams pasteLp = new LinearLayout.LayoutParams(dp(50), dp(32));
-        pasteLp.leftMargin = dp(4);
-        header.addView(pasteBtn, pasteLp);
-        pasteBtn.setOnClickListener(v -> {
-            hapticClick(v);
-            if (!PhotoEditStore.hasClipboard(this)) {
-                Toast.makeText(this, "No copied recipe yet", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            look = PhotoEditStore.pasteFromClipboard(this);
-            refreshBrainBar();
-            populateControls();
-            queuePreview();
-            Toast.makeText(this, "Look recipe pasted", Toast.LENGTH_SHORT).show();
-        });
-
-        TextView recipeBtn = pill("RECIPE", false);
-        LinearLayout.LayoutParams recLp = new LinearLayout.LayoutParams(dp(54), dp(32));
-        recLp.leftMargin = dp(4);
-        header.addView(recipeBtn, recLp);
-        recipeBtn.setOnClickListener(v -> {
-            hapticClick(v);
-            showSaveRecipeDialog();
-        });
-
-        TextView reset = pill("RESET", false);
-        LinearLayout.LayoutParams resetLp = new LinearLayout.LayoutParams(dp(50), dp(32));
-        resetLp.leftMargin = dp(4);
-        header.addView(reset, resetLp);
-        reset.setOnClickListener(v -> { hapticClick(v); resetLook(); });
-
-        saveButton = pill("SAVE", true);
-        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(dp(50), dp(32));
-        saveLp.leftMargin = dp(4);
+        TextView more = pill("⋮", false);
+        more.setTextSize(22);
+        more.setContentDescription("More editing actions");
+        header.addView(more, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        more.setOnClickListener(v -> showEditorMenu(more));
+        saveButton = pill("Save copy", true);
+        saveButton.setPadding(dp(14), 0, dp(14), 0);
+        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(-2, dp(44));
+        saveLp.leftMargin = dp(8);
         header.addView(saveButton, saveLp);
         saveButton.setOnClickListener(v -> { hapticClick(v); saveRender(); });
         page.addView(header);
@@ -324,19 +266,33 @@ public class PhotoEditorActivity extends Activity {
             return true;
         });
 
-        page.addView(previewContainer, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        status = text("READING SENSOR ORIGINAL", 8, 0xff9ba59e, false);
+        status = text(frame == null ? "Edits affect this photo only · Loading original…"
+                : "Edits affect this photo only · Original preserved", 10, 0xff9ba59e, false);
         status.setGravity(Gravity.CENTER);
         status.setPadding(dp(8), dp(6), dp(8), dp(2));
-
-        HorizontalScrollView brainScroll = new HorizontalScrollView(this);
-        brainScroll.setHorizontalScrollBarEnabled(false);
-        brainBar = new LinearLayout(this);
-        brainBar.setOrientation(LinearLayout.HORIZONTAL);
-        brainBar.setGravity(Gravity.CENTER_VERTICAL);
-        brainBar.setPadding(dp(14), dp(2), dp(14), dp(4));
-        brainScroll.addView(brainBar, new FrameLayout.LayoutParams(-2, -2));
+        LinearLayout editingTools = new LinearLayout(this);
+        editingTools.setGravity(Gravity.CENTER_VERTICAL);
+        editingTools.setPadding(dp(14), dp(4), dp(14), dp(8));
+        undoButton = pill("Undo", false);
+        redoButton = pill("Redo", false);
+        editingTools.addView(undoButton, new LinearLayout.LayoutParams(dp(70), dp(44)));
+        LinearLayout.LayoutParams redoLp = new LinearLayout.LayoutParams(dp(70), dp(44));
+        redoLp.leftMargin = dp(6);
+        editingTools.addView(redoButton, redoLp);
+        editingTools.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        compareButton = pill(isComparing ? "Original" : "Compare", isComparing);
+        compareButton.setSelected(isComparing);
+        compareButton.setContentDescription("Compare with original");
+        editingTools.addView(compareButton, new LinearLayout.LayoutParams(dp(90), dp(44)));
+        compareButton.setOnClickListener(v -> {
+            hapticClick(v);
+            if (isComparing) stopComparing(); else startComparing();
+            compareButton.setSelected(isComparing);
+            compareButton.setText(isComparing ? "Original" : "Compare");
+        });
+        undoButton.setOnClickListener(v -> { look = history.undo(look); refreshEditingState(); });
+        redoButton.setOnClickListener(v -> { look = history.redo(look); refreshEditingState(); });
+        updateHistoryButtons();
 
         tabBar = new LinearLayout(this);
         tabBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -353,6 +309,7 @@ public class PhotoEditorActivity extends Activity {
             leftPane.setOrientation(LinearLayout.VERTICAL);
             leftPane.addView(previewContainer, new LinearLayout.LayoutParams(-1, 0, 1f));
             leftPane.addView(status);
+            leftPane.addView(editingTools);
             splitBody.addView(leftPane, new LinearLayout.LayoutParams(0, -1, 1f));
 
             LinearLayout rightPane = new LinearLayout(this);
@@ -360,12 +317,12 @@ public class PhotoEditorActivity extends Activity {
             rightPane.setBackground(round(0xff0e1314, 0, 0x33454d49, dp(1)));
             rightPane.setPadding(0, dp(4), 0, 0);
 
-            rightPane.addView(brainScroll);
-            refreshBrainBar();
+            // Presets are grouped inside Looks.
             rightPane.addView(tabBar);
             refreshTabs();
 
             ScrollView scroll = new ScrollView(this);
+            controlsScroll = scroll;
             scroll.setVerticalScrollBarEnabled(false);
             controlsList = new LinearLayout(this);
             controlsList.setOrientation(LinearLayout.VERTICAL);
@@ -381,12 +338,12 @@ public class PhotoEditorActivity extends Activity {
         } else {
             page.addView(previewContainer, new LinearLayout.LayoutParams(-1, 0, 1));
             page.addView(status);
-            page.addView(brainScroll);
-            refreshBrainBar();
+            page.addView(editingTools);
             page.addView(tabBar);
             refreshTabs();
 
             ScrollView scroll = new ScrollView(this);
+            controlsScroll = scroll;
             scroll.setVerticalScrollBarEnabled(false);
             controlsList = new LinearLayout(this);
             controlsList.setOrientation(LinearLayout.VERTICAL);
@@ -396,7 +353,10 @@ public class PhotoEditorActivity extends Activity {
         }
 
         populateControls();
-        if (currentGradedBitmap != null) {
+        if (isComparing && rawOriginalBitmap != null) {
+            preview.setImageBitmap(rawOriginalBitmap);
+            compareBadge.setVisibility(View.VISIBLE);
+        } else if (currentGradedBitmap != null) {
             preview.setImageBitmap(currentGradedBitmap);
         } else if (rawOriginalBitmap != null) {
             preview.setImageBitmap(rawOriginalBitmap);
@@ -417,11 +377,11 @@ public class PhotoEditorActivity extends Activity {
     private void refreshTabs() {
         if (tabBar == null) return;
         tabBar.removeAllViews();
-        String[] tabs = {"TONE", "COLOR", "LUT", "TEXTURE", "CROP"};
+        String[] tabs = {"Looks", "Tone", "Colour", "Effects", "Crop"};
         for (String tab : tabs) {
             TextView pill = pill(tab, tab.equals(activeTab));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(32), 1f);
-            if (!tab.equals("TONE")) lp.leftMargin = dp(4);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(44), 1f);
+            if (!tab.equals("Looks")) lp.leftMargin = dp(4);
             tabBar.addView(pill, lp);
             pill.setOnClickListener(v -> {
                 hapticClick(v);
@@ -433,29 +393,35 @@ public class PhotoEditorActivity extends Activity {
     }
 
     private void populateControls() {
+        thumbnailGeneration++;
         controls.clear();
         controlsList.removeAllViews();
-        if ("TONE".equals(activeTab)) {
+        if (controlsScroll != null && !WindowMetricsHelper.computeWindowSizeInfo(this).isTwoPaneRecommended) {
+            controlsScroll.setLayoutParams(new LinearLayout.LayoutParams(-1,
+                    dp("Looks".equals(activeTab) && !advancedLooks ? 220 : 300)));
+        }
+        if ("Looks".equals(activeTab)) {
+            addLooksControls();
+        } else if ("Tone".equals(activeTab)) {
             addControl("Exposure", "EV", 0, -20, 20, Math.round(look.exposureEv * 10f));
             addControl("Contrast", "", 2, 50, 150, Math.round(look.contrast * 100));
             addControl("Highlights", "", 4, 0, 100, Math.round(look.highlights * 100));
             addControl("Shadows", "", 5, 0, 100, Math.round(look.shadows * 100));
             addControl("Pivot", "", 8, 0, 100, Math.round(look.pivot * 100));
-        } else if ("COLOR".equals(activeTab)) {
+        } else if ("Colour".equals(activeTab)) {
             addControl("White balance", "K", 1, 0, 44, look.whiteBalanceKelvin <= 0 ? 0 : 1 + (look.whiteBalanceKelvin - 3200) / 100);
             addControl("Warmth shift", "", 12, 0, 100, Math.round(look.warmth * 50f + 50f));
             addControl("Colour intensity", "", 3, 50, 160, Math.round(look.saturation * 100));
             addControl("Saturated colour roll-off", "", 13, 0, 100, Math.round(look.colorRollOff * 100));
-        } else if ("LUT".equals(activeTab)) {
-            addLutControls();
-        } else if ("TEXTURE".equals(activeTab)) {
+
+        } else if ("Effects".equals(activeTab)) {
             addControl("Film grain", "", 6, 0, 100, Math.round(look.grain * 100));
             addGrainStructureChoice();
             addControl("Halation", "", 7, 0, 100, Math.round(look.halation * 100));
             addControl("Sharpening", "", 9, 0, 100, Math.round(look.sharpening * 100));
             addControl("Colour noise reduction", "", 10, 0, 100, Math.round(look.chromaNr * 100));
             addControl("Vignette", "", 11, 0, 100, Math.round(look.vignette * 100));
-        } else if ("CROP".equals(activeTab)) {
+        } else if ("Crop".equals(activeTab)) {
             addCropControls();
         }
     }
@@ -490,6 +456,7 @@ public class PhotoEditorActivity extends Activity {
             row.addView(pill, lp);
             pill.setOnClickListener(v -> {
                 hapticClick(v);
+                recordEdit();
                 look.grainStructure = s;
                 populateControls();
                 queuePreview();
@@ -535,6 +502,7 @@ public class PhotoEditorActivity extends Activity {
             lutPills.addView(pill, lp);
             pill.setOnClickListener(v -> {
                 hapticClick(v);
+                recordEdit();
                 look.lutName = name;
                 if (!name.equals("None") && look.lutIntensity <= 0.05f) {
                     look.lutIntensity = 1.0f;
@@ -578,6 +546,7 @@ public class PhotoEditorActivity extends Activity {
                 infoCard.addView(delBtn, delLp);
                 delBtn.setOnClickListener(v -> {
                     hapticClick(v);
+                    recordEdit();
                     LutManager.deleteCustomLut(this, look.lutName);
                     look.lutName = "None";
                     Toast.makeText(this, "LUT deleted", Toast.LENGTH_SHORT).show();
@@ -676,6 +645,7 @@ public class PhotoEditorActivity extends Activity {
             row1.addView(pill, lp);
             pill.setOnClickListener(v -> {
                 hapticClick(v);
+                recordEdit();
                 look.aspectRatio = ratio;
                 populateControls();
                 queuePreview();
@@ -698,6 +668,7 @@ public class PhotoEditorActivity extends Activity {
             row2.addView(pill, lp);
             pill.setOnClickListener(v -> {
                 hapticClick(v);
+                recordEdit();
                 look.aspectRatio = ratio;
                 populateControls();
                 queuePreview();
@@ -720,7 +691,8 @@ public class PhotoEditorActivity extends Activity {
         mirrorCard.addView(flipPill, new LinearLayout.LayoutParams(dp(88), dp(32)));
         flipPill.setOnClickListener(v -> {
             hapticClick(v);
-            look.flipHorizontal = !look.flipHorizontal;
+            recordEdit();
+                look.flipHorizontal = !look.flipHorizontal;
             populateControls();
             queuePreview();
         });
@@ -753,6 +725,7 @@ public class PhotoEditorActivity extends Activity {
             borderRow.addView(bp, lp);
             bp.setOnClickListener(v -> {
                 hapticClick(v);
+                recordEdit();
                 look.frameBorder = b;
                 populateControls();
                 queuePreview();
@@ -761,6 +734,7 @@ public class PhotoEditorActivity extends Activity {
     }
 
     private void resetControlToDefault(int type) {
+        recordEdit();
         int defaultVal = LookRecipeControl.getDefaultValue(type);
         LookRecipeControl.applyToLook(look, type, defaultVal);
         for (LookRecipeControl c : controls) {
@@ -782,6 +756,7 @@ public class PhotoEditorActivity extends Activity {
             new LookRecipeControl.OnChangeListener() {
                 @Override
                 public void onValueChanged(int ctrlType, int value, boolean fromUser, boolean isTrackingTouch) {
+                    if (fromUser && !sliderGesture) recordEdit();
                     LookRecipeControl.applyToLook(look, ctrlType, value);
                     if (fromUser) {
                         isScrubbing = isTrackingTouch;
@@ -789,6 +764,8 @@ public class PhotoEditorActivity extends Activity {
                     }
                 }
 
+                @Override public void onTrackingStarted() { recordEdit(); sliderGesture = true; }
+                @Override public void onTrackingStopped() { sliderGesture = false; }
                 @Override
                 public void onReset(int ctrlType) {
                     resetControlToDefault(ctrlType);
@@ -847,10 +824,16 @@ public class PhotoEditorActivity extends Activity {
                 }
                 final Bitmap finalNeutralBmp = neutralBmp;
                 mainHandler.post(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        if (bitmap != null) bitmap.recycle();
+                        if (finalNeutralBmp != null) finalNeutralBmp.recycle();
+                        return;
+                    }
                     frame = loaded;
                     rawOriginalBitmap = finalNeutralBmp;
                     setPreview(bitmap);
-                    status.setText("RAW ORIGINAL  ·  LOOK PREVIEW");
+                    populateControls();
+                    status.setText("Edits affect this photo only · Original preserved");
                 });
             } catch (Exception e) {
                 mainHandler.post(() -> {
@@ -890,7 +873,7 @@ public class PhotoEditorActivity extends Activity {
             mainHandler.post(() -> {
                 if (generation != renderGeneration || isFinishing()) { if (bitmap != null) bitmap.recycle(); return; }
                 setPreview(bitmap);
-                status.setText("RAW ORIGINAL  ·  LOOK PREVIEW");
+                status.setText("Edits affect this photo only · Original preserved");
             });
         });
     }
@@ -908,67 +891,138 @@ public class PhotoEditorActivity extends Activity {
     }
 
     private void resetLook() {
-        PhotoEditStore.reset(this, archiveKey);
-        look = PhotoEditStore.load(this, archiveKey);
-        refreshBrainBar();
+        recordEdit();
+        look = RawDeveloper.Look.fromPreferences(this);
         populateControls();
         queuePreview();
     }
 
     private void saveRender() {
-        if (frame == null || photoUri == null) return;
+        if (frame == null || photoUri == null || saving) return;
+        saving = true;
         saveButton.setEnabled(false);
-        saveButton.setText("SAVE…");
-        status.setText("DEVELOPING FULL FRAME");
+        saveButton.setText("Saving…");
+        status.setText("Saving copy to Pictures/Lika Lens…");
         RawDeveloper.Look snapshot = look.copy();
         RawArchive.Frame source = frame;
         worker.execute(() -> {
-            Bitmap bitmap = null;
             String failure = null;
-            try {
-                bitmap = RawDeveloper.develop(source, snapshot, 0);
-                try (OutputStream stream = getContentResolver().openOutputStream(photoUri, "w")) {
-                    if (stream == null || !bitmap.compress(Bitmap.CompressFormat.JPEG, 96, stream)) {
-                        throw new IllegalStateException("Could not write JPEG render");
-                    }
-                }
-                try (android.os.ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(photoUri, "rw")) {
-                    if (pfd != null) {
-                        android.media.ExifInterface exif = new android.media.ExifInterface(pfd.getFileDescriptor());
-                        exif.setAttribute(android.media.ExifInterface.TAG_MAKE, android.os.Build.MANUFACTURER);
-                        exif.setAttribute(android.media.ExifInterface.TAG_MODEL, android.os.Build.MODEL);
-                        exif.setAttribute(android.media.ExifInterface.TAG_SOFTWARE, "Lika Lens · Chromagraph Pipeline");
-                        if (source.exposureTimeNs > 0) {
-                            exif.setAttribute(android.media.ExifInterface.TAG_EXPOSURE_TIME, String.valueOf(source.exposureTimeNs / 1_000_000_000.0));
-                        }
-                        if (source.sensitivityIso > 0) {
-                            exif.setAttribute(android.media.ExifInterface.TAG_ISO_SPEED_RATINGS, String.valueOf(source.sensitivityIso));
-                        }
-                        exif.saveAttributes();
-                    }
-                } catch (Throwable t) {
-                    Log.w(TAG, "Failed to write EXIF attributes to updated JPEG", t);
-                }
-                PhotoEditStore.save(this, archiveKey, snapshot);
-            } catch (Exception e) {
-                failure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-            } finally {
-                if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
-            }
-            String error = failure;
+            PhotoRepository.Photo output = null;
+            try { output = PhotoCopyExporter.export(getApplicationContext(), archiveKey, source, snapshot); }
+            catch (Exception e) { failure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
+            final String error = failure;
+            final PhotoRepository.Photo savedPhoto = output;
             mainHandler.post(() -> {
+                saving = false;
+                if (isFinishing() || isDestroyed()) return;
                 if (error == null) {
-                    Toast.makeText(this, "Updated render saved. RAW original is unchanged.", Toast.LENGTH_SHORT).show();
-                    setResult(RESULT_OK);
+                    Toast.makeText(this, "Copy saved to Pictures/Lika Lens. Original unchanged.", Toast.LENGTH_LONG).show();
+                    setResult(RESULT_OK, new Intent().setData(savedPhoto.uri)
+                            .putExtra(PhotoViewerActivity.EXTRA_NAME, savedPhoto.name));
                     finish();
                 } else {
                     saveButton.setEnabled(true);
-                    saveButton.setText("SAVE");
-                    status.setText("SAVE FAILED");
-                    Toast.makeText(this, "Could not save render: " + error, Toast.LENGTH_LONG).show();
+                    saveButton.setText("Save copy");
+                    status.setText("Could not save copy");
+                    new AlertDialog.Builder(this).setTitle("Save failed").setMessage(error).setPositiveButton("OK", null).show();
                 }
             });
         });
+    }
+    @Override public void onBackPressed() { requestCloseEditor(); }
+    private void requestCloseEditor() {
+        if (saving) { Toast.makeText(this, "Finishing your photo copy…", Toast.LENGTH_SHORT).show(); return; }
+        if (initialLook != null && !initialLook.toJson().equals(look.toJson())) {
+            new AlertDialog.Builder(this).setTitle("Discard adjustments?")
+                    .setMessage("Your original is unchanged. These unsaved adjustments will be lost.")
+                    .setNegativeButton("Keep editing", null).setPositiveButton("Discard", (d, w) -> finish()).show();
+        } else finish();
+    }
+    private void recordEdit() { history.record(look); updateHistoryButtons(); }
+    private void updateHistoryButtons() {
+        if (undoButton == null || redoButton == null) return;
+        undoButton.setEnabled(history.canUndo()); redoButton.setEnabled(history.canRedo());
+        undoButton.setAlpha(history.canUndo() ? 1f : .4f); redoButton.setAlpha(history.canRedo() ? 1f : .4f);
+    }
+    private void refreshEditingState() {
+        stopComparing();
+        if (compareButton != null) { compareButton.setText("Compare"); compareButton.setSelected(false); }
+        populateControls(); updateHistoryButtons(); queuePreview();
+    }
+    private void showEditorMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        for (String title : new String[]{"Copy look", "Paste look", "Save as custom look…", "Reset adjustments…"}) menu.getMenu().add(title);
+        menu.getMenu().getItem(1).setEnabled(PhotoEditStore.hasClipboard(this));
+        menu.setOnMenuItemClickListener(item -> {
+            String title = item.getTitle().toString();
+            if (title.equals("Copy look")) {
+                PhotoEditStore.copyToClipboard(this, look);
+                Toast.makeText(this, "Look copied", Toast.LENGTH_SHORT).show();
+            } else if (title.equals("Paste look")) {
+                RawDeveloper.Look copied = PhotoEditStore.pasteFromClipboard(this);
+                if (copied != null) { recordEdit(); look = copied; refreshEditingState(); }
+            } else if (title.equals("Save as custom look…")) showSaveRecipeDialog();
+            else new AlertDialog.Builder(this).setTitle("Reset adjustments?")
+                    .setMessage("Restore default adjustments in this editor. The original photo stays unchanged.")
+                    .setNegativeButton("Cancel", null).setPositiveButton("Reset", (d, w) -> resetLook()).show();
+            return true;
+        });
+        menu.show();
+    }
+    private void addLooksControls() {
+        HorizontalScrollView strip = new HorizontalScrollView(this);
+        strip.setHorizontalScrollBarEnabled(false);
+        LinearLayout looks = new LinearLayout(this);
+        strip.addView(looks); controlsList.addView(strip);
+        final int generation = thumbnailGeneration;
+        for (String name : AppSettings.BRAIN_CHOICES) {
+            LinearLayout tile = new LinearLayout(this);
+            tile.setOrientation(LinearLayout.VERTICAL);
+            tile.setPadding(dp(4), dp(4), dp(4), dp(4));
+            boolean active = name.equals(look.brain);
+            tile.setBackground(round(0xff121617, 12, active ? ACCENT : 0xff293031, dp(active ? 2 : 1)));
+            ImageView thumb = new ImageView(this);
+            thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            tile.addView(thumb, new LinearLayout.LayoutParams(dp(88), dp(78)));
+            TextView label = text(name.replace(" / ", " "), 10, active ? ACCENT : 0xffe8ece5, true);
+            label.setMaxLines(2); label.setGravity(Gravity.CENTER);
+            tile.addView(label, new LinearLayout.LayoutParams(dp(88), dp(40)));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2); lp.rightMargin = dp(8);
+            looks.addView(tile, lp);
+            tile.setContentDescription(name + (active ? ", selected" : ""));
+            tile.setOnClickListener(v -> { hapticClick(v); applyBrainPreset(name); });
+            if (frame != null) {
+                RawArchive.Frame source = frame;
+                RawDeveloper.Look recipe = presetLook(name);
+                worker.execute(() -> {
+                    if (generation != thumbnailGeneration) return;
+                    Bitmap bitmap;
+                    try { bitmap = RawDeveloper.develop(source, recipe, 220); }
+                    catch (Exception e) { Log.w(TAG, "Could not render look thumbnail", e); return; }
+                    mainHandler.post(() -> {
+                        if (generation != thumbnailGeneration || isFinishing()) { if (bitmap != null) bitmap.recycle(); return; }
+                        thumb.setImageBitmap(bitmap);
+                    });
+                });
+            }
+        }
+        for (int slot = 1; slot <= 3; slot++) {
+            String name = AppSettings.getCustomRecipeName(this, slot);
+            final int selectedSlot = slot;
+            if (name == null) continue;
+            TextView custom = pill(name, false);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(44)); lp.topMargin = dp(8);
+            controlsList.addView(custom, lp);
+            custom.setOnClickListener(v -> {
+                RawDeveloper.Look customLook = RawDeveloper.Look.fromJson(AppSettings.getCustomRecipeData(this, selectedSlot));
+                if (customLook != null) { recordEdit(); look = customLook; refreshEditingState(); }
+            });
+        }
+        TextView advanced = pill(advancedLooks ? "Hide advanced colour / LUTs" : "Advanced colour / LUTs", false);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(44)); lp.topMargin = dp(12);
+        controlsList.addView(advanced, lp);
+        advanced.setOnClickListener(v -> { advancedLooks = !advancedLooks; populateControls(); });
+        if (advancedLooks) addLutControls();
     }
 
     private TextView text(String value, float size, int color, boolean bold) {
@@ -1030,6 +1084,7 @@ public class PhotoEditorActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        thumbnailGeneration++;
         mainHandler.removeCallbacksAndMessages(null);
         worker.shutdown();
         if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
