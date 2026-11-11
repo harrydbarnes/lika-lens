@@ -2347,7 +2347,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         videoRecording = true;
                         videoPaused = false;
                         videoStartedAt = SystemClock.elapsedRealtime();
-                        String stabPref = AppSettings.get(this, AppSettings.STABILIZATION, "Cinema OIS + EIS");
+                        String stabPref = AppSettings.get(MainActivity.this, AppSettings.STABILIZATION, "Cinema OIS + EIS");
                         if (stabPref.startsWith("Locked")) {
                             lockedVideoPitch = smoothPitchAngle;
                             lockedVideoRoll = smoothRollAngle;
