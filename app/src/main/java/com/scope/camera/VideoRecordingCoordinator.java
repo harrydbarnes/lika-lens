@@ -25,6 +25,52 @@ public final class VideoRecordingCoordinator {
 
     private VideoRecordingCoordinator() {}
 
+    /** Pixel rotation required before encoding under the take's single playback matrix. */
+    static int rotationCorrection(int cameraOrientation, int takeOrientation) {
+        return Math.floorMod(cameraOrientation - takeOrientation, 360);
+    }
+
+    /** Keep the valid crop, but remove Camera2's preview-specific rotation/mirroring.
+     * Recording applies sensor rotation explicitly and does not mirror selfie pixels.
+     */
+    static void recordingTextureMatrix(float[] source, float[] result) {
+        float x = source[12], y = source[13];
+        float minX = Math.min(Math.min(x, x + source[0]), Math.min(x + source[4], x + source[0] + source[4]));
+        float maxX = Math.max(Math.max(x, x + source[0]), Math.max(x + source[4], x + source[0] + source[4]));
+        float minY = Math.min(Math.min(y, y + source[1]), Math.min(y + source[5], y + source[1] + source[5]));
+        float maxY = Math.max(Math.max(y, y + source[1]), Math.max(y + source[5], y + source[1] + source[5]));
+        Arrays.fill(result, 0);
+        result[0] = maxX - minX;
+        result[5] = -(maxY - minY);
+        result[10] = 1;
+        result[12] = minX;
+        result[13] = maxY;
+        result[15] = 1;
+    }
+
+    /** Clockwise-rotated quad, fitted without stretching for quarter-turn sensor changes. */
+    static float[] recordingVertices(int rotation, int width, int height) {
+        if (width <= 0 || height <= 0) throw new IllegalArgumentException("Invalid recording size");
+        int degrees = Math.floorMod(rotation, 360);
+        if (degrees % 90 != 0) throw new IllegalArgumentException("Rotation must be a quarter turn");
+        float[] vertices = {-1, -1, 1, -1, -1, 1, 1, 1};
+        float radians = (float) Math.toRadians(-degrees);
+        float cos = Math.round(Math.cos(radians));
+        float sin = Math.round(Math.sin(radians));
+        float scaleX = 1, scaleY = 1;
+        if (degrees % 180 != 0) {
+            float ratio = (float) height / width;
+            if (ratio < 1) scaleX = ratio * ratio;
+            else scaleY = 1 / (ratio * ratio);
+        }
+        for (int i = 0; i < vertices.length; i += 2) {
+            float x = vertices[i], y = vertices[i + 1];
+            vertices[i] = (x * cos - y * sin) * scaleX;
+            vertices[i + 1] = (x * sin + y * cos) * scaleY;
+        }
+        return vertices;
+    }
+
     /**
      * Chooses an optimal landscape video recording resolution capped at 1080p.
      */

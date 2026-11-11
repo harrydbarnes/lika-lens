@@ -9,8 +9,45 @@ import java.util.ArrayList;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertArrayEquals;
 
 public class VideoRecordingCoordinatorTest {
+
+    @Test public void correctsOppositeSensorMountsInBothSwitchDirections() {
+        assertEquals(180, VideoRecordingCoordinator.rotationCorrection(270, 90));
+        assertEquals(180, VideoRecordingCoordinator.rotationCorrection(90, 270));
+        assertEquals(0, VideoRecordingCoordinator.rotationCorrection(90, 90));
+        assertEquals(0, VideoRecordingCoordinator.rotationCorrection(0, 0));
+        assertEquals(270, VideoRecordingCoordinator.rotationCorrection(0, 90));
+        assertEquals(90, VideoRecordingCoordinator.rotationCorrection(90, 0));
+    }
+
+    @Test public void removesFrontCameraPreviewTransformBeforeRecordingRotation() {
+        float[] frontPreview = {0,-1,0,0, 1,0,0,0, 0,0,1,0, 0,1,0,1};
+        float[] recording = new float[16];
+        VideoRecordingCoordinator.recordingTextureMatrix(frontPreview, recording);
+        assertArrayEquals(new float[]{1,0,0,0, 0,-1,0,0, 0,0,1,0, 0,1,0,1}, recording, .0001f);
+    }
+
+    @Test public void preservesCropWhenRemovingProducerRotation() {
+        float[] rotatedCrop = {0,-.6f,0,0, .8f,0,0,0, 0,0,1,0, .1f,.8f,0,1};
+        float[] recording = new float[16];
+        VideoRecordingCoordinator.recordingTextureMatrix(rotatedCrop, recording);
+        assertArrayEquals(new float[]{.8f,0,0,0, 0,-.6f,0,0, 0,0,1,0, .1f,.8f,0,1}, recording, .0001f);
+    }
+
+    @Test public void halfTurnRotatesPixelsWithoutMirroringOrChangingFrameSize() {
+        assertArrayEquals(new float[]{1, 1, -1, 1, 1, -1, -1, -1},
+                VideoRecordingCoordinator.recordingVertices(180, 1920, 1080), .0001f);
+        assertArrayEquals(new float[]{-1, -1, 1, -1, -1, 1, 1, 1},
+                VideoRecordingCoordinator.recordingVertices(0, 1920, 1080), .0001f);
+    }
+
+    @Test public void quarterTurnFitsTheRotatedAspectWithoutStretching() {
+        float x = (1080f / 1920) * (1080f / 1920);
+        assertArrayEquals(new float[]{-x, 1, -x, -1, x, 1, x, -1},
+                VideoRecordingCoordinator.recordingVertices(90, 1920, 1080), .0001f);
+    }
 
     @Test
     public void testComputeTargetFps() {

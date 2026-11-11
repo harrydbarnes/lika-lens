@@ -403,6 +403,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private ImageReader rawReader;
     private ImageReader jpegReader;
     private MediaRecorder mediaRecorder;
+    private VideoRotationSurface videoRotationSurface;
+    private Surface recordingEncoderSurface;
+    private Surface recordingInputSurface;
     private Surface recordingPreviewSurface;
     private File videoTempFile;
     private HandlerThread cameraThread;
@@ -2173,6 +2176,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         videoPaused = false;
         File finishedSegment = videoTempFile;
         videoTempFile = null;
+        closeSessionOnly();
+        if (videoRotationSurface != null) videoRotationSurface.stopRendering();
         try {
             mediaRecorder.stop();
             if (finishedSegment != null && finishedSegment.isFile() && finishedSegment.length() > 1024) {
@@ -2327,7 +2332,26 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             SurfaceTexture texture = textureView.getSurfaceTexture();
             texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
             recordingPreviewSurface = new Surface(texture);
-            List<Surface> outputs = Arrays.asList(recordingPreviewSurface, mediaRecorder.getSurface());
+            recordingEncoderSurface = mediaRecorder.getSurface();
+            int pixelRotation = VideoRecordingCoordinator.rotationCorrection(jpegOrientation(), orientHint);
+            Log.i("LikaLens", "Video orientation camera=" + cameraId + " front=" + isFrontCamera()
+                    + " cameraRotation=" + jpegOrientation() + " takeRotation=" + orientHint
+                    + " pixelRotation=" + pixelRotation);
+            if (pixelRotation != 0) {
+                final MediaRecorder segmentRecorder = mediaRecorder;
+                videoRotationSurface = new VideoRotationSurface(recordingEncoderSurface,
+                        videoSize.getWidth(), videoSize.getHeight(), pixelRotation,
+                        () -> runOnUiThread(() -> {
+                            if (mediaRecorder != segmentRecorder) return;
+                            if (videoRecording) {
+                                stopVideoRecording(true);
+                                showMessage("Video rotation failed · recorded footage saved");
+                            } else failVideoStart("Could not orient this camera for video.");
+                        }));
+                recordingInputSurface = videoRotationSurface.inputSurface();
+            } else recordingInputSurface = recordingEncoderSurface;
+            final Surface segmentInput = recordingInputSurface;
+            List<Surface> outputs = Arrays.asList(recordingPreviewSurface, segmentInput);
             CameraCaptureSession.StateCallback sessionCallback = new CameraCaptureSession.StateCallback() {
                 @Override public void onConfigured(CameraCaptureSession session) {
                     if (cameraDevice == null || mediaRecorder == null) {
@@ -2339,7 +2363,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     try {
                         CaptureRequest.Builder request = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
                         request.addTarget(recordingPreviewSurface);
-                        request.addTarget(mediaRecorder.getSurface());
+                        request.addTarget(segmentInput);
                         request.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
                         previewRequest = request;
                         if (characteristics != null) {
@@ -2413,7 +2437,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     android.hardware.camera2.params.OutputConfiguration previewOut =
                             new android.hardware.camera2.params.OutputConfiguration(recordingPreviewSurface);
                     android.hardware.camera2.params.OutputConfiguration videoOut =
-                            new android.hardware.camera2.params.OutputConfiguration(mediaRecorder.getSurface());
+                            new android.hardware.camera2.params.OutputConfiguration(segmentInput);
                     videoOut.setDynamicRangeProfile(android.hardware.camera2.params.DynamicRangeProfiles.HLG10);
                     List<android.hardware.camera2.params.OutputConfiguration> outConfigs = Arrays.asList(previewOut, videoOut);
                     java.util.concurrent.Executor camExec = command -> {
@@ -2521,6 +2545,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (!videoRecording && !switchingVideoCamera && mediaRecorder == null && videoSegments.isEmpty()) return;
         if (outputModeText != null) outputModeText.removeCallbacks(videoTimerTick);
         File recordedFile = videoTempFile;
+        closeSessionOnly();
+        if (videoRotationSurface != null) videoRotationSurface.stopRendering();
         if (mediaRecorder != null && videoRecording) {
             try {
                 mediaRecorder.stop();
@@ -2572,8 +2598,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void releaseMediaRecorder() {
+        closeSessionOnly();
+        if (videoRotationSurface != null) {
+            videoRotationSurface.close();
+            videoRotationSurface = null;
+        }
         VideoRecordingCoordinator.releaseMediaRecorder(mediaRecorder);
         mediaRecorder = null;
+        if (recordingEncoderSurface != null) recordingEncoderSurface.release();
+        recordingEncoderSurface = null;
+        recordingInputSurface = null;
     }
 
     private void releaseRecordingPreviewSurface() {
