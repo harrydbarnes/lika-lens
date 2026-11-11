@@ -125,9 +125,6 @@ jobs:
 
           }
           ${CHANGELOG}
-
-          ---
-          *Continuous delivery ${CHANNEL} build #${{ github.run_number }} (${{ github.sha }})*
           EOF
 
       - name: Publish GitHub Release

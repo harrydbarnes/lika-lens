@@ -99,4 +99,26 @@ public class AppUpdateManagerTest {
         assertFalse(update.isBeta);
         assertEquals("https://example.com/stable.apk", update.apkDownloadUrl);
     }
+
+    @Test
+    public void testFormatReleaseNotes() {
+        String raw = "## What's Changed\n\n" +
+                "* feat: implement 5 next-frontier features (Palm Timer, 10-bit HLG HDR) (568e235)\n" +
+                "* fix(exif): format GPS coordinates according to standard Android ExifInterface (192b5cb)\n\n" +
+                "---\n" +
+                "*Continuous delivery beta build #74\n" +
+                "(568e235d8229966f7c1f1635c92484a836565f5d)*";
+
+        CharSequence formatted = AppUpdateManager.formatReleaseNotes(raw);
+        assertNotNull(formatted);
+        String text = formatted.toString();
+
+        assertFalse("Should not contain markdown heading", text.contains("## What's Changed"));
+        assertFalse("Should not contain markdown hr", text.contains("---"));
+        assertFalse("Should not contain continuous delivery footer", text.contains("Continuous delivery"));
+        assertFalse("Should not contain full git sha footer line", text.contains("568e235d8229966f7c1f1635c92484a836565f5d"));
+        assertTrue("Should contain bullet point", text.contains("• feat: implement 5 next-frontier features"));
+        assertTrue("Should contain second bullet point", text.contains("• fix(exif): format GPS coordinates"));
+        assertFalse("Should strip commit hash from end of bullet", text.contains("(568e235)"));
+    }
 }

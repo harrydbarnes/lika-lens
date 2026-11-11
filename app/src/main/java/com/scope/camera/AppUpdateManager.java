@@ -521,7 +521,7 @@ public final class AppUpdateManager {
         // Header Title
         TextView header = new TextView(activity);
         header.setText("LIKA LENS UPDATE AVAILABLE");
-        header.setTextSize(11);
+        header.setTextSize(14);
         header.setTextColor(ACCENT);
         header.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         header.setLetterSpacing(.14f);
@@ -536,7 +536,7 @@ public final class AppUpdateManager {
         String tagText = info.tagName + (info.isBeta ? " · BETA CHANNEL" : " · STABLE RELEASE");
         TextView tagView = new TextView(activity);
         tagView.setText(tagText);
-        tagView.setTextSize(9);
+        tagView.setTextSize(11);
         tagView.setTextColor(0xfff0f2eb);
         tagView.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         tagRow.addView(tagView, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -545,35 +545,37 @@ public final class AppUpdateManager {
             String sizeStr = String.format(Locale.US, "%.1f MB", info.apkSize / (1024f * 1024f));
             TextView sizeView = new TextView(activity);
             sizeView.setText(sizeStr);
-            sizeView.setTextSize(8);
+            sizeView.setTextSize(10);
             sizeView.setTextColor(0xff9ba59e);
             sizeView.setTypeface(Typeface.MONOSPACE, Typeface.NORMAL);
             tagRow.addView(sizeView);
         }
         sheet.addView(tagRow);
 
-        // Changelog Container
+        // Release Notes Header
         TextView changelogHeader = new TextView(activity);
-        changelogHeader.setText("CHANGELOG / RELEASE NOTES:");
-        changelogHeader.setTextSize(8);
+        changelogHeader.setText("RELEASE NOTES");
+        changelogHeader.setTextSize(11);
         changelogHeader.setTextColor(ACCENT);
         changelogHeader.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         changelogHeader.setLetterSpacing(.12f);
+        changelogHeader.setPadding(0, dp4, 0, 0);
         sheet.addView(changelogHeader);
 
         ScrollView scroll = new ScrollView(activity);
         scroll.setBackgroundColor(0xff14191a);
-        scroll.setPadding(dp12, dp10, dp12, dp10);
+        scroll.setPadding(dp14, dp12, dp14, dp12);
 
         TextView changelogText = new TextView(activity);
-        changelogText.setText(info.changelog != null && !info.changelog.isEmpty() ? info.changelog : "Continuous integration update.");
-        changelogText.setTextSize(8.5f);
+        CharSequence formattedNotes = formatReleaseNotes(info.changelog);
+        changelogText.setText(formattedNotes);
+        changelogText.setTextSize(12.5f);
         changelogText.setTextColor(0xffd8ded7);
         changelogText.setTypeface(Typeface.MONOSPACE, Typeface.NORMAL);
-        changelogText.setLineSpacing(dp4, 1.15f);
+        changelogText.setLineSpacing(dp4, 1.25f);
         scroll.addView(changelogText);
 
-        int targetScrollH = Math.max(Math.round(240 * density), Math.min(Math.round(360 * density), Math.round(screenH * 0.44f)));
+        int targetScrollH = Math.max(Math.round(240 * density), Math.min(Math.round(380 * density), Math.round(screenH * 0.44f)));
         LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, targetScrollH);
         scrollLp.topMargin = dp8;
         scrollLp.bottomMargin = dp16;
@@ -588,7 +590,7 @@ public final class AppUpdateManager {
         sheet.addView(progressBar, new LinearLayout.LayoutParams(-1, dp8));
 
         TextView progressText = new TextView(activity);
-        progressText.setTextSize(8);
+        progressText.setTextSize(11);
         progressText.setTextColor(ACCENT);
         progressText.setTypeface(Typeface.MONOSPACE, Typeface.NORMAL);
         progressText.setGravity(Gravity.CENTER);
@@ -601,7 +603,7 @@ public final class AppUpdateManager {
 
         TextView laterBtn = new TextView(activity);
         laterBtn.setText("NOT NOW");
-        laterBtn.setTextSize(8);
+        laterBtn.setTextSize(11);
         laterBtn.setTextColor(0xffd8ded7);
         laterBtn.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         laterBtn.setGravity(Gravity.CENTER);
@@ -612,7 +614,7 @@ public final class AppUpdateManager {
         laterBg.setStroke(Math.round(1 * density), 0x556e7872);
         laterBtn.setBackground(laterBg);
 
-        LinearLayout.LayoutParams laterLp = new LinearLayout.LayoutParams(0, Math.round(42 * density), 1f);
+        LinearLayout.LayoutParams laterLp = new LinearLayout.LayoutParams(0, Math.round(44 * density), 1f);
         laterLp.rightMargin = dp6;
         actions.addView(laterBtn, laterLp);
         laterBtn.setOnClickListener(v -> dialog.dismiss());
@@ -626,7 +628,7 @@ public final class AppUpdateManager {
 
         TextView installBtn = new TextView(activity);
         installBtn.setText(isAlreadyDownloaded ? "INSTALL NOW" : "DOWNLOAD & INSTALL");
-        installBtn.setTextSize(8);
+        installBtn.setTextSize(11);
         installBtn.setTextColor(0xff0b0d0e);
         installBtn.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         installBtn.setGravity(Gravity.CENTER);
@@ -636,7 +638,7 @@ public final class AppUpdateManager {
         installBg.setCornerRadius(16 * density);
         installBtn.setBackground(installBg);
 
-        LinearLayout.LayoutParams installLp = new LinearLayout.LayoutParams(0, Math.round(42 * density), 1.5f);
+        LinearLayout.LayoutParams installLp = new LinearLayout.LayoutParams(0, Math.round(44 * density), 1.5f);
         installLp.leftMargin = dp6;
         actions.addView(installBtn, installLp);
 
@@ -708,5 +710,65 @@ public final class AppUpdateManager {
         } catch (Exception e) {
             return 1;
         }
+    }
+
+    /**
+     * Cleans and formats markdown release notes for elegant in-app dialog presentation.
+     * Strips redundant "What's Changed" headers and raw continuous delivery build footers.
+     */
+    public static CharSequence formatReleaseNotes(String rawNotes) {
+        if (rawNotes == null || rawNotes.trim().isEmpty()) {
+            return "Latest bug fixes and performance improvements.";
+        }
+        String[] lines = rawNotes.split("\r?\n");
+        StringBuilder sb = new StringBuilder();
+        boolean inFooter = false;
+
+        for (String rawLine : lines) {
+            String line = rawLine.trim();
+            if (line.isEmpty()) {
+                if (sb.length() > 0 && !sb.toString().endsWith("\n\n")) {
+                    sb.append("\n");
+                }
+                continue;
+            }
+
+            // Strip markdown heading "## What's Changed" or similar
+            if (line.matches("(?i)^#+\\s*what'?s\\s*changed.*$")) {
+                continue;
+            }
+
+            // Strip horizontal rules
+            if (line.matches("^[-*_]{3,}$")) {
+                continue;
+            }
+
+            // Strip continuous delivery footer notes
+            if (line.matches("(?i)^\\*?continuous delivery.*") || line.matches("(?i)^\\*?continuous integration.*")) {
+                inFooter = true;
+                continue;
+            }
+            if (inFooter) {
+                // If the footer wrapped onto subsequent lines (e.g., hash in parentheses), drop them
+                if (line.matches("^\\(?[a-f0-9]{7,40}\\)?\\*?$") || line.isEmpty()) {
+                    continue;
+                } else {
+                    inFooter = false;
+                }
+            }
+
+            // Format bullet points cleanly
+            if (line.startsWith("* ") || line.startsWith("- ") || line.startsWith("• ")) {
+                String bulletText = line.substring(2).trim();
+                // Strip trailing commit hash like (568e235) or (568e235d8229966f7c1f1635c92484a836565f5d)
+                bulletText = bulletText.replaceAll("\\s*\\([a-f0-9]{7,40}\\)$", "");
+                sb.append("• ").append(bulletText).append("\n\n");
+            } else {
+                sb.append(line).append("\n\n");
+            }
+        }
+
+        String result = sb.toString().trim();
+        return result.isEmpty() ? "Latest bug fixes and performance improvements." : result;
     }
 }
