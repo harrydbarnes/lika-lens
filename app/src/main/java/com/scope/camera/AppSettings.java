@@ -121,6 +121,8 @@ final class AppSettings {
             "-1 Stop Pull · EI 200 (Soft Pastel Latitude)"
     };
     static final String ULTRA_HDR = "ultra_hdr";
+    static final String ASTROPHOTOGRAPHY = "astrophotography";
+    static final String[] ASTRO_CHOICES = {"Off", "Auto (when stationary at night)", "Always on (Night Stacking)"};
 
     // Custom Film Recipes (User Presets)
     static final String RECIPE_1_NAME = "recipe_1_name";
@@ -361,6 +363,32 @@ final class AppSettings {
     static long getEstimatedRemainingVideoMinutes(Context context) {
         long bytes = getAvailableStorageBytes(context);
         return Math.max(0L, bytes / (180L * 1024L * 1024L)); // ~180MB/min at 24Mbps
+    }
+
+    static long getTotalStorageBytes(Context context) {
+        try {
+            File path = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
+            if (!path.exists()) path = context.getFilesDir();
+            StatFs stat = new StatFs(path.getPath());
+            return stat.getTotalBytes();
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    static String formatDetailedStorageBreakdown(Context context) {
+        long avail = getAvailableStorageBytes(context);
+        long total = getTotalStorageBytes(context);
+        double availGb = avail / (1024.0 * 1024.0 * 1024.0);
+        double totalGb = total / (1024.0 * 1024.0 * 1024.0);
+        long frames = getEstimatedRemainingFrames(context);
+        long mins = getEstimatedRemainingVideoMinutes(context);
+        long h = mins / 60;
+        long m = mins % 60;
+        String videoStr = h > 0 ? (h + "h " + m + "m") : (m + "m");
+        return String.format(Locale.US,
+                "%.1f GB free of %.1f GB\n• ~%d RAW DNG + JPEG frames\n• ~%s 24fps Cinematic Video",
+                availGb, totalGb, frames, videoStr);
     }
 
     static String formatStorageInfo(Context context) {

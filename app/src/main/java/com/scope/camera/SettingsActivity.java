@@ -314,6 +314,8 @@ public class SettingsActivity extends Activity {
         addSwitch("Palm gesture timer", "Show an open palm to the camera to start a 3-second hands-free countdown", AppSettings.PALM_TIMER, false);
         addChoice("Focus behaviour", "Camera2 autofocus mode", "focus_mode",
                 new String[]{"Continuous picture autofocus", "Single autofocus"}, "Continuous picture autofocus");
+        addChoice("Astrophotography / Night mode", "Long-exposure noise reduction when stationary or on tripod at night", AppSettings.ASTROPHOTOGRAPHY,
+                AppSettings.ASTRO_CHOICES, "Auto (when stationary at night)");
         addChoice("Anti-banding / flicker", "Compensate for AC artificial lighting cycles", AppSettings.ANTI_BANDING,
                 new String[]{"Auto (50/60 Hz)", "50 Hz (Europe/Asia)", "60 Hz (Americas/Japan)", "Off"}, "Auto (50/60 Hz)");
         addSwitch("Haptic shutter", "Short tactile response when a frame is taken", AppSettings.HAPTICS, true);
@@ -389,7 +391,7 @@ public class SettingsActivity extends Activity {
                 new String[]{"LIKA", "STILLS", "REEL", "CUSTOM…"}, "LIKA");
         addSwitch("Save rendered JPEG to Photos", "Add the developed still to Pictures/Lika Lens", AppSettings.AUTO_EXPORT, true);
         addSwitch("Write location metadata", "Embed GPS coordinates in JPEG and DNG digital negatives", AppSettings.LOCATION, false);
-        addInfo("Device storage & roll capacity", AppSettings.formatStorageInfo(this), ACCENT);
+        addInfo("Device storage & roll capacity", AppSettings.formatDetailedStorageBreakdown(this), ACCENT);
 
         beginSection("ANIMATED GIF CREATOR", "Stop-motion loops and video to animated GIF export.");
         addChoice("Default GIF frame rate", "Playback speed for exported animated GIFs", AppSettings.GIF_FPS,

@@ -175,6 +175,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private float lockedVideoRoll = 0f;
     private boolean hasLockedVideoAnchor = false;
     private long lastTripodCropUpdateAt = 0L;
+    private float deviceStabilityScore = 0f;
+    private long deviceStationarySince = 0L;
+    private boolean isDeviceStationary = false;
 
     private final SensorEventListener sensorEventListener = new SensorEventListener() {
         @Override
@@ -239,6 +242,20 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             } else if (!isLevel && (isFlatLay ? Math.hypot(smoothTiltX, smoothTiltY) > (deadband * 0.038f) : Math.abs(smoothRollAngle) > (deadband + 0.45f))) {
                 wasHorizonLevel = false;
             }
+        }
+
+        float deltaMovement = Math.abs(deviceRollAngle - smoothRollAngle) + Math.abs(devicePitchAngle - smoothPitchAngle);
+        deviceStabilityScore = deviceStabilityScore * 0.90f + deltaMovement * 0.10f;
+        long nowUptime = SystemClock.uptimeMillis();
+        if (deviceStabilityScore < 0.14f) {
+            if (deviceStationarySince == 0L) {
+                deviceStationarySince = nowUptime;
+            } else if (nowUptime - deviceStationarySince > 1200L) {
+                isDeviceStationary = true;
+            }
+        } else {
+            deviceStationarySince = 0L;
+            isDeviceStationary = false;
         }
 
         if (gridOverlay != null) {
@@ -3780,8 +3797,26 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             Surface target = useRawForThisCamera && rawReader != null ? rawReader.getSurface() : jpegReader.getSurface();
             CaptureRequest.Builder still = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             still.addTarget(target);
-            still.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
-            setExposure(still);
+            String astroSetting = AppSettings.get(this, AppSettings.ASTROPHOTOGRAPHY, "Auto (when stationary at night)");
+            boolean isAstro = !astroSetting.startsWith("Off") && (isDeviceStationary || astroSetting.startsWith("Always"));
+            if (isAstro && characteristics != null) {
+                Range<Long> expRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+                Range<Integer> sensRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+                if (expRange != null && sensRange != null) {
+                    // Engage long night integration: 2.0s or maximum supported exposure, with clean low ISO (200-400)
+                    long targetAstroExp = Math.min(expRange.getUpper(), 2_000_000_000L); // 2 seconds
+                    int targetAstroIso = Math.max(sensRange.getLower(), Math.min(sensRange.getUpper(), 200));
+                    still.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
+                    still.set(CaptureRequest.SENSOR_EXPOSURE_TIME, targetAstroExp);
+                    still.set(CaptureRequest.SENSOR_SENSITIVITY, targetAstroIso);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        still.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY);
+                    }
+                    runOnUiThread(() -> showMessage("✨ Night integration exposure: " + String.format(Locale.US, "%.1fs", targetAstroExp / 1_000_000_000f)));
+                }
+            } else {
+                setExposure(still);
+            }
             still.set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation());
             setFocusMode(still);
             setFlash(still, false);
@@ -4604,7 +4639,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             return;
         }
         boolean easy = AppSettings.getBoolean(this, AppSettings.EASY_MODE, true);
-        if (isCustomLookActive()) {
+        String astroPref = AppSettings.get(this, AppSettings.ASTROPHOTOGRAPHY, "Auto (when stationary at night)");
+        boolean astroActive = !astroPref.startsWith("Off") && (isDeviceStationary || astroPref.startsWith("Always"));
+        if (astroActive) {
+            modeNote.setText("✨ ASTRO / NIGHT STACKING");
+        } else if (isCustomLookActive()) {
             modeNote.setText("CUSTOM LOOK ACTIVE");
         } else if (easy) {
             modeNote.setText("INTELLIGENT AUTO");

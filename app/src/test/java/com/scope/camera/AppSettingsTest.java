@@ -63,4 +63,19 @@ public class AppSettingsTest {
         assertTrue("FRAME_BORDER_CHOICES must include Medium Format 6x6 Rebate", hasMediumFormat);
         assertTrue("FRAME_BORDER_CHOICES must include Cinemascope 2.39:1 Matte", hasCinemascope);
     }
+
+    @Test
+    public void testAstrophotographyAndLaunchModes() {
+        assertNotNull(AppSettings.ASTRO_CHOICES);
+        assertTrue(AppSettings.ASTRO_CHOICES.length >= 3);
+        boolean hasAuto = false;
+        for (String c : AppSettings.ASTRO_CHOICES) {
+            if (c.contains("Auto")) hasAuto = true;
+        }
+        assertTrue("ASTRO_CHOICES must contain Auto", hasAuto);
+
+        assertNotNull(AppSettings.LAUNCH_MODES);
+        assertTrue(AppSettings.LAUNCH_MODES.length >= 3);
+        assertEquals("Photo (default)", AppSettings.LAUNCH_MODES[0]);
+    }
 }
