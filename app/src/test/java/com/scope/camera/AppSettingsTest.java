@@ -78,4 +78,21 @@ public class AppSettingsTest {
         assertTrue(AppSettings.LAUNCH_MODES.length >= 3);
         assertEquals("Photo (default)", AppSettings.LAUNCH_MODES[0]);
     }
+
+    @Test
+    public void testLeftHandModeChoicesAndHelpers() {
+        assertNotNull(AppSettings.LEFT_HAND_MODE_CHOICES);
+        assertEquals(3, AppSettings.LEFT_HAND_MODE_CHOICES.length);
+        assertEquals(AppSettings.LEFT_HAND_OFF, AppSettings.LEFT_HAND_MODE_CHOICES[0]);
+
+        assertTrue(!AppSettings.isLeftHandMode(AppSettings.LEFT_HAND_OFF));
+        assertTrue(!AppSettings.isLeftHandSwapShutterRow(AppSettings.LEFT_HAND_OFF));
+        assertTrue(!AppSettings.isLeftHandMode((String) null));
+
+        assertTrue(AppSettings.isLeftHandMode(AppSettings.LEFT_HAND_MAIN));
+        assertTrue(!AppSettings.isLeftHandSwapShutterRow(AppSettings.LEFT_HAND_MAIN));
+
+        assertTrue(AppSettings.isLeftHandMode(AppSettings.LEFT_HAND_FURTHER));
+        assertTrue(AppSettings.isLeftHandSwapShutterRow(AppSettings.LEFT_HAND_FURTHER));
+    }
 }

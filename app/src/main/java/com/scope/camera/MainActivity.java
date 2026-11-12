@@ -395,6 +395,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private LinearLayout lookRow;
     private FrameLayout shootRow;
     private View deckSpacer;
+    private String appliedLeftHandMode;
     private CameraManager cameraManager;
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
@@ -940,6 +941,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         updateQuickButtons();
         updateReadouts();
         updateGalleryButton();
+        String currentLeftHand = AppSettings.get(this, AppSettings.LEFT_HAND_MODE, AppSettings.LEFT_HAND_OFF);
+        if (overlay != null && !currentLeftHand.equals(appliedLeftHandMode)) {
+            rebuildCameraUiLayout();
+        }
         if (gridOverlay != null) gridOverlay.invalidate();
         if (textureView != null) {
             textureView.removeCallbacks(exposureAidsSampler);
@@ -1588,10 +1593,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (shootRow == null) return;
         shootRow.removeAllViews();
         Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
+        boolean swapShutterRow = AppSettings.isLeftHandSwapShutterRow(this);
         if (galleryButton != null) {
             if (galleryButton.getParent() != null) ((ViewGroup) galleryButton.getParent()).removeView(galleryButton);
-            FrameLayout.LayoutParams galleryLp = new FrameLayout.LayoutParams(dp(52), dp(52), Gravity.START | Gravity.CENTER_VERTICAL);
-            galleryLp.leftMargin = dp(24) + safeInsets.left;
+            FrameLayout.LayoutParams galleryLp = new FrameLayout.LayoutParams(
+                    dp(52), dp(52), (swapShutterRow ? Gravity.END : Gravity.START) | Gravity.CENTER_VERTICAL);
+            if (swapShutterRow) {
+                galleryLp.rightMargin = dp(24) + safeInsets.right;
+            } else {
+                galleryLp.leftMargin = dp(24) + safeInsets.left;
+            }
             shootRow.addView(galleryButton, galleryLp);
         }
         if (shutterFrame != null) {
@@ -1602,15 +1613,158 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (flipButton != null) {
             if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
             flipButton.setPadding(dp(10), dp(10), dp(10), dp(10));
-            FrameLayout.LayoutParams flipLp = new FrameLayout.LayoutParams(dp(52), dp(52), Gravity.END | Gravity.CENTER_VERTICAL);
-            flipLp.rightMargin = dp(24) + safeInsets.right;
+            FrameLayout.LayoutParams flipLp = new FrameLayout.LayoutParams(
+                    dp(52), dp(52), (swapShutterRow ? Gravity.START : Gravity.END) | Gravity.CENTER_VERTICAL);
+            if (swapShutterRow) {
+                flipLp.leftMargin = dp(24) + safeInsets.left;
+            } else {
+                flipLp.rightMargin = dp(24) + safeInsets.right;
+            }
             shootRow.addView(flipButton, flipLp);
+        }
+    }
+
+    private void layoutHeaderButtons(boolean leftHand) {
+        if (header == null) return;
+        header.removeAllViews();
+        if (!leftHand) {
+            if (flashButton != null) header.addView(flashButton, new LinearLayout.LayoutParams(-2, dp(32)));
+            if (aspectButton != null) {
+                LinearLayout.LayoutParams aspectLp = new LinearLayout.LayoutParams(-2, dp(32));
+                aspectLp.leftMargin = dp(6);
+                header.addView(aspectButton, aspectLp);
+            }
+            if (timerButton != null) {
+                LinearLayout.LayoutParams timerLp = new LinearLayout.LayoutParams(-2, dp(32));
+                timerLp.leftMargin = dp(6);
+                header.addView(timerButton, timerLp);
+            }
+            if (videoFpsButton != null) {
+                LinearLayout.LayoutParams fpsLp = new LinearLayout.LayoutParams(-2, dp(32));
+                fpsLp.leftMargin = dp(6);
+                header.addView(videoFpsButton, fpsLp);
+            }
+            if (videoAspectButton != null) {
+                LinearLayout.LayoutParams vaspectLp = new LinearLayout.LayoutParams(-2, dp(32));
+                vaspectLp.leftMargin = dp(6);
+                header.addView(videoAspectButton, vaspectLp);
+            }
+            if (videoStabButton != null) {
+                LinearLayout.LayoutParams vstabLp = new LinearLayout.LayoutParams(-2, dp(32));
+                vstabLp.leftMargin = dp(6);
+                header.addView(videoStabButton, vstabLp);
+            }
+            if (topSpacer != null) header.addView(topSpacer, new LinearLayout.LayoutParams(0, 1, 1));
+        } else {
+            if (topSpacer != null) header.addView(topSpacer, new LinearLayout.LayoutParams(0, 1, 1));
+            View[] rightAligned = {videoStabButton, videoAspectButton, videoFpsButton, timerButton, aspectButton, flashButton};
+            for (View btn : rightAligned) {
+                if (btn == null) continue;
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(32));
+                lp.leftMargin = dp(6);
+                header.addView(btn, lp);
+            }
+        }
+    }
+
+    private void layoutLookRow(boolean leftHand) {
+        if (lookRow == null) return;
+        lookRow.removeAllViews();
+        if (!leftHand) {
+            if (brainButton != null) {
+                LinearLayout.LayoutParams lookLp = new LinearLayout.LayoutParams(dp(62), dp(32));
+                lookLp.rightMargin = dp(8);
+                lookRow.addView(brainButton, lookLp);
+            }
+            if (modeNote != null) {
+                modeNote.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+                LinearLayout.LayoutParams noteTextLp = new LinearLayout.LayoutParams(0, -2, 1f);
+                noteTextLp.gravity = Gravity.CENTER_VERTICAL;
+                lookRow.addView(modeNote, noteTextLp);
+            }
+            if (easyButton != null) {
+                LinearLayout.LayoutParams easyLp = new LinearLayout.LayoutParams(dp(74), dp(32));
+                easyLp.gravity = Gravity.CENTER_VERTICAL;
+                easyLp.rightMargin = dp(8);
+                lookRow.addView(easyButton, easyLp);
+            }
+            if (adjustButton != null) {
+                LinearLayout.LayoutParams adjustLp = new LinearLayout.LayoutParams(dp(74), dp(32));
+                adjustLp.gravity = Gravity.CENTER_VERTICAL;
+                lookRow.addView(adjustButton, adjustLp);
+            }
+            if (videoPauseButton != null) {
+                LinearLayout.LayoutParams pauseLp = new LinearLayout.LayoutParams(dp(66), dp(32));
+                pauseLp.gravity = Gravity.CENTER_VERTICAL;
+                pauseLp.rightMargin = dp(4);
+                lookRow.addView(videoPauseButton, pauseLp);
+            }
+            if (videoSnapButton != null) {
+                LinearLayout.LayoutParams snapLp = new LinearLayout.LayoutParams(dp(58), dp(32));
+                snapLp.gravity = Gravity.CENTER_VERTICAL;
+                snapLp.rightMargin = dp(4);
+                lookRow.addView(videoSnapButton, snapLp);
+            }
+            if (recordingLockButton != null) {
+                LinearLayout.LayoutParams lockLp = new LinearLayout.LayoutParams(dp(54), dp(32));
+                lockLp.gravity = Gravity.CENTER_VERTICAL;
+                lookRow.addView(recordingLockButton, lockLp);
+            }
+        } else {
+            if (recordingLockButton != null) {
+                LinearLayout.LayoutParams lockLp = new LinearLayout.LayoutParams(dp(54), dp(32));
+                lockLp.gravity = Gravity.CENTER_VERTICAL;
+                lockLp.rightMargin = dp(4);
+                lookRow.addView(recordingLockButton, lockLp);
+            }
+            if (videoSnapButton != null) {
+                LinearLayout.LayoutParams snapLp = new LinearLayout.LayoutParams(dp(58), dp(32));
+                snapLp.gravity = Gravity.CENTER_VERTICAL;
+                snapLp.rightMargin = dp(4);
+                lookRow.addView(videoSnapButton, snapLp);
+            }
+            if (videoPauseButton != null) {
+                LinearLayout.LayoutParams pauseLp = new LinearLayout.LayoutParams(dp(66), dp(32));
+                pauseLp.gravity = Gravity.CENTER_VERTICAL;
+                pauseLp.rightMargin = dp(4);
+                lookRow.addView(videoPauseButton, pauseLp);
+            }
+            if (adjustButton != null) {
+                LinearLayout.LayoutParams adjustLp = new LinearLayout.LayoutParams(dp(74), dp(32));
+                adjustLp.gravity = Gravity.CENTER_VERTICAL;
+                adjustLp.rightMargin = dp(8);
+                lookRow.addView(adjustButton, adjustLp);
+            }
+            if (easyButton != null) {
+                LinearLayout.LayoutParams easyLp = new LinearLayout.LayoutParams(dp(74), dp(32));
+                easyLp.gravity = Gravity.CENTER_VERTICAL;
+                easyLp.rightMargin = dp(8);
+                lookRow.addView(easyButton, easyLp);
+            }
+            if (modeNote != null) {
+                modeNote.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+                LinearLayout.LayoutParams noteTextLp = new LinearLayout.LayoutParams(0, -2, 1f);
+                noteTextLp.gravity = Gravity.CENTER_VERTICAL;
+                lookRow.addView(modeNote, noteTextLp);
+            }
+            if (brainButton != null) {
+                LinearLayout.LayoutParams lookLp = new LinearLayout.LayoutParams(dp(62), dp(32));
+                lookLp.leftMargin = dp(8);
+                lookRow.addView(brainButton, lookLp);
+            }
         }
     }
 
     private void assembleCameraLayout(boolean isWide) {
         if (overlay == null) return;
         overlay.removeAllViews();
+        String leftHandSetting = AppSettings.get(this, AppSettings.LEFT_HAND_MODE, AppSettings.LEFT_HAND_OFF);
+        appliedLeftHandMode = leftHandSetting;
+        boolean leftHand = AppSettings.isLeftHandMode(leftHandSetting);
+        boolean swapShutterRow = AppSettings.isLeftHandSwapShutterRow(leftHandSetting);
+        layoutHeaderButtons(leftHand);
+        layoutLookRow(leftHand);
+
         Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
         Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
         int screenWidth = root != null && root.getWidth() > 0 ? root.getWidth() : getResources().getDisplayMetrics().widthPixels;
@@ -1724,8 +1878,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             bottomModeBar.setClipToPadding(false);
             if (settingsButton != null) {
                 if (settingsButton.getParent() != null) ((ViewGroup) settingsButton.getParent()).removeView(settingsButton);
-                FrameLayout.LayoutParams settingsLp = new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.START | Gravity.CENTER_VERTICAL);
-                settingsLp.leftMargin = dp(24) + safeInsets.left;
+                FrameLayout.LayoutParams settingsLp = new FrameLayout.LayoutParams(
+                        dp(40), dp(40), (leftHand ? Gravity.END : Gravity.START) | Gravity.CENTER_VERTICAL);
+                if (leftHand) {
+                    settingsLp.rightMargin = dp(24) + safeInsets.right;
+                } else {
+                    settingsLp.leftMargin = dp(24) + safeInsets.left;
+                }
                 bottomModeBar.addView(settingsButton, settingsLp);
             }
             if (modeRow != null) {
@@ -1784,7 +1943,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 zoomSliderLp.topMargin = dp(4);
                 leftCanvas.addView(zoomSliderPanel, zoomSliderLp);
             }
-            wideBody.addView(leftCanvas, new LinearLayout.LayoutParams(0, -1, 1f));
 
             LinearLayout sideGrip = new LinearLayout(this);
             sideGrip.setOrientation(LinearLayout.VERTICAL);
@@ -1823,16 +1981,30 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             LinearLayout gripBottomRow = new LinearLayout(this);
             gripBottomRow.setOrientation(LinearLayout.HORIZONTAL);
             gripBottomRow.setGravity(Gravity.CENTER);
-            if (galleryButton != null) {
-                if (galleryButton.getParent() != null) ((ViewGroup) galleryButton.getParent()).removeView(galleryButton);
-                gripBottomRow.addView(galleryButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
-            }
-            if (flipButton != null) {
-                if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
-                flipButton.setPadding(dp(9), dp(9), dp(9), dp(9));
-                LinearLayout.LayoutParams flipLp = new LinearLayout.LayoutParams(dp(44), dp(44));
-                flipLp.leftMargin = dp(8);
-                gripBottomRow.addView(flipButton, flipLp);
+            if (!swapShutterRow) {
+                if (galleryButton != null) {
+                    if (galleryButton.getParent() != null) ((ViewGroup) galleryButton.getParent()).removeView(galleryButton);
+                    gripBottomRow.addView(galleryButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+                }
+                if (flipButton != null) {
+                    if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
+                    flipButton.setPadding(dp(9), dp(9), dp(9), dp(9));
+                    LinearLayout.LayoutParams flipLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+                    flipLp.leftMargin = dp(8);
+                    gripBottomRow.addView(flipButton, flipLp);
+                }
+            } else {
+                if (flipButton != null) {
+                    if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
+                    flipButton.setPadding(dp(9), dp(9), dp(9), dp(9));
+                    gripBottomRow.addView(flipButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+                }
+                if (galleryButton != null) {
+                    if (galleryButton.getParent() != null) ((ViewGroup) galleryButton.getParent()).removeView(galleryButton);
+                    LinearLayout.LayoutParams galleryLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+                    galleryLp.leftMargin = dp(8);
+                    gripBottomRow.addView(galleryButton, galleryLp);
+                }
             }
             sideGrip.addView(gripBottomRow, new LinearLayout.LayoutParams(-2, -2));
 
@@ -1843,15 +2015,26 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 sideGrip.addView(outputModeText, formatLp);
             }
 
-            wideBody.addView(sideGrip, new LinearLayout.LayoutParams(dp(110), -1));
+            if (leftHand) {
+                wideBody.addView(sideGrip, new LinearLayout.LayoutParams(dp(110), -1));
+                wideBody.addView(leftCanvas, new LinearLayout.LayoutParams(0, -1, 1f));
+            } else {
+                wideBody.addView(leftCanvas, new LinearLayout.LayoutParams(0, -1, 1f));
+                wideBody.addView(sideGrip, new LinearLayout.LayoutParams(dp(110), -1));
+            }
             FrameLayout.LayoutParams wideBodyLp = new FrameLayout.LayoutParams(-1, -1);
             wideBodyLp.topMargin = topSafe + dp(38);
             overlay.addView(wideBody, wideBodyLp);
 
             if (settingsButton != null) {
                 if (settingsButton.getParent() != null) ((ViewGroup) settingsButton.getParent()).removeView(settingsButton);
-                FrameLayout.LayoutParams settingsLp = new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.BOTTOM | Gravity.START);
-                settingsLp.leftMargin = dp(16) + safeInsets.left;
+                FrameLayout.LayoutParams settingsLp = new FrameLayout.LayoutParams(
+                        dp(40), dp(40), Gravity.BOTTOM | (leftHand ? Gravity.END : Gravity.START));
+                if (leftHand) {
+                    settingsLp.rightMargin = dp(16) + safeInsets.right;
+                } else {
+                    settingsLp.leftMargin = dp(16) + safeInsets.left;
+                }
                 settingsLp.bottomMargin = dp(16) + safeInsets.bottom;
                 overlay.addView(settingsButton, settingsLp);
             }
@@ -1862,8 +2045,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
         boolean isWide = windowInfo.isLandscape || (windowInfo.widthDp >= windowInfo.heightDp);
         if (isWide) {
-            FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(dp(380), dp(320), Gravity.BOTTOM | Gravity.START);
-            panelLp.leftMargin = dp(24);
+            boolean leftHand = AppSettings.isLeftHandMode(this);
+            FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(
+                    dp(380), dp(320), Gravity.BOTTOM | (leftHand ? Gravity.END : Gravity.START));
+            if (leftHand) {
+                panelLp.rightMargin = dp(24);
+            } else {
+                panelLp.leftMargin = dp(24);
+            }
             panelLp.bottomMargin = dp(24);
             return panelLp;
         } else {

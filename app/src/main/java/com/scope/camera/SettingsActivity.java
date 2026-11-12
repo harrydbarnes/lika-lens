@@ -339,6 +339,8 @@ public class SettingsActivity extends Activity {
         addInfo("180° Shutter Rule", "In 24 fps cinematic mode, the app targets a 1/48s exposure interval for authentic motion cadence.", 0xffaab3ad);
 
         beginSection("VIEWFINDER & SHOOTING ERGONOMICS", "Framing aids, exposure telemetry, gesture shortcuts and tactile controls.");
+        addChoice("Left-hand mode", "Move top-left & key controls to the opposite side; optionally swap camera & gallery",
+                AppSettings.LEFT_HAND_MODE, AppSettings.LEFT_HAND_MODE_CHOICES, AppSettings.LEFT_HAND_OFF);
         addSwitch("Live film stock viewfinder preview", "Real-time film color science simulation in the live viewfinder", AppSettings.LIVE_FILM_PREVIEW, true);
         addSwitch("Rangefinder frame lines", "Translucent outside-the-frame context with Leica illuminated brightlines and corner brackets", AppSettings.RANGEFINDER_LINES, false);
         addSwitch("Pro optical loupe (5×)", "High-magnification focus assist loupe with gold bezel during reticle adjustment", AppSettings.OPTICAL_LOUPE, false);

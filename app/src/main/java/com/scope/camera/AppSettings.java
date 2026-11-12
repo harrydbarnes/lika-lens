@@ -99,6 +99,15 @@ final class AppSettings {
     static final String HORIZON_MODE = "horizon_mode";
     static final String VOLUME_ROCKER = "volume_rocker";
     static final String SHUTTER_WINK = "shutter_wink";
+    static final String LEFT_HAND_MODE = "left_hand_mode";
+    static final String LEFT_HAND_OFF = "Off (Standard)";
+    static final String LEFT_HAND_MAIN = "On · Main buttons";
+    static final String LEFT_HAND_FURTHER = "On · Full (swap camera & gallery)";
+    static final String[] LEFT_HAND_MODE_CHOICES = {
+            LEFT_HAND_OFF,
+            LEFT_HAND_MAIN,
+            LEFT_HAND_FURTHER
+    };
 
     // Pro UX & Viewfinder Feature Keys
     static final String LIVE_FILM_PREVIEW = "live_film_preview";
@@ -259,6 +268,22 @@ final class AppSettings {
 
     static boolean getBoolean(Context context, String key, boolean fallback) {
         return prefs(context).getBoolean(key, fallback);
+    }
+
+    static boolean isLeftHandMode(String mode) {
+        return LEFT_HAND_MAIN.equals(mode) || LEFT_HAND_FURTHER.equals(mode);
+    }
+
+    static boolean isLeftHandSwapShutterRow(String mode) {
+        return LEFT_HAND_FURTHER.equals(mode);
+    }
+
+    static boolean isLeftHandMode(Context context) {
+        return isLeftHandMode(get(context, LEFT_HAND_MODE, LEFT_HAND_OFF));
+    }
+
+    static boolean isLeftHandSwapShutterRow(Context context) {
+        return isLeftHandSwapShutterRow(get(context, LEFT_HAND_MODE, LEFT_HAND_OFF));
     }
 
     static String brain(Context context) {
