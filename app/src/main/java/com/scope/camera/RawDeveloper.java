@@ -290,7 +290,7 @@ final class RawDeveloper {
                 effectiveContrast = this.look.contrast * 0.86f;
                 effectivePivot = 0.22f;
             } else {
-                effectiveContrast = this.look.contrast * 1.02f;
+                effectiveContrast = this.look.contrast * 1.06f;
             }
             if (push1) {
                 effectiveContrast *= 1.14f;
@@ -316,7 +316,7 @@ final class RawDeveloper {
                 } else if (this.brainId == BRAIN_ID_MONO) {
                     this.toeContrast = clamp(this.safeContrast * 0.92f, 0.88f, 1.25f);
                 } else {
-                    this.toeContrast = clamp(this.safeContrast * 0.84f, 0.84f, 1.00f);
+                    this.toeContrast = clamp(this.safeContrast * 0.88f, 0.88f, 1.05f);
                 }
             } else {
                 this.toeContrast = this.safeContrast;
@@ -351,7 +351,7 @@ final class RawDeveloper {
                 } else if (this.brainId == BRAIN_ID_BLEACH) {
                     sDepth = Math.min(1.35f, sDepth * 1.30f);
                 } else {
-                    sDepth *= 0.55f;
+                    sDepth *= 0.68f;
                 }
             }
             if (push1) sDepth = Math.min(1.30f, sDepth * 1.25f + 0.15f);
@@ -382,6 +382,8 @@ final class RawDeveloper {
                 sb *= 1.18f;
             } else if (this.brainId == BRAIN_ID_FUJI_ETERNA) {
                 sb *= 0.85f;
+            } else if (this.brainId == BRAIN_ID_LIKA_FILM) {
+                sb *= 1.04f;
             } else if (this.brainId == BRAIN_ID_NEUTRAL) {
                 sb = Math.abs(sb - 0.98f) < 0.01f ? 1.00f : sb;
             }
@@ -1221,9 +1223,9 @@ final class RawDeveloper {
             r = g = b = luma;
         } else if (brainId == BRAIN_ID_LIKA_FILM) {
             // Kodak Vision3 500T dye crosstalk: cinema reds and clean tungsten-balanced shadows
-            float fr = 1.07f * r - 0.05f * g - 0.02f * b;
+            float fr = 1.09f * r - 0.06f * g - 0.03f * b;
             float fg = -0.02f * r + 1.01f * g + 0.01f * b;
-            float fb = -0.03f * r + 0.05f * g + 0.98f * b;
+            float fb = -0.04f * r + 0.05f * g + 0.99f * b;
             r = Math.max(0f, fr); g = Math.max(0f, fg); b = Math.max(0f, fb);
         } else if (brainId == BRAIN_ID_KODACHROME) {
             // K-14 Color Reversal: punchy crimson reds, clean golds, and deep cobalt blues
@@ -1366,7 +1368,7 @@ final class RawDeveloper {
             } else if (brainId == BRAIN_ID_BLEACH) {
                 baseWarmth = -0.10f;
             } else {
-                baseWarmth = 0.20f * prep.ambientWarmthFactor * alreadyWarmAtten;
+                baseWarmth = 0.22f * prep.ambientWarmthFactor * alreadyWarmAtten;
             }
 
             float filmWarm = clamp(baseWarmth, -1f, 1f) * midWarmGate;
@@ -1384,9 +1386,11 @@ final class RawDeveloper {
 
             // Authentic Film Stock Spectral Split-Toning & Hue Couplers:
             if (brainId == BRAIN_ID_LIKA_FILM) {
-                // Kodak Vision3 500T: clean tungsten cool-teal shadow undertow against warm midtones
-                bb -= 0.006f * shadowWeight * warmthGate;
-                a -= 0.002f * shadowWeight * warmthGate;
+                // Kodak Vision3 500T: tungsten cool-teal shadow undertow with golden-amber highlight glow
+                bb -= 0.009f * shadowWeight * warmthGate;
+                a -= 0.003f * shadowWeight * warmthGate;
+                a += 0.004f * highlightWeight;
+                bb += 0.006f * highlightWeight;
             } else if (brainId == BRAIN_ID_KODACHROME) {
                 // Kodachrome 64: rich crimson-gold couplers in midtones and deep cobalt skies in blues
                 float midWeight = Math.max(0f, 1f - shadowWeight - highlightWeight);

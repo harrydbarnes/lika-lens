@@ -312,7 +312,10 @@ public class RawDeveloperTest {
                     maxChannelDiff = Math.max(maxChannelDiff, Math.abs((c1 & 0xff) - (c2 & 0xff)));
                 }
                 org.junit.Assert.assertTrue(
-                        "Brains " + brains[i] + " and " + brains[j] + " must produce distinct rendering (maxDiff=" + maxChannelDiff + ")",
+                        "Brains " + brains[i] + " and " + brains[j] + " must produce distinct rendering (maxDiff=" + maxChannelDiff
+                                + ", s0=" + (results[i][0] & 0xffffff) + " vs " + (results[j][0] & 0xffffff)
+                                + ", s1=" + (results[i][1] & 0xffffff) + " vs " + (results[j][1] & 0xffffff)
+                                + ", s2=" + (results[i][2] & 0xffffff) + " vs " + (results[j][2] & 0xffffff) + ")",
                         maxChannelDiff >= 8);
             }
         }
