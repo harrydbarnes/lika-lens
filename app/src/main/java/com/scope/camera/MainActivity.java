@@ -139,8 +139,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private TextView videoPauseButton;
     private TextView videoSnapButton;
     private TextView videoLockButton;
-    private TextView flipButton;
-    private TextView settingsButton;
+    private ImageView flipButton;
+    private ImageView settingsButton;
     private TextView modeNote;
     private TextView messageView;
     private TextView outputModeText;
@@ -2956,6 +2956,21 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         view.setBackground(round(active ? 0xe21c1d1b : 0xd8191e1e, 22, active ? ACCENT : 0x556e7872, dp(1)));
         view.setClickable(true);
         return view;
+    }
+
+    private void setPillIcon(TextView view, int drawableRes, int iconDp, int tintColor, int gapDp, String text) {
+        if (view == null) return;
+        android.graphics.drawable.Drawable d = getDrawable(drawableRes);
+        if (d != null) {
+            d = d.mutate();
+            d.setTint(tintColor);
+            int size = dp(iconDp);
+            d.setBounds(0, 0, size, size);
+        }
+        view.setText(text);
+        view.setTextColor(tintColor);
+        view.setCompoundDrawablePadding(text != null && !text.isEmpty() ? dp(gapDp) : 0);
+        view.setCompoundDrawablesRelative(d, null, null, null);
     }
 
     private TextView lensPill(String zoomName, String mmName, boolean active) {
