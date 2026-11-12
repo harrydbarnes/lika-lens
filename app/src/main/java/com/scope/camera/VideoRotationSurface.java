@@ -34,14 +34,21 @@ final class VideoRotationSurface implements AutoCloseable {
     private final float[] textureMatrix = new float[16];
     private final float[] samplingMatrix = new float[16];
     private final Runnable onFailure;
+    enum State {
+        INITIALIZING,
+        ACTIVE,
+        DRAINING,
+        CLOSED,
+        FAILED
+    }
+
     private EGLDisplay display = EGL14.EGL_NO_DISPLAY;
     private EGLContext context = EGL14.EGL_NO_CONTEXT;
     private EGLSurface window = EGL14.EGL_NO_SURFACE;
     private SurfaceTexture texture;
     private Surface input;
     private int program, textureId;
-    private volatile boolean accepting = true;
-    private boolean closed;
+    private volatile State state = State.INITIALIZING;
 
     VideoRotationSurface(Surface encoder, int width, int height, int rotation, Runnable onFailure) {
         this.width = width;
@@ -55,7 +62,7 @@ final class VideoRotationSurface implements AutoCloseable {
         RuntimeException[] failure = new RuntimeException[1];
         handler.post(() -> {
             try { initialize(encoder); }
-            catch (RuntimeException e) { failure[0] = e; }
+            catch (RuntimeException e) { state = State.FAILED; failure[0] = e; }
             finally { ready.countDown(); }
         });
         try {
@@ -69,6 +76,8 @@ final class VideoRotationSurface implements AutoCloseable {
     }
 
     Surface inputSurface() { return input; }
+
+    State getState() { return state; }
 
     private void initialize(Surface encoder) {
         display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
@@ -108,11 +117,12 @@ final class VideoRotationSurface implements AutoCloseable {
         texture = new SurfaceTexture(textureId);
         texture.setDefaultBufferSize(width, height);
         input = new Surface(texture);
+        state = State.ACTIVE;
         texture.setOnFrameAvailableListener(t -> renderFrame(), handler);
     }
 
     private void renderFrame() {
-        if (!accepting) return;
+        if (state != State.ACTIVE) return;
         try {
             texture.updateTexImage();
             texture.getTransformMatrix(textureMatrix);
@@ -138,7 +148,7 @@ final class VideoRotationSurface implements AutoCloseable {
             check(EGLExt.eglPresentationTimeANDROID(display, window, texture.getTimestamp()), "set frame timestamp");
             check(EGL14.eglSwapBuffers(display, window), "submit recording frame");
         } catch (RuntimeException e) {
-            accepting = false;
+            state = State.FAILED;
             Log.e(TAG, "Video rotation failed", e);
             onFailure.run();
         }
@@ -146,7 +156,10 @@ final class VideoRotationSurface implements AutoCloseable {
 
     /** Stop submitting frames before MediaRecorder.stop/reset invalidates its input. */
     void stopRendering() {
-        accepting = false;
+        synchronized (this) {
+            if (state == State.CLOSED || state == State.FAILED) return;
+            state = State.DRAINING;
+        }
         CountDownLatch drained = new CountDownLatch(1);
         handler.post(drained::countDown);
         try { if (!drained.await(3, TimeUnit.SECONDS)) Log.w(TAG, "Rotation frame drain timed out"); }
@@ -154,9 +167,10 @@ final class VideoRotationSurface implements AutoCloseable {
     }
 
     @Override public void close() {
-        if (closed) return;
-        closed = true;
-        accepting = false;
+        synchronized (this) {
+            if (state == State.CLOSED) return;
+            state = State.CLOSED;
+        }
         CountDownLatch released = new CountDownLatch(1);
         handler.post(() -> {
             try {

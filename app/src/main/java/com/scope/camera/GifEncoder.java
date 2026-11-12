@@ -25,10 +25,17 @@ public final class GifEncoder {
     private OutputStream out;
     private int width = 0;
     private int height = 0;
+    enum State {
+        NEW,
+        HEADER_WRITTEN,
+        WRITING_FRAMES,
+        FINISHED
+    }
+
     private int delayCentiseconds = 10; // 100ms = 10 fps default
     private int repeat = 0; // 0 = loop forever
     private int sampleQuality = 10; // 1 = best, 10 = standard fast, 20 = draft
-    private boolean started = false;
+    private State state = State.NEW;
     private int frameCount = 0;
     private OnProgressListener progressListener;
 
@@ -59,24 +66,28 @@ public final class GifEncoder {
         this.progressListener = listener;
     }
 
+    State getState() {
+        return state;
+    }
+
     /** Begins GIF stream writing header and screen descriptor. */
     public boolean start(OutputStream os) {
         if (os == null) return false;
         this.out = os;
-        this.started = true;
         this.frameCount = 0;
         try {
             writeString("GIF89a");
+            this.state = State.HEADER_WRITTEN;
             return true;
         } catch (IOException e) {
-            this.started = false;
+            this.state = State.NEW;
             return false;
         }
     }
 
     /** Adds a frame from an Android Bitmap. */
     public boolean addFrame(Bitmap bitmap) {
-        if (!started || bitmap == null) return false;
+        if (!isAcceptingFrames() || bitmap == null) return false;
         int frameW = width > 0 ? width : bitmap.getWidth();
         int frameH = height > 0 ? height : bitmap.getHeight();
 
@@ -99,18 +110,19 @@ public final class GifEncoder {
 
     /** Adds a frame from an ARGB integer pixel array. */
     public boolean addFrame(int frameW, int frameH, int[] pixels) {
-        if (!started || pixels == null || frameW <= 0 || frameH <= 0) return false;
+        if (!isAcceptingFrames() || pixels == null || frameW <= 0 || frameH <= 0) return false;
         try {
             if (width <= 0 || height <= 0) {
                 width = frameW;
-                height = frameH;
+                height = height <= 0 ? frameH : height;
             }
 
-            if (frameCount == 0) {
+            if (state == State.HEADER_WRITTEN) {
                 writeLogicalScreenDescriptor();
                 if (repeat >= 0) {
                     writeNetscapeExt();
                 }
+                state = State.WRITING_FRAMES;
             }
 
             if (progressListener != null) {
@@ -142,7 +154,7 @@ public final class GifEncoder {
 
     /** Finishes GIF encoding by writing trailer byte 0x3B and flushing. */
     public boolean finish() {
-        if (!started) return false;
+        if (!isAcceptingFrames()) return false;
         boolean ok = true;
         try {
             out.write(0x3B); // GIF trailer
@@ -150,9 +162,13 @@ public final class GifEncoder {
         } catch (IOException e) {
             ok = false;
         } finally {
-            started = false;
+            state = State.FINISHED;
         }
         return ok;
+    }
+
+    private boolean isAcceptingFrames() {
+        return state == State.HEADER_WRITTEN || state == State.WRITING_FRAMES;
     }
 
     public int getFrameCount() {

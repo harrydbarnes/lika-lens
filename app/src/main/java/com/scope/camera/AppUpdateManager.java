@@ -56,10 +56,38 @@ public final class AppUpdateManager {
     private static final ExecutorService worker = Executors.newSingleThreadExecutor();
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
 
+    enum UpdateState {
+        AVAILABLE,
+        DOWNLOADING,
+        FAILED,
+        READY_TO_INSTALL,
+        AWAITING_PERMISSION
+    }
+
     private static volatile File sPendingInstallApk;
     private static volatile UpdateInfo sPendingUpdateInfo;
-    private static volatile boolean sWaitingForInstallPermission;
+    private static volatile UpdateState sUpdateState = UpdateState.AVAILABLE;
     private static Dialog sCurrentUpdateDialog;
+
+    static String actionLabelForState(UpdateState state) {
+        if (state == null) return "DOWNLOAD & INSTALL";
+        switch (state) {
+            case READY_TO_INSTALL:
+                return "INSTALL NOW";
+            case DOWNLOADING:
+                return "DOWNLOADING…";
+            case FAILED:
+                return "RETRY DOWNLOAD";
+            case AVAILABLE:
+            case AWAITING_PERMISSION:
+            default:
+                return "DOWNLOAD & INSTALL";
+        }
+    }
+
+    static boolean shouldPromptInstallInsteadOfDownload(UpdateState state, boolean hasDownloadedApk) {
+        return hasDownloadedApk && state != UpdateState.FAILED && state != UpdateState.DOWNLOADING;
+    }
 
     private AppUpdateManager() {}
 
@@ -361,6 +389,7 @@ public final class AppUpdateManager {
                 destFile.setReadable(true, false);
                 sPendingInstallApk = destFile;
                 sPendingUpdateInfo = info;
+                sUpdateState = UpdateState.READY_TO_INSTALL;
 
                 mainHandler.post(() -> {
                     if (listener != null) listener.onComplete(destFile);
@@ -396,7 +425,7 @@ public final class AppUpdateManager {
         // Check for Unknown App Sources permission on Android 8.0+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (!activity.getPackageManager().canRequestPackageInstalls()) {
-                sWaitingForInstallPermission = true;
+                sUpdateState = UpdateState.AWAITING_PERMISSION;
                 Toast.makeText(activity, "Please allow Lika Lens to install updates", Toast.LENGTH_LONG).show();
                 Intent permissionIntent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
                 permissionIntent.setData(Uri.parse("package:" + activity.getPackageName()));
@@ -409,7 +438,7 @@ public final class AppUpdateManager {
             }
         }
 
-        sWaitingForInstallPermission = false;
+        sUpdateState = UpdateState.READY_TO_INSTALL;
         try {
             apkFile.setReadable(true, false);
             Uri apkUri = ApkFileProvider.getUriForFile(activity, apkFile);
@@ -444,13 +473,13 @@ public final class AppUpdateManager {
                 cleanStaleApks(activity, "");
                 sPendingInstallApk = null;
                 sPendingUpdateInfo = null;
-                sWaitingForInstallPermission = false;
+                sUpdateState = UpdateState.AVAILABLE;
                 return;
             }
         }
 
-        if (sWaitingForInstallPermission) {
-            sWaitingForInstallPermission = false;
+        if (sUpdateState == UpdateState.AWAITING_PERMISSION) {
+            sUpdateState = UpdateState.READY_TO_INSTALL;
             boolean canInstall = Build.VERSION.SDK_INT < Build.VERSION_CODES.O
                     || activity.getPackageManager().canRequestPackageInstalls();
 
@@ -625,9 +654,13 @@ public final class AppUpdateManager {
         if (isAlreadyDownloaded) {
             sPendingInstallApk = destFile;
         }
+        final UpdateState[] dialogState = {
+                isAlreadyDownloaded ? UpdateState.READY_TO_INSTALL : UpdateState.AVAILABLE
+        };
+        sUpdateState = dialogState[0];
 
         TextView installBtn = new TextView(activity);
-        installBtn.setText(isAlreadyDownloaded ? "INSTALL NOW" : "DOWNLOAD & INSTALL");
+        installBtn.setText(actionLabelForState(dialogState[0]));
         installBtn.setTextSize(11);
         installBtn.setTextColor(0xff0b0d0e);
         installBtn.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
@@ -648,15 +681,19 @@ public final class AppUpdateManager {
             if (AppSettings.getBoolean(activity, AppSettings.HAPTICS, true)) {
                 installBtn.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
             }
-            if (destFile.exists() && destFile.length() > 1024 && !installBtn.getText().toString().contains("RETRY")) {
+            boolean hasApk = destFile.exists() && destFile.length() > 1024;
+            if (shouldPromptInstallInsteadOfDownload(dialogState[0], hasApk)) {
+                dialogState[0] = UpdateState.READY_TO_INSTALL;
                 dialog.dismiss();
                 promptInstall(activity, destFile, info);
                 return;
             }
 
+            dialogState[0] = UpdateState.DOWNLOADING;
+            sUpdateState = UpdateState.DOWNLOADING;
             installBtn.setEnabled(false);
             laterBtn.setEnabled(false);
-            installBtn.setText("DOWNLOADING…");
+            installBtn.setText(actionLabelForState(dialogState[0]));
             progressBar.setVisibility(View.VISIBLE);
             progressText.setVisibility(View.VISIBLE);
 
@@ -669,16 +706,20 @@ public final class AppUpdateManager {
 
                 @Override
                 public void onComplete(File apkFile) {
+                    dialogState[0] = UpdateState.READY_TO_INSTALL;
+                    sUpdateState = UpdateState.READY_TO_INSTALL;
                     dialog.dismiss();
                 }
 
                 @Override
                 public void onError(String message) {
+                    dialogState[0] = UpdateState.FAILED;
+                    sUpdateState = UpdateState.FAILED;
                     progressBar.setVisibility(View.GONE);
                     progressText.setText(message);
                     installBtn.setEnabled(true);
                     laterBtn.setEnabled(true);
-                    installBtn.setText("RETRY DOWNLOAD");
+                    installBtn.setText(actionLabelForState(dialogState[0]));
                 }
             });
         });

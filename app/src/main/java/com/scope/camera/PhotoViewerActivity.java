@@ -55,9 +55,24 @@ public class PhotoViewerActivity extends Activity {
     private TextView infoButton;
     private boolean infoVisible;
 
+    enum CompareState {
+        OFF,
+        LOADING_ORIGINAL,
+        SHOWING_ORIGINAL
+    }
+
+    enum GestureMode {
+        IDLE,
+        PINCH_ZOOM,
+        PAN,
+        DISMISS_DRAG,
+        SWIPE_STEP
+    }
+
     private Bitmap rawOriginalBitmap;
     private Bitmap developedBitmap;
-    private boolean isComparing = false;
+    private CompareState compareState = CompareState.OFF;
+    private int compareGeneration = 0;
     private TextView compareButton;
     private TextView compareBadge;
     private TextView zoomHud;
@@ -78,7 +93,7 @@ public class PhotoViewerActivity extends Activity {
     private int imageWidth = 0;
     private int imageHeight = 0;
     private float downY = 0f;
-    private boolean swipingDownToDismiss = false;
+    private GestureMode gestureMode = GestureMode.IDLE;
 
     private void hapticClick(View v) {
         if (v != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
@@ -282,9 +297,10 @@ public class PhotoViewerActivity extends Activity {
 
     private void preloadRawOriginal(String keyForLoad, int targetW, int targetH) {
         if (keyForLoad == null || !RawArchive.exists(this, keyForLoad)) return;
+        final int generation = compareGeneration;
         worker.execute(() -> {
             try {
-                if (!keyForLoad.equals(archiveKey) || isFinishing()) return;
+                if (generation != compareGeneration || !keyForLoad.equals(archiveKey) || isFinishing()) return;
                 RawArchive.Frame frame = RawArchive.read(PhotoViewerActivity.this, keyForLoad);
                 RawDeveloper.Look neutral = buildNeutralRawLook(frame);
                 int targetDim = Math.max(1200, Math.max(targetW, targetH));
@@ -299,7 +315,7 @@ public class PhotoViewerActivity extends Activity {
                 }
                 final Bitmap finalRaw = rawBmp;
                 mainHandler.post(() -> {
-                    if (!keyForLoad.equals(archiveKey) || isFinishing()) {
+                    if (generation != compareGeneration || !keyForLoad.equals(archiveKey) || isFinishing()) {
                         if (finalRaw != null && !finalRaw.isRecycled()) finalRaw.recycle();
                         return;
                     }
@@ -307,31 +323,36 @@ public class PhotoViewerActivity extends Activity {
                         rawOriginalBitmap.recycle();
                     }
                     rawOriginalBitmap = finalRaw;
-                    if (isComparing && rawOriginalBitmap != null) {
+                    if (compareState == CompareState.LOADING_ORIGINAL && rawOriginalBitmap != null) {
+                        compareState = CompareState.SHOWING_ORIGINAL;
                         if (compareBadge != null) compareBadge.setText("ORIGINAL SENSOR RAW · UNGRADED");
                         photoView.setImageBitmap(rawOriginalBitmap);
                     }
                 });
             } catch (Throwable ignored) {
                 mainHandler.post(() -> {
-                    if (isComparing && compareBadge != null) compareBadge.setText("NO RAW DATA");
+                    if (generation == compareGeneration && compareState != CompareState.OFF && compareBadge != null) {
+                        compareBadge.setText("NO RAW DATA");
+                    }
                 });
             }
         });
     }
 
     private void startComparing() {
-        if (isComparing) return;
-        isComparing = true;
+        if (compareState != CompareState.OFF) return;
+        compareState = rawOriginalBitmap != null ? CompareState.SHOWING_ORIGINAL : CompareState.LOADING_ORIGINAL;
         if (compareBadge != null) {
-            compareBadge.setText(rawOriginalBitmap != null ? "ORIGINAL SENSOR RAW · UNGRADED" : "DEVELOPING SENSOR ORIGINAL…");
+            compareBadge.setText(compareState == CompareState.SHOWING_ORIGINAL
+                    ? "ORIGINAL SENSOR RAW · UNGRADED"
+                    : "DEVELOPING SENSOR ORIGINAL…");
             compareBadge.setVisibility(View.VISIBLE);
         }
         if (compareButton != null) compareButton.setTextColor(ACCENT);
         if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
             photoView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
         }
-        if (rawOriginalBitmap != null) {
+        if (compareState == CompareState.SHOWING_ORIGINAL) {
             photoView.setImageBitmap(rawOriginalBitmap);
         } else if (archiveKey != null && RawArchive.exists(this, archiveKey)) {
             int targetW = developedBitmap != null ? developedBitmap.getWidth() : 2000;
@@ -341,8 +362,8 @@ public class PhotoViewerActivity extends Activity {
     }
 
     private void stopComparing() {
-        if (!isComparing) return;
-        isComparing = false;
+        if (compareState == CompareState.OFF) return;
+        compareState = CompareState.OFF;
         if (compareBadge != null) compareBadge.setVisibility(View.GONE);
         if (compareButton != null) compareButton.setTextColor(0xffd8ded7);
         if (developedBitmap != null) {
@@ -367,7 +388,12 @@ public class PhotoViewerActivity extends Activity {
 
     private void initTouchGestures() {
         scaleDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override public boolean onScaleBegin(ScaleGestureDetector detector) {
+                gestureMode = GestureMode.PINCH_ZOOM;
+                return true;
+            }
             @Override public boolean onScale(ScaleGestureDetector detector) {
+                gestureMode = GestureMode.PINCH_ZOOM;
                 float scaleFactor = detector.getScaleFactor();
                 float newScale = currentScale * scaleFactor;
                 if (newScale >= 0.85f && newScale <= 5.0f) {
@@ -394,6 +420,7 @@ public class PhotoViewerActivity extends Activity {
                     photoView.setImageMatrix(matrix);
                     showZoomHud("250% · DETAIL");
                 }
+                gestureMode = GestureMode.IDLE;
                 return true;
             }
 
@@ -413,19 +440,28 @@ public class PhotoViewerActivity extends Activity {
                     savedMatrix.set(matrix);
                     startPoint.set(event.getX(), event.getY());
                     downY = event.getY();
-                    swipingDownToDismiss = (currentScale <= 1.05f);
+                    gestureMode = currentScale > 1.05f ? GestureMode.PAN : GestureMode.IDLE;
+                    break;
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    if (event.getPointerCount() > 1) {
+                        gestureMode = GestureMode.PINCH_ZOOM;
+                    }
                     break;
                 case MotionEvent.ACTION_MOVE:
-                    if (!scaleDetector.isInProgress() && !isComparing) {
+                    if (!scaleDetector.isInProgress() && compareState == CompareState.OFF
+                            && gestureMode != GestureMode.PINCH_ZOOM) {
                         float dx = event.getX() - startPoint.x;
                         float dy = event.getY() - startPoint.y;
 
-                        if (currentScale <= 1.05f && swipingDownToDismiss && dy > dp(110) && Math.abs(dx) < Math.abs(dy) * 0.7f) {
+                        if (currentScale <= 1.05f && gestureMode == GestureMode.IDLE
+                                && dy > dp(110) && Math.abs(dx) < Math.abs(dy) * 0.7f) {
+                            gestureMode = GestureMode.DISMISS_DRAG;
                             finishAfterTransition();
                             return true;
                         }
 
-                        if (currentScale > 1.05f) {
+                        if (gestureMode == GestureMode.PAN || currentScale > 1.05f) {
+                            gestureMode = GestureMode.PAN;
                             matrix.set(savedMatrix);
                             matrix.postTranslate(dx, dy);
                             clampMatrix();
@@ -435,18 +471,25 @@ public class PhotoViewerActivity extends Activity {
                     break;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    if (isComparing) {
+                    if (compareState != CompareState.OFF) {
                         stopComparing();
+                        gestureMode = GestureMode.IDLE;
                         break;
                     }
-                    if (!scaleDetector.isInProgress() && currentScale <= 1.05f) {
+                    if (gestureMode != GestureMode.PINCH_ZOOM
+                            && gestureMode != GestureMode.DISMISS_DRAG
+                            && !scaleDetector.isInProgress()
+                            && currentScale <= 1.05f) {
                         float dx = event.getX() - startPoint.x;
                         float dy = event.getY() - startPoint.y;
                         if (Math.abs(dx) > dp(72) && Math.abs(dx) > Math.abs(dy) * 1.3f) {
+                            gestureMode = GestureMode.SWIPE_STEP;
                             stepPhoto(dx < 0 ? 1 : -1);
+                            gestureMode = GestureMode.IDLE;
                             return true;
                         }
                     }
+                    gestureMode = GestureMode.IDLE;
                     if (currentScale < 1.0f) resetZoom();
                     break;
             }
@@ -477,6 +520,8 @@ public class PhotoViewerActivity extends Activity {
             return;
         }
         hapticClick(photoView);
+        stopComparing();
+        compareGeneration++;
         currentIndex = nextIndex;
         PhotoRepository.Photo next = allPhotos.get(currentIndex);
         photoUri = next.uri;
@@ -544,6 +589,8 @@ public class PhotoViewerActivity extends Activity {
                 if (allPhotos.isEmpty()) {
                     finish();
                 } else {
+                    stopComparing();
+                    compareGeneration++;
                     int idx = Math.max(0, Math.min(currentIndex, allPhotos.size() - 1));
                     currentIndex = idx;
                     PhotoRepository.Photo next = allPhotos.get(idx);

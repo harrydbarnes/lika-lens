@@ -50,9 +50,15 @@ public class PhotoEditorActivity extends Activity {
     private LinearLayout controlsList;
     private int renderGeneration;
 
+    enum CompareMode {
+        OFF,
+        HOLD_PREVIEW,
+        LOCKED_TOGGLE
+    }
+
     private Bitmap rawOriginalBitmap;
     private Bitmap currentGradedBitmap;
-    private boolean isComparing = false;
+    private CompareMode compareMode = CompareMode.OFF;
     private TextView compareButton;
     private TextView compareBadge;
     private TextView loupeBadge;
@@ -90,9 +96,16 @@ public class PhotoEditorActivity extends Activity {
     private LinearLayout tabBar;
     private String activeTab = "Looks";
 
-    private void startComparing() {
-        if (rawOriginalBitmap == null || isComparing) return;
-        isComparing = true;
+    private boolean isComparing() {
+        return compareMode != CompareMode.OFF;
+    }
+
+    private void startComparing(CompareMode targetMode) {
+        if (rawOriginalBitmap == null || targetMode == CompareMode.OFF) return;
+        if (compareMode == targetMode) return;
+        boolean alreadyComparing = isComparing();
+        compareMode = targetMode;
+        if (alreadyComparing) return;
         if (compareBadge != null) compareBadge.setVisibility(View.VISIBLE);
         if (compareButton != null) { compareButton.setTextColor(ACCENT); compareButton.setText("Original"); compareButton.setSelected(true); }
         preview.setImageBitmap(rawOriginalBitmap);
@@ -102,8 +115,8 @@ public class PhotoEditorActivity extends Activity {
     }
 
     private void stopComparing() {
-        if (!isComparing) return;
-        isComparing = false;
+        if (compareMode == CompareMode.OFF) return;
+        compareMode = CompareMode.OFF;
         if (compareBadge != null) compareBadge.setVisibility(View.GONE);
         if (compareButton != null) { compareButton.setTextColor(0xffd8ded7); compareButton.setText("Compare"); compareButton.setSelected(false); }
         if (currentGradedBitmap != null) {
@@ -252,14 +265,14 @@ public class PhotoEditorActivity extends Activity {
                 return true;
             }
             @Override public void onLongPress(MotionEvent e) {
-                startComparing();
+                startComparing(CompareMode.HOLD_PREVIEW);
             }
         });
 
         preview.setOnTouchListener((v, event) -> {
             previewGestureDetector.onTouchEvent(event);
             if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                if (isComparing) {
+                if (compareMode == CompareMode.HOLD_PREVIEW) {
                     stopComparing();
                 }
             }
@@ -280,15 +293,15 @@ public class PhotoEditorActivity extends Activity {
         redoLp.leftMargin = dp(6);
         editingTools.addView(redoButton, redoLp);
         editingTools.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-        compareButton = pill(isComparing ? "Original" : "Compare", isComparing);
-        compareButton.setSelected(isComparing);
+        compareButton = pill(isComparing() ? "Original" : "Compare", isComparing());
+        compareButton.setSelected(isComparing());
         compareButton.setContentDescription("Compare with original");
         editingTools.addView(compareButton, new LinearLayout.LayoutParams(dp(90), dp(44)));
         compareButton.setOnClickListener(v -> {
             hapticClick(v);
-            if (isComparing) stopComparing(); else startComparing();
-            compareButton.setSelected(isComparing);
-            compareButton.setText(isComparing ? "Original" : "Compare");
+            if (isComparing()) stopComparing(); else startComparing(CompareMode.LOCKED_TOGGLE);
+            compareButton.setSelected(isComparing());
+            compareButton.setText(isComparing() ? "Original" : "Compare");
         });
         undoButton.setOnClickListener(v -> { look = history.undo(look); refreshEditingState(); });
         redoButton.setOnClickListener(v -> { look = history.redo(look); refreshEditingState(); });
@@ -353,7 +366,7 @@ public class PhotoEditorActivity extends Activity {
         }
 
         populateControls();
-        if (isComparing && rawOriginalBitmap != null) {
+        if (isComparing() && rawOriginalBitmap != null) {
             preview.setImageBitmap(rawOriginalBitmap);
             compareBadge.setVisibility(View.VISIBLE);
         } else if (currentGradedBitmap != null) {
@@ -882,7 +895,7 @@ public class PhotoEditorActivity extends Activity {
         if (bitmap == null) return;
         Bitmap previous = currentGradedBitmap;
         currentGradedBitmap = bitmap;
-        if (!isComparing) {
+        if (!isComparing()) {
             preview.setImageBitmap(bitmap);
         }
         if (previous != null && previous != bitmap && previous != rawOriginalBitmap && !previous.isRecycled()) {

@@ -135,4 +135,24 @@ public class GifEncoderTest {
         String fullStreamAscii = new String(gif, StandardCharsets.US_ASCII);
         assertFalse("Should not contain NETSCAPE2.0 block when repeat is -1", fullStreamAscii.contains("NETSCAPE2.0"));
     }
+
+    @Test
+    public void testEncoderLifecycleStateTransitions() {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        GifEncoder encoder = new GifEncoder();
+        assertEquals(GifEncoder.State.NEW, encoder.getState());
+
+        encoder.setSize(8, 8);
+        assertTrue(encoder.start(baos));
+        assertEquals(GifEncoder.State.HEADER_WRITTEN, encoder.getState());
+
+        assertTrue(encoder.addFrame(8, 8, new int[64]));
+        assertEquals(GifEncoder.State.WRITING_FRAMES, encoder.getState());
+
+        assertTrue(encoder.finish());
+        assertEquals(GifEncoder.State.FINISHED, encoder.getState());
+
+        assertFalse("Cannot add frames after finish", encoder.addFrame(8, 8, new int[64]));
+        assertFalse("Cannot finish twice", encoder.finish());
+    }
 }

@@ -121,4 +121,20 @@ public class AppUpdateManagerTest {
         assertTrue("Should contain second bullet point", text.contains("• fix(exif): format GPS coordinates"));
         assertFalse("Should strip commit hash from end of bullet", text.contains("(568e235)"));
     }
+
+    @Test
+    public void testUpdateStateActionLabelsAndInstallPrompting() {
+        assertEquals("DOWNLOAD & INSTALL", AppUpdateManager.actionLabelForState(null));
+        assertEquals("DOWNLOAD & INSTALL", AppUpdateManager.actionLabelForState(AppUpdateManager.UpdateState.AVAILABLE));
+        assertEquals("DOWNLOADING…", AppUpdateManager.actionLabelForState(AppUpdateManager.UpdateState.DOWNLOADING));
+        assertEquals("RETRY DOWNLOAD", AppUpdateManager.actionLabelForState(AppUpdateManager.UpdateState.FAILED));
+        assertEquals("INSTALL NOW", AppUpdateManager.actionLabelForState(AppUpdateManager.UpdateState.READY_TO_INSTALL));
+        assertEquals("DOWNLOAD & INSTALL", AppUpdateManager.actionLabelForState(AppUpdateManager.UpdateState.AWAITING_PERMISSION));
+
+        assertTrue(AppUpdateManager.shouldPromptInstallInsteadOfDownload(AppUpdateManager.UpdateState.READY_TO_INSTALL, true));
+        assertTrue(AppUpdateManager.shouldPromptInstallInsteadOfDownload(AppUpdateManager.UpdateState.AWAITING_PERMISSION, true));
+        assertFalse(AppUpdateManager.shouldPromptInstallInsteadOfDownload(AppUpdateManager.UpdateState.FAILED, true));
+        assertFalse(AppUpdateManager.shouldPromptInstallInsteadOfDownload(AppUpdateManager.UpdateState.DOWNLOADING, true));
+        assertFalse(AppUpdateManager.shouldPromptInstallInsteadOfDownload(AppUpdateManager.UpdateState.READY_TO_INSTALL, false));
+    }
 }
