@@ -276,14 +276,21 @@ final class RawDeveloper {
             float effectiveContrast = this.look.contrast;
             float effectivePivot = this.look.pivot;
             if (this.brainId == BRAIN_ID_KODACHROME) {
-                effectiveContrast = this.look.contrast * 1.14f;
+                effectiveContrast = this.look.contrast * 1.24f;
                 effectivePivot = Math.max(0.12f, this.look.pivot * 0.90f);
             } else if (this.brainId == BRAIN_ID_FUJI_ETERNA) {
-                effectiveContrast = this.look.contrast * 0.90f;
-                effectivePivot = this.look.pivot * 1.05f;
+                effectiveContrast = this.look.contrast * 0.84f;
+                effectivePivot = this.look.pivot * 1.10f;
             } else if (this.brainId == BRAIN_ID_BLEACH) {
-                effectiveContrast = this.look.contrast * 1.30f;
+                effectiveContrast = this.look.contrast * 1.38f;
                 effectivePivot = 0.22f;
+            } else if (this.brainId == BRAIN_ID_MONO) {
+                effectiveContrast = this.look.contrast * 1.14f;
+            } else if (this.brainId == BRAIN_ID_NEUTRAL) {
+                effectiveContrast = this.look.contrast * 0.86f;
+                effectivePivot = 0.22f;
+            } else {
+                effectiveContrast = this.look.contrast * 1.02f;
             }
             if (push1) {
                 effectiveContrast *= 1.14f;
@@ -297,7 +304,23 @@ final class RawDeveloper {
             }
             this.safePivot = clamp(effectivePivot, 0.02f, 0.85f);
             this.safeContrast = clamp(effectiveContrast, 0.35f, 2.50f);
-            this.toeContrast = (this.look.easyMode && !push1 && !push2) ? Math.min(this.safeContrast, 0.94f) : this.safeContrast;
+            if (this.look.easyMode && !push1 && !push2) {
+                if (this.brainId == BRAIN_ID_KODACHROME) {
+                    this.toeContrast = clamp(this.safeContrast * 0.94f, 0.95f, 1.38f);
+                } else if (this.brainId == BRAIN_ID_BLEACH) {
+                    this.toeContrast = clamp(this.safeContrast * 0.96f, 1.05f, 1.45f);
+                } else if (this.brainId == BRAIN_ID_FUJI_ETERNA) {
+                    this.toeContrast = clamp(this.safeContrast * 0.88f, 0.78f, 0.92f);
+                } else if (this.brainId == BRAIN_ID_NEUTRAL) {
+                    this.toeContrast = clamp(this.safeContrast * 0.92f, 0.80f, 0.94f);
+                } else if (this.brainId == BRAIN_ID_MONO) {
+                    this.toeContrast = clamp(this.safeContrast * 0.92f, 0.88f, 1.25f);
+                } else {
+                    this.toeContrast = clamp(this.safeContrast * 0.84f, 0.84f, 1.00f);
+                }
+            } else {
+                this.toeContrast = this.safeContrast;
+            }
 
             String curve = this.look.toneCurve == null ? "Filmic S-Curve" : this.look.toneCurve;
             if (curve.startsWith("Linear")) {
@@ -313,19 +336,26 @@ final class RawDeveloper {
 
             String shadowProf = this.look.shadowProfile == null ? "Deep Cinema Blacks" : this.look.shadowProfile;
             float sDepth = clamp(this.look.shadows, 0f, 1f);
-            if (shadowProf.startsWith("Lifted") || this.brainId == BRAIN_ID_FUJI_ETERNA || pull1) {
+            if (this.brainId == BRAIN_ID_NEUTRAL && !push1 && !push2 && !pull1) {
+                this.liftedShadows = false;
+                sDepth = Math.max(0f, sDepth - 0.36f) * 0.50f;
+            } else if (shadowProf.startsWith("Lifted") || this.brainId == BRAIN_ID_FUJI_ETERNA || pull1) {
                 this.liftedShadows = !push1 && !push2;
-                sDepth *= pull1 ? 0.55f : 0.65f;
+                sDepth *= pull1 ? 0.28f : 0.32f;
             } else {
                 this.liftedShadows = false;
                 if (shadowProf.startsWith("Neutral")) {
-                    sDepth *= 0.85f;
-                } else if (this.brainId == BRAIN_ID_KODACHROME || this.brainId == BRAIN_ID_BLEACH) {
-                    sDepth = Math.min(1.2f, sDepth * 1.22f);
+                    sDepth *= 0.45f;
+                } else if (this.brainId == BRAIN_ID_KODACHROME) {
+                    sDepth = Math.min(1.25f, sDepth * 1.15f);
+                } else if (this.brainId == BRAIN_ID_BLEACH) {
+                    sDepth = Math.min(1.35f, sDepth * 1.30f);
+                } else {
+                    sDepth *= 0.55f;
                 }
             }
-            if (push1) sDepth = Math.min(1.3f, sDepth * 1.20f);
-            else if (push2) sDepth = Math.min(1.45f, sDepth * 1.38f);
+            if (push1) sDepth = Math.min(1.30f, sDepth * 1.25f + 0.15f);
+            else if (push2) sDepth = Math.min(1.45f, sDepth * 1.45f + 0.25f);
             this.shadowDepth = sDepth;
 
             float shoulder = clamp(this.look.highlights, 0f, 1f);
@@ -347,11 +377,13 @@ final class RawDeveloper {
 
             float sb = this.look.saturation;
             if (this.brainId == BRAIN_ID_BLEACH) {
-                sb *= 0.32f;
+                sb *= 0.30f;
             } else if (this.brainId == BRAIN_ID_KODACHROME) {
-                sb *= 1.16f;
+                sb *= 1.18f;
             } else if (this.brainId == BRAIN_ID_FUJI_ETERNA) {
-                sb *= 0.88f;
+                sb *= 0.85f;
+            } else if (this.brainId == BRAIN_ID_NEUTRAL) {
+                sb = Math.abs(sb - 0.98f) < 0.01f ? 1.00f : sb;
             }
             if (push1) sb *= 1.06f;
             else if (push2) sb *= 0.94f;
@@ -361,7 +393,8 @@ final class RawDeveloper {
             this.rollOff = clamp(this.look.colorRollOff, 0f, 1f);
             this.rollOffSlope = 2f + this.rollOff * 5.5f;
             this.applySkinProtection = this.look.skinProtection || this.look.easyMode;
-            this.applySmartVibrance = this.look.smartVibrance || this.look.easyMode;
+            this.applySmartVibrance = (this.look.smartVibrance || this.look.easyMode)
+                    && this.brainId != BRAIN_ID_NEUTRAL && this.brainId != BRAIN_ID_MONO && this.brainId != BRAIN_ID_BLEACH;
 
             float ambWarmth = 1.0f;
             boolean fluo = false;
@@ -453,6 +486,13 @@ final class RawDeveloper {
         final float[] cct = frame.colorCorrectionTransform;
         final boolean flipH = look.flipHorizontal;
         final float vigAmount = look.vignette;
+        final int lgW = look.easyMode ? Math.min(48, Math.max(4, outW)) : 0;
+        final int lgH = look.easyMode ? Math.min(36, Math.max(4, outH)) : 0;
+        final float[] localGainGrid = look.easyMode
+                ? buildLocalToneGainGrid(rawShorts, frame, white, gains, cameraToXyz, hasCct, cct,
+                        exposureScale, crop, cropWidth, cropHeight, orientation, applyLsm, flipH,
+                        outW, outH, lgW, lgH, prep.brainId)
+                : null;
 
         java.util.stream.IntStream.range(0, outH).parallel().forEach(oy -> {
             float dy = Math.min(crop[1] + cropHeight - .5f,
@@ -499,6 +539,17 @@ final class RawDeveloper {
                     lr = 3.1339f * x - 1.6169f * y - .4906f * z;
                     lg = -.9785f * x + 1.9160f * y + .0333f * z;
                     lb = .0720f * x - .2290f * y + 1.4057f * z;
+                }
+                if (localGainGrid != null) {
+                    float lgain = sampleLocalGain(localGainGrid, lgW, lgH, ox, oy, outW, outH);
+                    if (lgain > 1.0f) {
+                        float pixY = Math.max(0f, .2126f * Math.max(0f, lr) + .7152f * Math.max(0f, lg) + .0722f * Math.max(0f, lb));
+                        float signalGate = smoothstep(0.0020f, 0.012f, pixY);
+                        lgain = 1.0f + (lgain - 1.0f) * signalGate;
+                    }
+                    lr *= lgain;
+                    lg *= lgain;
+                    lb *= lgain;
                 }
                 int color = renderPreparedLook(lr, lg, lb, prep, ox, oy, seed);
                 if (vigAmount > 0f) {
@@ -1022,7 +1073,7 @@ final class RawDeveloper {
                 float luma = Math.max(0f, .2126f * Math.max(0f, lr) + .7152f * Math.max(0f, lg) + .0722f * Math.max(0f, lb));
                 for (int w = 0; w < weight; w++) {
                     allLuma[allCount++] = luma;
-                    if (luma > 0.002f && luma < 0.85f) {
+                    if (luma >= 0f && luma < 0.92f) {
                         midLuma[midCount++] = luma;
                     }
                 }
@@ -1032,15 +1083,113 @@ final class RawDeveloper {
         java.util.Arrays.sort(allLuma, 0, allCount);
         java.util.Arrays.sort(midLuma, 0, midCount);
         float p50 = midLuma[(int) ((midCount - 1) * 0.50f)];
-        float p75 = midLuma[(int) ((midCount - 1) * 0.75f)];
-        float p92 = allLuma[(int) ((allCount - 1) * 0.92f)];
-        float midMetric = 0.55f * p50 + 0.45f * p75;
-        float targetMid = 0.21f;
+        float p70 = midLuma[(int) ((midCount - 1) * 0.70f)];
+        float p96 = allLuma[(int) ((allCount - 1) * 0.96f)];
+        float midMetric = 0.65f * p50 + 0.35f * p70;
+        float targetMid = 0.22f;
         if (midMetric >= targetMid) return boostScale;
-        float neededGain = (float) Math.pow(targetMid / Math.max(0.005f, midMetric), 0.88);
-        float maxHighlightGain = p92 > 0.35f ? (2.60f / Math.max(0.10f, p92)) : 4.8f;
-        float sceneGain = clamp(Math.min(neededGain, Math.max(1.0f, maxHighlightGain)), 1.0f, 4.8f);
+        float neededGain = (float) Math.pow(targetMid / Math.max(0.004f, midMetric), 0.92);
+        float maxHighlightGain = p96 > 0.40f ? (4.40f / Math.max(0.10f, p96)) : 7.5f;
+        float sceneGain = clamp(Math.min(neededGain, Math.max(2.4f, maxHighlightGain)), 1.0f, 7.5f);
         return boostScale * sceneGain;
+    }
+
+    /**
+     * Builds a smoothed coarse spatial local-luminance gain map so Easy Mode recovers dark
+     * indoor shadows to match Pixel HDR+ / viewfinder latitude while keeping bright highlights clean.
+     */
+    static float[] buildLocalToneGainGrid(
+            short[] rawShorts, RawArchive.Frame frame, float white, float[] gains,
+            float[] cameraToXyz, boolean hasCct, float[] cct, float exposureScale,
+            float[] crop, float cropWidth, float cropHeight, int orientation,
+            boolean applyLsm, boolean flipH, int outW, int outH, int lgW, int lgH, int brainId) {
+        if (lgW <= 0 || lgH <= 0 || rawShorts == null || frame == null) return null;
+        int width = frame.width, height = frame.height;
+        float[] logY = new float[lgW * lgH];
+        for (int gy = 0; gy < lgH; gy++) {
+            float oy = (gy + 0.5f) * outH / lgH;
+            float dy = Math.min(crop[1] + cropHeight - .5f, crop[1] + (oy + .5f) * cropHeight / outH);
+            int rowOff = gy * lgW;
+            for (int gx = 0; gx < lgW; gx++) {
+                float ox = (gx + 0.5f) * outW / lgW;
+                float effectiveOx = flipH ? (outW - 1 - ox) : ox;
+                float dx = Math.min(crop[0] + cropWidth - .5f, crop[0] + (effectiveOx + .5f) * cropWidth / outW);
+                int sx, sy;
+                switch (orientation) {
+                    case 90: sx = Math.min(width - 1, (int) dy); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dx)); break;
+                    case 180: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dx)); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dy)); break;
+                    case 270: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dy)); sy = Math.min(height - 1, (int) dx); break;
+                    default: sx = Math.min(width - 1, (int) dx); sy = Math.min(height - 1, (int) dy); break;
+                }
+                float r = interpolate(rawShorts, frame, white, sx, sy, 0);
+                float g = interpolate(rawShorts, frame, white, sx, sy, 1);
+                float b = interpolate(rawShorts, frame, white, sx, sy, 2);
+                if (applyLsm) {
+                    float[] lsm = sampleLsm(frame, sx, sy);
+                    float sig = Math.max(r, Math.max(g, b));
+                    float lsmWeight = smoothstep(0.003f, 0.030f, sig);
+                    r *= 1f + (lsm[0] - 1f) * lsmWeight;
+                    g *= 1f + ((lsm[1] + lsm[2]) * 0.5f - 1f) * lsmWeight;
+                    b *= 1f + (lsm[3] - 1f) * lsmWeight;
+                }
+                r *= gains[0] * exposureScale;
+                g *= (gains[1] + gains[2]) * .5f * exposureScale;
+                b *= gains[3] * exposureScale;
+
+                float lr, lg, lb;
+                if (hasCct) {
+                    lr = cct[0] * r + cct[1] * g + cct[2] * b;
+                    lg = cct[3] * r + cct[4] * g + cct[5] * b;
+                    lb = cct[6] * r + cct[7] * g + cct[8] * b;
+                } else {
+                    float x = cameraToXyz[0] * r + cameraToXyz[1] * g + cameraToXyz[2] * b;
+                    float y = cameraToXyz[3] * r + cameraToXyz[4] * g + cameraToXyz[5] * b;
+                    float z = cameraToXyz[6] * r + cameraToXyz[7] * g + cameraToXyz[8] * b;
+                    lr = 3.1339f * x - 1.6169f * y - .4906f * z;
+                    lg = -.9785f * x + 1.9160f * y + .0333f * z;
+                    lb = .0720f * x - .2290f * y + 1.4057f * z;
+                }
+                float luma = Math.max(0f, .2126f * Math.max(0f, lr) + .7152f * Math.max(0f, lg) + .0722f * Math.max(0f, lb));
+                logY[rowOff + gx] = (float) Math.log(luma + 0.005f);
+            }
+        }
+        float[] tmp = new float[logY.length];
+        blur(logY, tmp, lgW, lgH, true);
+        blur(tmp, logY, lgW, lgH, false);
+        blur(logY, tmp, lgW, lgH, true);
+        blur(tmp, logY, lgW, lgH, false);
+
+        float brainRecoveryScale = brainId == BRAIN_ID_BLEACH ? 0.45f
+                : brainId == BRAIN_ID_KODACHROME ? 0.70f : 1.0f;
+        float[] gainGrid = new float[logY.length];
+        for (int i = 0; i < logY.length; i++) {
+            float avgY = Math.max(0f, (float) Math.exp(logY[i]) - 0.005f);
+            if (avgY > 0.42f) {
+                float excess = avgY - 0.42f;
+                float compressed = 0.42f + excess / (1.0f + excess * 1.10f);
+                gainGrid[i] = compressed / avgY;
+            } else {
+                float shadowNeed = smoothstep(0.20f, 0.015f, avgY);
+                gainGrid[i] = 1.0f + 1.15f * brainRecoveryScale * shadowNeed;
+            }
+        }
+        return gainGrid;
+    }
+
+    private static float sampleLocalGain(float[] grid, int lgW, int lgH, int ox, int oy, int outW, int outH) {
+        float gx = clamp((ox + 0.5f) / Math.max(1f, outW) * lgW - 0.5f, 0f, Math.max(0f, lgW - 1f));
+        float gy = clamp((oy + 0.5f) / Math.max(1f, outH) * lgH - 0.5f, 0f, Math.max(0f, lgH - 1f));
+        int x0 = (int) gx, y0 = (int) gy;
+        int x1 = Math.min(lgW - 1, x0 + 1);
+        int y1 = Math.min(lgH - 1, y0 + 1);
+        float tx = gx - x0, ty = gy - y0;
+        float v00 = grid[y0 * lgW + x0];
+        float v10 = grid[y0 * lgW + x1];
+        float v01 = grid[y1 * lgW + x0];
+        float v11 = grid[y1 * lgW + x1];
+        float top = v00 * (1f - tx) + v10 * tx;
+        float bot = v01 * (1f - tx) + v11 * tx;
+        return top * (1f - ty) + bot * ty;
     }
 
     /** A coupled display transform: tonal response, hue, chroma and gamut are shaped together. */
@@ -1070,6 +1219,30 @@ final class RawDeveloper {
             // deepening blue skies for natural cloud separation.
             float luma = .3300f * r + .5900f * g + .0800f * b;
             r = g = b = luma;
+        } else if (brainId == BRAIN_ID_LIKA_FILM) {
+            // Kodak Vision3 500T dye crosstalk: cinema reds and clean tungsten-balanced shadows
+            float fr = 1.07f * r - 0.05f * g - 0.02f * b;
+            float fg = -0.02f * r + 1.01f * g + 0.01f * b;
+            float fb = -0.03f * r + 0.05f * g + 0.98f * b;
+            r = Math.max(0f, fr); g = Math.max(0f, fg); b = Math.max(0f, fb);
+        } else if (brainId == BRAIN_ID_KODACHROME) {
+            // K-14 Color Reversal: punchy crimson reds, clean golds, and deep cobalt blues
+            float fr = 1.12f * r - 0.09f * g - 0.03f * b;
+            float fg = 0.02f * r + 0.95f * g + 0.03f * b;
+            float fb = -0.05f * r + 0.02f * g + 1.03f * b;
+            r = Math.max(0f, fr); g = Math.max(0f, fg); b = Math.max(0f, fb);
+        } else if (brainId == BRAIN_ID_FUJI_ETERNA) {
+            // Fuji Eterna 500T: restrained reds with cool celadon/emerald green-cyan sensitivity
+            float fr = 0.94f * r + 0.05f * g + 0.01f * b;
+            float fg = -0.03f * r + 1.02f * g + 0.01f * b;
+            float fb = -0.02f * r + 0.05f * g + 0.97f * b;
+            r = Math.max(0f, fr); g = Math.max(0f, fg); b = Math.max(0f, fb);
+        } else if (brainId == BRAIN_ID_BLEACH) {
+            // ENR Skip-Bleach silver-retained dye profile
+            float fr = 1.06f * r - 0.05f * g - 0.01f * b;
+            float fg = 0.02f * r + 0.97f * g + 0.01f * b;
+            float fb = 0.05f * g + 0.95f * b;
+            r = Math.max(0f, fr); g = Math.max(0f, fg); b = Math.max(0f, fb);
         }
 
         float oldY = Math.max(.0001f, .2126f * r + .7152f * g + .0722f * b);
@@ -1088,7 +1261,8 @@ final class RawDeveloper {
 
         float shadowWeight = 1f - smoothstep(.02f, .44f, contrasted);
         if (prep.liftedShadows) {
-            contrasted = Math.max(0.012f * smoothstep(0.002f, 0.025f, oldY), contrasted);
+            float lift = 0.018f * smoothstep(0.002f, 0.022f, oldY);
+            contrasted = lift + contrasted * (1.0f - 0.5f * lift);
         }
         contrasted *= 1f - prep.shadowDepth * .22f * shadowWeight;
 
@@ -1110,8 +1284,10 @@ final class RawDeveloper {
         shadowWeight = 1f - smoothstep(.12f, .50f, lightness);
 
         float highlightDesat;
-        if (prep.hlRecId == HL_SUBTRACTIVE) {
-            highlightDesat = 1f - .48f * smoothstep(.60f, 0.98f, lightness);
+        if (brainId == BRAIN_ID_NEUTRAL) {
+            highlightDesat = 1f - .20f * smoothstep(.72f, 1.0f, lightness);
+        } else if (prep.hlRecId == HL_SUBTRACTIVE) {
+            highlightDesat = 1f - .46f * smoothstep(.60f, 0.98f, lightness);
         } else if (prep.hlRecId == HL_HARD) {
             highlightDesat = 1.0f;
         } else {
@@ -1136,11 +1312,12 @@ final class RawDeveloper {
         }
 
         float vibranceBoost = 1.0f;
-        if (prep.applySmartVibrance && brainId != BRAIN_ID_MONO && brainId != BRAIN_ID_BLEACH) {
-            // Boost low to medium chroma tones (everyday subjects: food, clothing, nature, foliage)
-            // Non-linear boost that tapers off for already saturated tones and protects skin
-            float vibranceWeight = (1.0f - skinFactor * 0.85f) * (1.0f - smoothstep(0.12f, 0.35f, rawChroma));
-            vibranceBoost += 0.26f * vibranceWeight;
+        if (prep.applySmartVibrance && brainId != BRAIN_ID_MONO && brainId != BRAIN_ID_BLEACH && brainId != BRAIN_ID_NEUTRAL) {
+            // Boost moderate chroma tones without magnifying low-chroma tungsten wall tints
+            float vibranceWeight = smoothstep(0.015f, 0.065f, rawChroma)
+                    * (1.0f - skinFactor * 0.85f)
+                    * (1.0f - smoothstep(0.12f, 0.35f, rawChroma));
+            vibranceBoost += 0.18f * vibranceWeight;
         }
 
         if (prep.applySkinProtection && skinFactor > 0.05f) {
@@ -1154,7 +1331,7 @@ final class RawDeveloper {
 
         // Suppress color read-noise speckles in deep near-black shadows (e.g. turned-off screens, dark corners)
         float shadowNoiseGate = smoothstep(0.0015f, 0.016f, oldY);
-        float chromaScale = clamp(satBase * vibranceBoost, 0f, 1.8f) * (1f - .13f * highlightWeight) * highlightDesat * shadowNoiseGate;
+        float chromaScale = clamp(satBase * vibranceBoost, 0f, 1.8f) * (1f - .10f * highlightWeight) * highlightDesat * shadowNoiseGate;
         a *= chromaScale;
         bb *= chromaScale;
         float chroma = rawChroma * chromaScale;
@@ -1167,6 +1344,7 @@ final class RawDeveloper {
         }
 
         float warmthGate = smoothstep(0.03f, 0.16f, lightness);
+        float midWarmGate = smoothstep(0.08f, 0.30f, lightness);
         if (brainId == BRAIN_ID_MONO) {
             // Allow subtle warm-selenium / cool-silver paper toning on MONO / SILVER when warmth slider is shifted
             if (Math.abs(prep.look.warmth) > 0.01f) {
@@ -1176,24 +1354,26 @@ final class RawDeveloper {
             }
         } else {
             // Attenuate synthetic film warmth when the pixel is already warm (e.g. tungsten lighting / warm skin)
-            // so we don't crush the blue/green channels in Oklab -> sRGB conversion.
-            float alreadyWarmAtten = 1.0f - 0.72f * smoothstep(0.025f, 0.105f, bb);
+            // and keep film warmth in midtones/highlights so dark shadows don't crush Blue into muddy yellow-green.
+            float alreadyWarmAtten = 1.0f - 0.85f * smoothstep(0.012f, 0.065f, bb);
             float baseWarmth;
             if (brainId == BRAIN_ID_NEUTRAL) {
                 baseWarmth = 0f;
             } else if (brainId == BRAIN_ID_KODACHROME) {
-                baseWarmth = 0.48f * prep.ambientWarmthFactor * alreadyWarmAtten;
+                baseWarmth = 0.28f * prep.ambientWarmthFactor * alreadyWarmAtten;
             } else if (brainId == BRAIN_ID_FUJI_ETERNA) {
-                baseWarmth = 0.20f * prep.ambientWarmthFactor * alreadyWarmAtten;
+                baseWarmth = -0.10f * prep.ambientWarmthFactor;
             } else if (brainId == BRAIN_ID_BLEACH) {
-                baseWarmth = 0.04f;
+                baseWarmth = -0.10f;
             } else {
-                baseWarmth = 0.42f * prep.ambientWarmthFactor * alreadyWarmAtten;
+                baseWarmth = 0.20f * prep.ambientWarmthFactor * alreadyWarmAtten;
             }
 
-            float warmth = clamp(prep.look.warmth + baseWarmth, -1f, 1f) * warmthGate;
-            a += warmth * (.005f + .003f * shadowWeight + .002f * highlightWeight);
-            bb += warmth * (.012f + .005f * shadowWeight + .006f * highlightWeight);
+            float filmWarm = clamp(baseWarmth, -1f, 1f) * midWarmGate;
+            float userWarm = clamp(prep.look.warmth, -1f, 1f) * warmthGate;
+            float warmth = clamp(filmWarm + userWarm, -1f, 1f);
+            a += warmth * (.008f + .003f * highlightWeight);
+            bb += warmth * (.010f + .004f * highlightWeight);
 
             // Illuminant-Adaptive Neutralization in Easy Mode:
             // Neutralizes the yellow-green jaundiced tint under fluorescent lighting
@@ -1204,29 +1384,32 @@ final class RawDeveloper {
 
             // Authentic Film Stock Spectral Split-Toning & Hue Couplers:
             if (brainId == BRAIN_ID_LIKA_FILM) {
-                // Kodak Vision3 500T: subtle tungsten-balanced cool-teal shadow undertow against warm midtones
-                bb -= 0.0035f * shadowWeight * warmthGate;
+                // Kodak Vision3 500T: clean tungsten cool-teal shadow undertow against warm midtones
+                bb -= 0.006f * shadowWeight * warmthGate;
+                a -= 0.002f * shadowWeight * warmthGate;
             } else if (brainId == BRAIN_ID_KODACHROME) {
-                // Kodachrome 64: rich golden-red couplers in midtones and deep cobalt skies in blues
+                // Kodachrome 64: rich crimson-gold couplers in midtones and deep cobalt skies in blues
                 float midWeight = Math.max(0f, 1f - shadowWeight - highlightWeight);
-                a += 0.0035f * midWeight * warmthGate;
+                a += 0.010f * midWeight * midWarmGate;
+                bb += 0.006f * midWeight * midWarmGate;
                 if (bb < -0.01f) {
                     // Deepen cyan-blues slightly toward classic reversal cobalt
-                    a += (-bb) * 0.08f * warmthGate;
+                    a += (-bb) * 0.10f * midWarmGate;
                 }
             } else if (brainId == BRAIN_ID_FUJI_ETERNA) {
                 // Fuji Eterna 500T: signature celadon/cyan shadow split-tone and emerald foliage greens
-                bb -= 0.010f * shadowWeight * warmthGate;
-                a -= 0.005f * shadowWeight * warmthGate;
-                if (a < -0.01f && bb > 0.01f) {
+                bb -= 0.016f * shadowWeight * warmthGate;
+                a -= 0.010f * shadowWeight * warmthGate;
+                if (a < -0.005f && bb > 0.005f) {
                     // Rotate yellow-green foliage slightly toward Fuji celadon/emerald
                     float greenStrength = Math.min(-a, bb);
-                    bb -= greenStrength * 0.16f;
+                    bb -= greenStrength * 0.25f;
+                    a -= greenStrength * 0.08f;
                 }
             } else if (brainId == BRAIN_ID_BLEACH) {
-                // ENR Bleach Bypass: steely cyan-slate shadows and cool metallic undertow
-                bb -= 0.007f * shadowWeight * warmthGate;
-                a -= 0.002f * shadowWeight * warmthGate;
+                // ENR Bleach Bypass: steely cyan-slate shadows and cool metallic highlights
+                bb -= 0.014f * shadowWeight * warmthGate + 0.005f * highlightWeight;
+                a -= 0.004f * shadowWeight * warmthGate;
             }
         }
         lightness = clamp(lightness, 0f, 1f);

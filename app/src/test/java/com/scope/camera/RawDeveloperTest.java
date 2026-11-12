@@ -283,4 +283,104 @@ public class RawDeveloperTest {
         assertEquals("Cinemascope 2.39:1 Matte", restoredCinema.frameBorder);
         org.junit.Assert.assertNull(RawDeveloper.applyFrameBorder(null, restoredCinema, null));
     }
+
+    @Test
+    public void testAllBrainsProduceDistinctColorAndToneInEasyMode() {
+        String[] brains = AppSettings.BRAIN_CHOICES;
+        int[][] results = new int[brains.length][3];
+
+        // Test warm midtone (indoor wall), shadow (dark fabric), and foliage green across all 6 Brains
+        for (int i = 0; i < brains.length; i++) {
+            RawDeveloper.Look look = new RawDeveloper.Look();
+            look.brain = brains[i];
+            look.grain = 0f;
+            look.easyMode = true;
+            results[i][0] = RawDeveloper.renderLook(0.28f, 0.18f, 0.10f, look, 0, 0, 1);
+            results[i][1] = RawDeveloper.renderLook(0.05f, 0.03f, 0.018f, look, 0, 0, 1);
+            results[i][2] = RawDeveloper.renderLook(0.14f, 0.28f, 0.10f, look, 0, 0, 1);
+        }
+
+        // Every pair of Brains must differ substantially across the 3 test swatches
+        for (int i = 0; i < brains.length; i++) {
+            for (int j = i + 1; j < brains.length; j++) {
+                int maxChannelDiff = 0;
+                for (int s = 0; s < 3; s++) {
+                    int c1 = results[i][s];
+                    int c2 = results[j][s];
+                    maxChannelDiff = Math.max(maxChannelDiff, Math.abs(((c1 >> 16) & 0xff) - ((c2 >> 16) & 0xff)));
+                    maxChannelDiff = Math.max(maxChannelDiff, Math.abs(((c1 >> 8) & 0xff) - ((c2 >> 8) & 0xff)));
+                    maxChannelDiff = Math.max(maxChannelDiff, Math.abs((c1 & 0xff) - (c2 & 0xff)));
+                }
+                org.junit.Assert.assertTrue(
+                        "Brains " + brains[i] + " and " + brains[j] + " must produce distinct rendering (maxDiff=" + maxChannelDiff + ")",
+                        maxChannelDiff >= 8);
+            }
+        }
+
+        // Specifically verify FUJI / ETERNA lifts dark shadows compared to KODACHROME / 64 & BLEACH BYPASS
+        int kodaShadowG = (results[1][1] >> 8) & 0xff;
+        int fujiShadowG = (results[2][1] >> 8) & 0xff;
+        int bleachShadowG = (results[3][1] >> 8) & 0xff;
+        org.junit.Assert.assertTrue("FUJI ETERNA shadow (" + fujiShadowG + ") should be lifted above KODACHROME (" + kodaShadowG + ")",
+                fujiShadowG > kodaShadowG + 10);
+        org.junit.Assert.assertTrue("FUJI ETERNA shadow (" + fujiShadowG + ") should be lifted above BLEACH (" + bleachShadowG + ")",
+                fujiShadowG > bleachShadowG + 15);
+    }
+
+    @Test
+    public void testWarmIndoorLightingPreservesBlueChannelAndAvoidsYellowGreenCrush() {
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.brain = AppSettings.BRAIN_LIKA_FILM;
+        look.grain = 0f;
+        look.easyMode = true;
+
+        // Warm beige indoor wall under tungsten light (post-scene-gain linear values)
+        int wall = RawDeveloper.renderLook(0.28f, 0.18f, 0.10f, look, 0, 0, 1);
+        int r = (wall >> 16) & 0xff;
+        int g = (wall >> 8) & 0xff;
+        int b = wall & 0xff;
+
+        org.junit.Assert.assertTrue("Warm indoor wall must retain healthy blue channel (>= 70), got " + b, b >= 70);
+        org.junit.Assert.assertTrue("Warm indoor wall must stay well-exposed (G >= 105), got " + g, g >= 105);
+        org.junit.Assert.assertTrue("Warm indoor wall should have natural R > G > B warmth", r > g && g > b);
+    }
+
+    @Test
+    public void testHdrIndoorSceneExposureGainAndLocalShadowRecovery() {
+        RawArchive.Frame frame = new RawArchive.Frame();
+        frame.width = 48;
+        frame.height = 36;
+        frame.staticWhiteLevel = 1023;
+        frame.postRawSensitivityBoost = 100;
+        frame.blackLevels = new float[]{0f, 0f, 0f, 0f};
+        frame.wbGains = new float[]{1f, 1f, 1f, 1f};
+
+        // Top-right quadrant has bright lamp highlights (0.50); remainder is dark indoor shadows (0.012)
+        short[] samples = new short[frame.width * frame.height];
+        for (int y = 0; y < frame.height; y++) {
+            for (int x = 0; x < frame.width; x++) {
+                boolean lamp = (y < frame.height / 3) && (x > (frame.width * 2) / 3);
+                samples[y * frame.width + x] = (short) (lamp ? 512 : 12);
+            }
+        }
+
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.easyMode = true;
+        float[] identity = new float[]{1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f};
+        float[] crop = new float[]{0f, 0f, 48f, 36f};
+
+        float sceneGain = RawDeveloper.computeSceneExposureGain(
+                samples, frame, 1023f, frame.wbGains, identity, crop, 0, false, look);
+        org.junit.Assert.assertTrue("Indoor HDR scene with bright lamp must still boost dark room (>= 2.4x), got " + sceneGain,
+                sceneGain >= 2.4f);
+
+        float[] localGrid = RawDeveloper.buildLocalToneGainGrid(
+                samples, frame, 1023f, frame.wbGains, identity, true, identity, sceneGain,
+                crop, 48f, 36f, 0, false, false, 48, 36, 12, 9, 0);
+        assertNotNull(localGrid);
+        float shadowGain = localGrid[7 * 12 + 2]; // bottom-left dark region
+        float lampGain = localGrid[1 * 12 + 10];  // top-right bright lamp
+        org.junit.Assert.assertTrue("Shadow region should get local lift (> 1.15x), got " + shadowGain, shadowGain > 1.15f);
+        org.junit.Assert.assertTrue("Bright highlight region should be compressed (< 1.0x), got " + lampGain, lampGain < 1.0f);
+    }
 }

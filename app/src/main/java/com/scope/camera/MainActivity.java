@@ -4216,10 +4216,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     RawDeveloper.Look look = RawDeveloper.Look.fromJson(rData);
                     if (look != null) {
                         applyCustomRecipeToPreferences(look);
-                        AppSettings.prefs(this).edit().putString(AppSettings.BRAIN, picked).apply();
+                        String resolvedBrain = (look.brain != null && !look.brain.startsWith("[RECIPE "))
+                                ? look.brain : AppSettings.BRAIN_LIKA_FILM;
+                        AppSettings.prefs(this).edit().putString(AppSettings.BRAIN, resolvedBrain).apply();
                         showMessage("APPLIED " + picked);
                         updateBrainButton();
                         updateQuickButtons();
+                        updateContextualStatus();
+                        populateQuickControls();
                         return;
                     }
                 }
@@ -4280,6 +4284,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             AppSettings.prefs(this).edit().putString(AppSettings.FILM_PUSH_PULL, look.filmPushPull).apply();
         }
         AppSettings.prefs(this).edit()
+                .putInt(AppSettings.EXPOSURE, Math.max(-20, Math.min(20, Math.round(look.exposureEv * 10f))))
                 .putInt(AppSettings.WARMTH, Math.round(look.warmth * 50f + 50f))
                 .putInt(AppSettings.CONTRAST, Math.round(look.contrast * 100f))
                 .putInt(AppSettings.PIVOT, Math.round(look.pivot * 100f))
@@ -4522,8 +4527,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         ColorMatrix cm = new ColorMatrix();
         if (brain.startsWith("MONO") || brain.contains("SILVER")) {
             // Panchromatic silver halide luma (Tri-X 400): elevated red/orange response + silver contrast
-            float scale = 1.12f;
-            float translate = (-0.42f * scale + 0.42f) * 255f - 4f;
+            float scale = 1.14f;
+            float translate = (-0.42f * scale + 0.42f) * 255f - 2f;
             float rW = 0.33f * scale, gW = 0.59f * scale, bW = 0.08f * scale;
             cm.set(new float[] {
                 rW, gW, bW, 0, translate,
@@ -4532,47 +4537,49 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 0,  0,  0,  1, 0
             });
         } else if (brain.contains("KODACHROME")) {
+            cm.setSaturation(1.18f);
             ColorMatrix warmReversal = new ColorMatrix(new float[] {
-                1.14f,  0.02f, -0.04f, 0, -6f,
-               -0.02f,  1.05f, -0.01f, 0, -8f,
-               -0.05f, -0.02f,  0.90f, 0, -12f,
+                1.14f, -0.04f, -0.02f, 0, -4f,
+                0.01f,  1.04f,  0.01f, 0, -6f,
+               -0.04f,  0.01f,  1.06f, 0, -10f,
                 0,      0,      0,     1,   0f
             });
             cm.postConcat(warmReversal);
         } else if (brain.contains("FUJI") || brain.contains("ETERNA")) {
+            cm.setSaturation(0.84f);
             ColorMatrix fuji = new ColorMatrix(new float[] {
-                0.93f, -0.01f,  0.02f, 0, -2f,
-                0.00f,  0.97f,  0.02f, 0,  2f,
-                0.02f,  0.02f,  1.02f, 0,  5f,
+                0.88f,  0.03f,  0.01f, 0,  8f,
+               -0.02f,  0.92f,  0.02f, 0, 12f,
+               -0.01f,  0.04f,  0.91f, 0, 14f,
                 0,      0,      0,     1,  0f
             });
             cm.postConcat(fuji);
         } else if (brain.contains("BLEACH")) {
-            cm.setSaturation(0.32f);
+            cm.setSaturation(0.30f);
             ColorMatrix contrast = new ColorMatrix();
-            float scale = 1.24f;
-            float translate = (-0.42f * scale + 0.42f) * 255f - 10f;
+            float scale = 1.28f;
+            float translate = (-0.42f * scale + 0.42f) * 255f - 8f;
             contrast.set(new float[] {
-                scale, 0, 0, 0, translate - 2f,
+                scale, 0, 0, 0, translate - 3f,
                 0, scale, 0, 0, translate,
-                0, 0, scale, 0, translate + 3f,
+                0, 0, scale, 0, translate + 5f,
                 0, 0, 0, 1, 0
             });
             cm.postConcat(contrast);
         } else if (!AppSettings.BRAIN_NEUTRAL_RAW.equals(brain)) {
-            // LIKA / FILM: Kodak Vision3 500T filmic density with warm midtones and natural shadow gradation
+            // LIKA / FILM: Kodak Vision3 500T filmic density with warm midtones and clean shadow gradation
             ColorMatrix film = new ColorMatrix(new float[] {
-                1.04f,  0.02f, -0.02f, 0, -4f,
-               -0.01f,  0.99f,  0.01f, 0, -5f,
-                0.01f,  0.02f,  0.93f, 0, -7f,
+                1.04f, -0.02f, -0.01f, 0,  2f,
+               -0.01f,  1.01f,  0.01f, 0,  0f,
+               -0.02f,  0.03f,  0.98f, 0, -2f,
                 0,      0,      0,     1,  0f
             });
             cm.postConcat(film);
         }
 
         // Incorporate user developer adjustments (exposureEv, contrast, shadows, warmth, saturation, manual Kelvin WB, push/pull)
-        float evDelta = look.exposureEv - (AppSettings.DEFAULT_EXPOSURE / 10f);
-        float evScale = (float) Math.pow(2.0, evDelta * 0.45f);
+        float evDelta = look.exposureEv;
+        float evScale = (float) Math.pow(2.0, evDelta * 0.65f);
         float contrastRatio = look.contrast / (AppSettings.DEFAULT_CONTRAST / 100f);
         float shadowDelta = look.shadows - (AppSettings.DEFAULT_SHADOWS / 100f);
         float warmthDelta = look.warmth;
@@ -4603,12 +4610,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 || Math.abs(shadowDelta) > 0.01f || Math.abs(warmthDelta) > 0.01f) {
             float combinedScale = evScale * (0.35f + 0.65f * contrastRatio);
             float pivotOffset = (1.0f - contrastRatio) * 95f - shadowDelta * 28f;
-            float rScale = combinedScale * (1.0f + warmthDelta * 0.08f);
+            float rScale = combinedScale * (1.0f + warmthDelta * 0.07f);
             float gScale = combinedScale * (1.0f + warmthDelta * 0.01f);
-            float bScale = combinedScale * (1.0f - warmthDelta * 0.10f);
-            float rOff = pivotOffset + warmthDelta * 8f;
+            float bScale = combinedScale * (1.0f - warmthDelta * 0.09f);
+            float rOff = pivotOffset + warmthDelta * 7f;
             float gOff = pivotOffset + warmthDelta * 2f;
-            float bOff = pivotOffset - warmthDelta * 10f;
+            float bOff = pivotOffset - warmthDelta * 9f;
             ColorMatrix gradingAdjust = new ColorMatrix(new float[] {
                 rScale, 0,      0,      0, rOff,
                 0,      gScale, 0,      0, gOff,

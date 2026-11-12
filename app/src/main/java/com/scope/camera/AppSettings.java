@@ -229,7 +229,7 @@ final class AppSettings {
         return 4f / 3f;
     }
 
-    static final int DEFAULT_EXPOSURE = -2;
+    static final int DEFAULT_EXPOSURE = 0;
     static final int DEFAULT_WARMTH = 50;
     static final int DEFAULT_CONTRAST = 112;
     static final int DEFAULT_PIVOT = 20;
@@ -263,7 +263,21 @@ final class AppSettings {
 
     static String brain(Context context) {
         String brain = get(context, BRAIN, "LIKA / FILM");
-        return "SCOPE / CORE".equals(brain) ? "LIKA / FILM" : brain;
+        if ("SCOPE / CORE".equals(brain)) return BRAIN_LIKA_FILM;
+        if (brain != null && brain.startsWith("[RECIPE ") && brain.length() > 8) {
+            int slot = Character.getNumericValue(brain.charAt(8));
+            if (slot >= 1 && slot <= 3) {
+                String rData = getCustomRecipeData(context, slot);
+                if (rData != null) {
+                    RawDeveloper.Look look = RawDeveloper.Look.fromJson(rData);
+                    if (look != null && look.brain != null && !look.brain.startsWith("[RECIPE ")) {
+                        return look.brain;
+                    }
+                }
+            }
+            return BRAIN_LIKA_FILM;
+        }
+        return brain;
     }
 
     static void migrateBranding(Context context) {
