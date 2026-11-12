@@ -1162,8 +1162,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         root.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
 
         header = row();
-        flashButton = pill("ϟ  OFF", false);
-        header.addView(flashButton, new LinearLayout.LayoutParams(dp(56), dp(32)));
+        flashButton = pill("OFF", false);
+        flashButton.setMinimumWidth(dp(64));
+        flashButton.setPadding(dp(10), 0, dp(11), 0);
+        setPillIcon(flashButton, R.drawable.ic_flash, 16, 0xffe9ede6, 4, "OFF");
+        header.addView(flashButton, new LinearLayout.LayoutParams(-2, dp(32)));
         flashButton.setOnClickListener(v -> { hapticClick(v); cycleFlash(); });
         aspectButton = pill("4:3", false);
         LinearLayout.LayoutParams aspectLp = new LinearLayout.LayoutParams(-2, dp(32));
@@ -1171,8 +1174,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         header.addView(aspectButton, aspectLp);
         aspectButton.setOnClickListener(v -> { hapticClick(v); chooseAspectRatio(); });
 
-        timerButton = pill("◷", false);
-        LinearLayout.LayoutParams timerLp = new LinearLayout.LayoutParams(dp(38), dp(32));
+        timerButton = pill("", false);
+        timerButton.setMinimumWidth(dp(40));
+        timerButton.setPadding(dp(10), 0, dp(10), 0);
+        setPillIcon(timerButton, R.drawable.ic_timer, 19, 0xffe9ede6, 4, "");
+        LinearLayout.LayoutParams timerLp = new LinearLayout.LayoutParams(-2, dp(32));
         timerLp.leftMargin = dp(6);
         header.addView(timerButton, timerLp);
         timerButton.setOnClickListener(v -> { hapticClick(v); cycleTimer(); });
@@ -1202,15 +1208,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         header.addView(topSpacer, new LinearLayout.LayoutParams(0, 1, 1));
         brainButton = pill("FILM  ⌄", true);
         brainButton.setOnClickListener(v -> { hapticClick(v); chooseBrain(); });
-        // The look selector sits by the shutter deck, leaving the privacy lane clear.
-        settingsButton = pill("⚙", false);
-        settingsButton.setTextSize(17f);
-        settingsButton.setPadding(0, 0, 0, 0);
-        settingsButton.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(dp(34), dp(32));
-        settingsLp.leftMargin = dp(6);
-        settingsLp.rightMargin = 0;
-        header.addView(settingsButton, settingsLp);
+
+        settingsButton = new ImageView(this);
+        settingsButton.setImageResource(R.drawable.ic_settings);
+        settingsButton.setColorFilter(0xffe9ede6);
+        settingsButton.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        settingsButton.setPadding(dp(9), dp(9), dp(9), dp(9));
+        settingsButton.setBackground(round(0xd8191e1e, 20, 0x556e7872, dp(1)));
+        settingsButton.setContentDescription("Open camera settings");
+        settingsButton.setClickable(true);
+        settingsButton.setFocusable(true);
         settingsButton.setOnClickListener(v -> { hapticClick(v); startActivity(new Intent(this, SettingsActivity.class)); });
 
         viewfinderSpacer = new LinearLayout(this);
@@ -1519,11 +1526,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         shutterFrame.setFocusable(true);
         shutterFrame.setOnTouchListener(new ShutterTouchListener());
 
-        TextView flip = pill("⟳", false);
-        flip.setTextSize(20f);
+        ImageView flip = new ImageView(this);
+        flip.setImageResource(R.drawable.ic_switch_camera);
+        flip.setColorFilter(0xffe9ede6);
+        flip.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        flip.setPadding(dp(10), dp(10), dp(10), dp(10));
         flip.setBackground(round(0xff202626, 14, 0x777d8580, dp(1)));
-        flip.setGravity(Gravity.CENTER);
         flip.setContentDescription("Switch front and rear camera");
+        flip.setClickable(true);
+        flip.setFocusable(true);
         flip.setOnClickListener(v -> { hapticClick(v); toggleCameraFacing(); });
         flipButton = flip;
 
@@ -1590,6 +1601,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         if (flipButton != null) {
             if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
+            flipButton.setPadding(dp(10), dp(10), dp(10), dp(10));
             FrameLayout.LayoutParams flipLp = new FrameLayout.LayoutParams(dp(52), dp(52), Gravity.END | Gravity.CENTER_VERTICAL);
             flipLp.rightMargin = dp(24) + safeInsets.right;
             shootRow.addView(flipButton, flipLp);
@@ -1707,12 +1719,21 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 bottomDeck.addView(shootRow, shootLp);
             }
 
+            FrameLayout bottomModeBar = new FrameLayout(this);
+            bottomModeBar.setClipChildren(false);
+            bottomModeBar.setClipToPadding(false);
+            if (settingsButton != null) {
+                if (settingsButton.getParent() != null) ((ViewGroup) settingsButton.getParent()).removeView(settingsButton);
+                FrameLayout.LayoutParams settingsLp = new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.START | Gravity.CENTER_VERTICAL);
+                settingsLp.leftMargin = dp(24) + safeInsets.left;
+                bottomModeBar.addView(settingsButton, settingsLp);
+            }
             if (modeRow != null) {
                 if (modeRow.getParent() != null) ((ViewGroup) modeRow.getParent()).removeView(modeRow);
-                LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(-2, -2);
-                modeRowLp.gravity = Gravity.CENTER_HORIZONTAL;
-                bottomDeck.addView(modeRow, modeRowLp);
+                FrameLayout.LayoutParams modeRowLp = new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER);
+                bottomModeBar.addView(modeRow, modeRowLp);
             }
+            bottomDeck.addView(bottomModeBar, new LinearLayout.LayoutParams(-1, -2));
 
             FrameLayout.LayoutParams deckLp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
             overlay.addView(bottomDeck, deckLp);
@@ -1808,6 +1829,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             if (flipButton != null) {
                 if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
+                flipButton.setPadding(dp(9), dp(9), dp(9), dp(9));
                 LinearLayout.LayoutParams flipLp = new LinearLayout.LayoutParams(dp(44), dp(44));
                 flipLp.leftMargin = dp(8);
                 gripBottomRow.addView(flipButton, flipLp);
@@ -1825,6 +1847,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             FrameLayout.LayoutParams wideBodyLp = new FrameLayout.LayoutParams(-1, -1);
             wideBodyLp.topMargin = topSafe + dp(38);
             overlay.addView(wideBody, wideBodyLp);
+
+            if (settingsButton != null) {
+                if (settingsButton.getParent() != null) ((ViewGroup) settingsButton.getParent()).removeView(settingsButton);
+                FrameLayout.LayoutParams settingsLp = new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.BOTTOM | Gravity.START);
+                settingsLp.leftMargin = dp(16) + safeInsets.left;
+                settingsLp.bottomMargin = dp(16) + safeInsets.bottom;
+                overlay.addView(settingsButton, settingsLp);
+            }
         }
     }
 
@@ -3190,14 +3220,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         if (timerButton != null) {
             String timer = AppSettings.get(this, AppSettings.TIMER, "Off");
-            timerButton.setText(timer.startsWith("3") ? "◷ 3s" : timer.startsWith("10") ? "◷ 10s" : "◷");
+            String timerLabel = timer.startsWith("3") ? "3s" : timer.startsWith("10") ? "10s" : "";
+            int timerColor = timerLabel.isEmpty() ? 0xffe9ede6 : ACCENT;
+            setPillIcon(timerButton, R.drawable.ic_timer, 19, timerColor, 4, timerLabel);
             timerButton.setContentDescription("Self timer: " + timer);
         }
         if (flashButton != null) {
             boolean flashAvailable = flashSupported || isFrontCamera();
             String flash = AppSettings.get(this, AppSettings.FLASH, "Off");
-            flashButton.setText("ϟ  " + (!flashAvailable ? "OFF" : flash.toUpperCase(Locale.US)));
-            flashButton.setTextColor("Off".equals(flash) || !flashAvailable ? 0xffe9ede6 : ACCENT);
+            String flashLabel = !flashAvailable ? "OFF" : flash.toUpperCase(Locale.US);
+            int flashColor = "Off".equals(flash) || !flashAvailable ? 0xffe9ede6 : ACCENT;
+            setPillIcon(flashButton, R.drawable.ic_flash, 16, flashColor, 4, flashLabel);
             flashButton.setAlpha(flashAvailable ? 1f : .72f);
         }
     }
