@@ -25,9 +25,10 @@ final class LiveLookPreview {
     private String currentKey;
     private TextureView currentView;
     private boolean closed;
+    private boolean gpuUnavailable;
 
     boolean apply(TextureView view, RawDeveloper.Look look, RawArchive.Frame frame, Runnable fallback) {
-        if (Build.VERSION.SDK_INT < 33 || closed) return false;
+        if (Build.VERSION.SDK_INT < 33 || closed || gpuUnavailable) return false;
         RawDeveloper.PreparedLook prepared = RawDeveloper.prepareDisplayLook(look, frame);
         String key = look.toJson() + ":" + Math.round(prepared.ambientWarmthFactor * 20f)
                 + ":" + prepared.fluorescentSpike;
@@ -50,6 +51,7 @@ final class LiveLookPreview {
                         Api33.apply(view, table);
                     } catch (RuntimeException error) {
                         Log.w("LikaLens", "Shared look preview unavailable on this GPU", error);
+                        gpuUnavailable = true;
                         clear();
                         fallback.run();
                     }
