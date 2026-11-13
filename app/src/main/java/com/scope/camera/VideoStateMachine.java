@@ -8,6 +8,7 @@ final class VideoStateMachine {
     enum State {
         IDLE,
         PERMISSION_PENDING,
+        PERMISSION_READY,
         PREPARING,
         RECORDING,
         PAUSED,
@@ -24,6 +25,8 @@ final class VideoStateMachine {
 
     private volatile State state = State.IDLE;
     private volatile Trigger trigger = Trigger.NONE;
+    private long takeId;
+    private State resumeAfterSwitch = State.RECORDING;
 
     synchronized State getState() {
         return state;
@@ -88,6 +91,7 @@ final class VideoStateMachine {
         if (state != State.IDLE || trigger != Trigger.NONE) {
             return false;
         }
+        ++takeId;
         trigger = quickTakeTrigger;
         return true;
     }
@@ -95,6 +99,7 @@ final class VideoStateMachine {
     synchronized void clearQuickTakeTrigger(Trigger quickTakeTrigger) {
         if (trigger == quickTakeTrigger) {
             trigger = Trigger.NONE;
+            if (state == State.PERMISSION_PENDING || state == State.PERMISSION_READY) { state = State.IDLE; ++takeId; }
         }
     }
 
@@ -102,6 +107,7 @@ final class VideoStateMachine {
         if (state != State.IDLE || trigger != Trigger.NONE) {
             return false;
         }
+        ++takeId;
         trigger = Trigger.STANDARD_VIDEO;
         return true;
     }
@@ -112,15 +118,23 @@ final class VideoStateMachine {
         return true;
     }
 
+    synchronized boolean markPermissionReady() {
+        if(state!=State.PERMISSION_PENDING) return false;
+        state=State.PERMISSION_READY;return true;
+    }
+    boolean isPermissionReady() { return state==State.PERMISSION_READY; }
+
     synchronized void cancelPermissionPending() {
-        if (state == State.PERMISSION_PENDING) {
+        if (state == State.PERMISSION_PENDING || state == State.PERMISSION_READY) {
+            ++takeId;
             state = State.IDLE;
             trigger = Trigger.NONE;
         }
     }
 
     synchronized boolean beginPreparing() {
-        if (state != State.IDLE && state != State.PERMISSION_PENDING) {
+        if (trigger == Trigger.NONE) return false;
+        if (state != State.IDLE && state != State.PERMISSION_READY) {
             return false;
         }
         state = State.PREPARING;
@@ -131,7 +145,7 @@ final class VideoStateMachine {
         if (state != State.PREPARING && state != State.SWITCHING_CAMERA) {
             return false;
         }
-        state = State.RECORDING;
+        state = state == State.SWITCHING_CAMERA ? resumeAfterSwitch : State.RECORDING;
         return true;
     }
 
@@ -151,6 +165,7 @@ final class VideoStateMachine {
         if (state != State.RECORDING && state != State.PAUSED) {
             return false;
         }
+        resumeAfterSwitch = state;
         state = State.SWITCHING_CAMERA;
         return true;
     }
@@ -159,7 +174,12 @@ final class VideoStateMachine {
         state = State.STOPPING_STITCHING;
     }
 
+    synchronized long takeId() { return takeId; }
+    synchronized boolean owns(long id) { return id == takeId; }
+
     synchronized void reset() {
+        ++takeId;
+        resumeAfterSwitch = State.RECORDING;
         state = State.IDLE;
         trigger = Trigger.NONE;
     }
