@@ -196,4 +196,18 @@ public final class CameraExposureHelper {
 
         return makeRect(left, top, right, bottom);
     }
+    /** Automatic long integration is only for stable, genuinely dim scenes, never manual exposure. */
+    static boolean shouldUseNightIntegration(String setting, boolean stationary, boolean manual,
+                                             long exposureNs, int iso) {
+        if (manual || setting == null || setting.startsWith("Off")) return false;
+        if (setting.startsWith("Always")) return true;
+        return stationary && iso >= 800 && exposureNs >= 25_000_000L;
+    }
+
+    static long matchedNightExposure(long meteredNs, int meteredIso, int targetIso, long maxNs) {
+        if (meteredNs <= 0 || meteredIso <= 0 || targetIso <= 0) return 0L;
+        double equivalent = meteredNs * (meteredIso / (double) targetIso);
+        return (long) Math.min(Math.min(maxNs, 2_000_000_000L), equivalent);
+    }
+
 }

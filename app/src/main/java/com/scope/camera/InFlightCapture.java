@@ -12,23 +12,31 @@ final class InFlightCapture<I, R> {
     static final class CompletedPair<I, R> {
         final I image;
         final R result;
+        final CaptureRecipe recipe;
 
-        CompletedPair(I image, R result) {
+        CompletedPair(I image, R result, CaptureRecipe recipe) {
             this.image = image;
             this.result = result;
+            this.recipe = recipe;
         }
     }
 
     final long captureId;
     final boolean expectsMetadata;
+    final CaptureRecipe recipe;
     private I image;
     private R result;
     private boolean cancelled;
     private boolean completed;
 
     InFlightCapture(long captureId, boolean expectsMetadata) {
+        this(captureId, expectsMetadata, null);
+    }
+
+    InFlightCapture(long captureId, boolean expectsMetadata, CaptureRecipe recipe) {
         this.captureId = captureId;
         this.expectsMetadata = expectsMetadata;
+        this.recipe = recipe;
     }
 
     synchronized boolean isActive() {
@@ -68,7 +76,7 @@ final class InFlightCapture<I, R> {
         if (!isActive() || this.image == null) return null;
         if (expectsMetadata && this.result == null) return null;
         this.completed = true;
-        CompletedPair<I, R> pair = new CompletedPair<>(this.image, this.result);
+        CompletedPair<I, R> pair = new CompletedPair<>(this.image, this.result, this.recipe);
         this.image = null;
         this.result = null;
         return pair;

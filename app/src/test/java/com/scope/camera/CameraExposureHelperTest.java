@@ -6,6 +6,7 @@ import android.util.Range;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -127,4 +128,15 @@ public class CameraExposureHelperTest {
         assertTrue("Rear sensorY should be in lower third", rearCenterY < 1000);
         assertTrue("Front sensorY should be in upper third", frontCenterY > 2000);
     }
+    @Test public void automaticNightIntegrationRequiresDimLightAndPreservesMeteredBrightness() {
+        assertFalse(CameraExposureHelper.shouldUseNightIntegration("Auto",true,false,10_000_000L,100));
+        assertFalse(CameraExposureHelper.shouldUseNightIntegration("Auto",false,false,33_000_000L,1600));
+        assertFalse(CameraExposureHelper.shouldUseNightIntegration("Auto",true,true,33_000_000L,1600));
+        assertTrue(CameraExposureHelper.shouldUseNightIntegration("Auto",true,false,33_000_000L,1600));
+        assertTrue(CameraExposureHelper.shouldUseNightIntegration("Always",false,false,10_000_000L,100));
+        assertFalse(CameraExposureHelper.shouldUseNightIntegration("Off",true,false,33_000_000L,1600));
+        assertEquals(132_000_000L,CameraExposureHelper.matchedNightExposure(33_000_000L,800,200,2_000_000_000L));
+        assertEquals(2_000_000_000L,CameraExposureHelper.matchedNightExposure(500_000_000L,3200,200,2_000_000_000L));
+    }
+
 }

@@ -30,7 +30,7 @@ import java.util.zip.InflaterInputStream;
 final class RawArchive {
     private static final String TAG = "RawArchive";
     private static final int MAGIC = 0x53524157; // SRAW
-    private static final int VERSION = 4;
+    private static final int VERSION = 5;
 
     static final class Frame {
         int width;
@@ -44,6 +44,9 @@ final class RawArchive {
         int sensitivityIso;
         int postRawSensitivityBoost = 100;
         int aeExposureCompensation;
+        float aeCompensationEv;
+        float previewMidTarget;
+        boolean manualExposure;
         float[] blackLevels = new float[4];
         float[] wbGains = new float[]{1f, 1f, 1f, 1f};
         float[] neutralPoint = new float[3];
@@ -128,6 +131,10 @@ final class RawArchive {
         frame.exposureTimeNs = exposure; frame.sensitivityIso = isoValue == null ? 0 : isoValue;
         frame.postRawSensitivityBoost = (postRawBoost == null || postRawBoost <= 0) ? 100 : postRawBoost;
         frame.aeExposureCompensation = compensation == null ? 0 : compensation;
+        Rational aeStep = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
+        frame.aeCompensationEv = aeStep == null ? 0f : frame.aeExposureCompensation * aeStep.floatValue();
+        Integer aeMode = result == null ? null : result.get(CaptureResult.CONTROL_AE_MODE);
+        frame.manualExposure = aeMode != null && aeMode == CaptureResult.CONTROL_AE_MODE_OFF;
         frame.blackLevels = new float[4];
         for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) {
             float black = staticBlack == null ? 64f : staticBlack.getOffsetForIndex(x, y);
@@ -159,8 +166,12 @@ final class RawArchive {
     }
 
     static void writeArchive(Context context, Frame frame) throws IOException {
+        if (frame == null) return;
+        writeArchive(file(context, frame.key), frame);
+    }
+
+    static void writeArchive(File target, Frame frame) throws IOException {
         if (frame == null || frame.captureBuffer == null) return;
-        File target = file(context, frame.key);
         File folder = target.getParentFile();
         if (folder == null || (!folder.exists() && !folder.mkdirs())) throw new IOException("Could not create RAW archive folder");
         File temporary = new File(folder, target.getName() + ".tmp");
@@ -198,6 +209,9 @@ final class RawArchive {
                 out.writeInt(0);
             }
             out.writeInt(frame.postRawSensitivityBoost > 0 ? frame.postRawSensitivityBoost : 100);
+            out.writeFloat(frame.aeCompensationEv);
+            out.writeBoolean(frame.manualExposure);
+            out.writeFloat(frame.previewMidTarget);
 
             for (int y = 0; y < height; y++) {
                 int row = y * rowStride;
@@ -223,7 +237,10 @@ final class RawArchive {
     }
 
     static Frame read(Context context, String key) throws IOException {
-        File source = file(context, key);
+        return read(file(context, key));
+    }
+
+    static Frame read(File source) throws IOException {
         try (DataInputStream in = new DataInputStream(new BufferedInputStream(new InflaterInputStream(new FileInputStream(source))))) {
             int magic = in.readInt();
             int version = in.readInt();
@@ -260,6 +277,11 @@ final class RawArchive {
             if (version >= 3) {
                 int boost = in.readInt();
                 frame.postRawSensitivityBoost = boost > 0 ? boost : 100;
+            }
+            if (version >= 5) {
+                frame.aeCompensationEv = in.readFloat();
+                frame.manualExposure = in.readBoolean();
+                frame.previewMidTarget = in.readFloat();
             }
             long bytes = (long) frame.width * frame.height * 2L;
             if (frame.width <= 0 || frame.height <= 0 || bytes > Integer.MAX_VALUE
