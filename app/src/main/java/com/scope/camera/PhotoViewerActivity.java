@@ -73,6 +73,8 @@ public class PhotoViewerActivity extends Activity {
     private Bitmap developedBitmap;
     private CompareState compareState = CompareState.OFF;
     private int compareGeneration = 0;
+    private final JobState imageJob = new JobState();
+    private boolean viewerActive;
     private TextView compareButton;
     private TextView compareBadge;
     private TextView zoomHud;
@@ -300,7 +302,7 @@ public class PhotoViewerActivity extends Activity {
         final int generation = compareGeneration;
         worker.execute(() -> {
             try {
-                if (generation != compareGeneration || !keyForLoad.equals(archiveKey) || isFinishing()) return;
+                if (generation != compareGeneration || !keyForLoad.equals(archiveKey) || isFinishing() || isDestroyed()) return;
                 RawArchive.Frame frame = RawArchive.read(PhotoViewerActivity.this, keyForLoad);
                 RawDeveloper.Look neutral = buildNeutralRawLook(frame);
                 int targetDim = Math.max(1200, Math.max(targetW, targetH));
@@ -315,7 +317,7 @@ public class PhotoViewerActivity extends Activity {
                 }
                 final Bitmap finalRaw = rawBmp;
                 mainHandler.post(() -> {
-                    if (generation != compareGeneration || !keyForLoad.equals(archiveKey) || isFinishing()) {
+                    if (generation != compareGeneration || !keyForLoad.equals(archiveKey) || isFinishing() || isDestroyed()) {
                         if (finalRaw != null && !finalRaw.isRecycled()) finalRaw.recycle();
                         return;
                     }
@@ -716,63 +718,66 @@ public class PhotoViewerActivity extends Activity {
     }
 
     private void loadPhoto() {
-        if (photoUri == null || photoView == null) return;
-        if (titleView != null) {
-            titleView.setText(photoName == null ? "LIKA LENS" : photoName);
-        }
-        boolean hasRaw = archiveKey != null && RawArchive.exists(this, archiveKey);
-        if (compareButton != null) compareButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
-        if (editButton != null) editButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
-
-        boolean isGif = photoName != null && photoName.toLowerCase(Locale.US).endsWith(".gif");
-        if (isGif && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        if(photoUri==null || photoView==null || imageJob.isClosed()) return;
+        final long ticket=imageJob.begin(JobState.Phase.LOADING);
+        final Uri uri=photoUri;
+        final String name=photoName, key=archiveKey;
+        final boolean hasRaw=key!=null && RawArchive.exists(this,key);
+        final int maxW=getResources().getDisplayMetrics().widthPixels*2;
+        final int maxH=getResources().getDisplayMetrics().heightPixels*2;
+        if(titleView!=null) titleView.setText(name==null?"LIKA LENS":name);
+        if(compareButton!=null) compareButton.setVisibility(hasRaw?View.VISIBLE:View.GONE);
+        if(editButton!=null) editButton.setVisibility(hasRaw?View.VISIBLE:View.GONE);
+        stopAnimatedPhoto();
+        worker.execute(() -> {
+            if(!imageJob.accepts(ticket)) return;
             try {
-                android.graphics.ImageDecoder.Source source = android.graphics.ImageDecoder.createSource(getContentResolver(), photoUri);
-                android.graphics.drawable.Drawable drawable = android.graphics.ImageDecoder.decodeDrawable(source);
-                photoView.setImageDrawable(drawable);
-                if (drawable instanceof android.graphics.drawable.AnimatedImageDrawable) {
-                    ((android.graphics.drawable.AnimatedImageDrawable) drawable).start();
+                if(name!=null && name.toLowerCase(Locale.US).endsWith(".gif") && Build.VERSION.SDK_INT>=28) {
+                    android.graphics.drawable.Drawable drawable=android.graphics.ImageDecoder.decodeDrawable(
+                            android.graphics.ImageDecoder.createSource(getContentResolver(),uri));
+                    mainHandler.post(() -> {
+                        if(!imageJob.move(ticket,JobState.Phase.READY) || isDestroyed()) return;
+                        photoView.setImageDrawable(drawable);
+                        if(viewerActive && drawable instanceof android.graphics.drawable.AnimatedImageDrawable)
+                            ((android.graphics.drawable.AnimatedImageDrawable)drawable).start();
+                        photoView.post(this::fitImageToView);
+                    });
+                    return;
                 }
-                photoView.post(this::fitImageToView);
-                return;
-            } catch (Exception e) {
-                Log.w(TAG, "ImageDecoder failed, falling back to BitmapFactory", e);
+                BitmapFactory.Options options=new BitmapFactory.Options();options.inJustDecodeBounds=true;
+                try(InputStream in=getContentResolver().openInputStream(uri)) { BitmapFactory.decodeStream(in,null,options); }
+                int sample=1;
+                while(options.outWidth/sample>maxW || options.outHeight/sample>maxH) sample*=2;
+                options.inJustDecodeBounds=false;options.inSampleSize=sample;options.inPreferredConfig=Bitmap.Config.ARGB_8888;
+                final Bitmap bitmap;
+                try(InputStream in=getContentResolver().openInputStream(uri)) { bitmap=in==null?null:BitmapFactory.decodeStream(in,null,options); }
+                if(bitmap==null) throw new IllegalStateException("Could not decode photo");
+                mainHandler.post(() -> {
+                    if(!imageJob.move(ticket,JobState.Phase.READY) || isDestroyed() || isFinishing()) { bitmap.recycle();return; }
+                    Bitmap old=developedBitmap;developedBitmap=bitmap;
+                    imageWidth=bitmap.getWidth();imageHeight=bitmap.getHeight();currentScale=1f;
+                    photoView.setImageBitmap(bitmap);photoView.post(this::fitImageToView);
+                    if(old!=null && old!=bitmap && !old.isRecycled()) old.recycle();
+                    if(infoVisible) populateInfoData();
+                    if(hasRaw && rawOriginalBitmap==null) preloadRawOriginal(key,imageWidth,imageHeight);
+                });
+            } catch(Exception error) {
+                mainHandler.post(() -> { if(imageJob.move(ticket,JobState.Phase.FAILED) && !isDestroyed())
+                    Toast.makeText(this,"Could not open this frame.",Toast.LENGTH_SHORT).show(); });
             }
-        }
-
-        try (InputStream boundsStream = getContentResolver().openInputStream(photoUri)) {
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeStream(boundsStream, null, bounds);
-            int sample = 1;
-            int maxWidth = getResources().getDisplayMetrics().widthPixels * 2;
-            int maxHeight = getResources().getDisplayMetrics().heightPixels * 2;
-            while (bounds.outWidth / sample > maxWidth || bounds.outHeight / sample > maxHeight) sample *= 2;
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = sample;
-            options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-            try (InputStream stream = getContentResolver().openInputStream(photoUri)) {
-                Bitmap bitmap = stream == null ? null : BitmapFactory.decodeStream(stream, null, options);
-                if (bitmap != null) {
-                    if (developedBitmap != null && developedBitmap != bitmap && !developedBitmap.isRecycled()) {
-                        developedBitmap.recycle();
-                    }
-                    developedBitmap = bitmap;
-                    imageWidth = bitmap.getWidth();
-                    imageHeight = bitmap.getHeight();
-                    currentScale = 1.0f;
-                    photoView.setImageBitmap(bitmap);
-                    photoView.post(this::fitImageToView);
-                    if (infoVisible) populateInfoData();
-                    if (hasRaw && rawOriginalBitmap == null) {
-                        preloadRawOriginal(archiveKey, imageWidth, imageHeight);
-                    }
-                }
-            }
-        } catch (Exception ignored) {
-            Toast.makeText(this, "Could not open this frame.", Toast.LENGTH_SHORT).show();
-        }
+        });
     }
+
+    private void stopAnimatedPhoto() {
+        if(Build.VERSION.SDK_INT>=28 && photoView!=null && photoView.getDrawable() instanceof android.graphics.drawable.AnimatedImageDrawable)
+            ((android.graphics.drawable.AnimatedImageDrawable)photoView.getDrawable()).stop();
+    }
+    @Override protected void onResume() {
+        super.onResume();viewerActive=true;
+        if(Build.VERSION.SDK_INT>=28 && photoView!=null && photoView.getDrawable() instanceof android.graphics.drawable.AnimatedImageDrawable)
+            ((android.graphics.drawable.AnimatedImageDrawable)photoView.getDrawable()).start();
+    }
+    @Override protected void onPause() { viewerActive=false;stopAnimatedPhoto();super.onPause(); }
 
     private TextView text(String value, float size, int color, boolean bold) {
         TextView view = new TextView(this);
@@ -803,6 +808,8 @@ public class PhotoViewerActivity extends Activity {
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 
     @Override protected void onDestroy() {
+        imageJob.close();compareGeneration++;
+        stopAnimatedPhoto();
         mainHandler.removeCallbacksAndMessages(null);
         worker.shutdown();
         if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {

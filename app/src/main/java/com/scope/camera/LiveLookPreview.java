@@ -24,15 +24,19 @@ final class LiveLookPreview {
     private Runnable pending;
     private String currentKey;
     private TextureView currentView;
-    private boolean closed;
-    private boolean gpuUnavailable;
+    enum Phase { DISABLED, BUILDING, ACTIVE, FALLBACK, DISPOSED }
+    private Phase phase=Phase.DISABLED;
+    private enum Capability { UNKNOWN, SUPPORTED, UNSUPPORTED }
+    private Capability capability=Capability.UNKNOWN;
 
     boolean apply(TextureView view, RawDeveloper.Look look, RawArchive.Frame frame, Runnable fallback) {
-        if (Build.VERSION.SDK_INT < 33 || closed || gpuUnavailable) return false;
+        if(phase==Phase.DISPOSED) return false;
+        if(Build.VERSION.SDK_INT<33 || capability==Capability.UNSUPPORTED) { phase=Phase.FALLBACK;return false; }
         RawDeveloper.PreparedLook prepared = RawDeveloper.prepareDisplayLook(look, frame);
         String key = look.toJson() + ":" + Math.round(prepared.ambientWarmthFactor * 20f)
                 + ":" + prepared.fluorescentSpike;
         if (view == currentView && key.equals(currentKey)) return true;
+        phase=Phase.BUILDING;
         int ticket = generation.incrementAndGet();
         if (pending != null) main.removeCallbacks(pending);
         // Keep the previous effect visible while its replacement is built to avoid slider flicker.
@@ -46,19 +50,20 @@ final class LiveLookPreview {
             try {
                 PreviewLookLut table = PreviewLookLut.build(snapshot, frame);
                 main.post(() -> {
-                    if (generation.get() != ticket || closed) return;
+                    if (generation.get() != ticket || phase==Phase.DISPOSED) return;
                     try {
                         Api33.apply(view, table);
+                        capability=Capability.SUPPORTED;phase=Phase.ACTIVE;
                     } catch (RuntimeException error) {
                         Log.w("LikaLens", "Shared look preview unavailable on this GPU", error);
-                        gpuUnavailable = true;
-                        clear();
+                        capability=Capability.UNSUPPORTED;
+                        clear();phase=Phase.FALLBACK;
                         fallback.run();
                     }
                 });
             } catch (RuntimeException error) {
                 Log.w("LikaLens", "Could not build shared look preview", error);
-                main.post(() -> { if (generation.get() == ticket) { clear(); fallback.run(); } });
+                main.post(() -> { if (generation.get() == ticket) { clear(); phase=Phase.FALLBACK;fallback.run(); } });
             }
         });
         main.postDelayed(pending, 60L);
@@ -67,6 +72,7 @@ final class LiveLookPreview {
 
     void clear() {
         generation.incrementAndGet();
+        if(phase!=Phase.DISPOSED) phase=Phase.DISABLED;
         if (pending != null) main.removeCallbacks(pending);
         pending = null;
         if (currentView != null && Build.VERSION.SDK_INT >= 33) Api33.clear(currentView);
@@ -75,8 +81,8 @@ final class LiveLookPreview {
     }
 
     void close() {
-        closed = true;
         clear();
+        phase=Phase.DISPOSED;
         worker.shutdown();
     }
 

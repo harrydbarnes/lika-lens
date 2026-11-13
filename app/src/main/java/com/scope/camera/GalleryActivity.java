@@ -35,13 +35,14 @@ public class GalleryActivity extends Activity {
     private LinearLayout filters;
     private String activeFilter = "All";
     private TextView selectionActionButton;
-    private boolean exporting;
+    private final JobState exportJob = new JobState();
     private final android.os.Handler mainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private ScrollView scroll;
     private int savedScrollY;
 
     private final List<Uri> selectedUris = new ArrayList<>();
-    private boolean isSelectionMode = false;
+    private enum SelectionMode { BROWSING, SELECTING }
+    private SelectionMode selectionMode = SelectionMode.BROWSING;
     private LinearLayout selectionBar;
     private TextView selectionCountView;
 
@@ -64,7 +65,7 @@ public class GalleryActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (isSelectionMode) {
+        if ((selectionMode == SelectionMode.SELECTING)) {
             exitSelectionMode();
             return;
         }
@@ -94,7 +95,7 @@ public class GalleryActivity extends Activity {
         header.addView(back, new LinearLayout.LayoutParams(dp(34), dp(40)));
         back.setOnClickListener(v -> {
             hapticClick(v);
-            if (isSelectionMode) exitSelectionMode();
+            if ((selectionMode == SelectionMode.SELECTING)) exitSelectionMode();
             else finishAfterTransition();
         });
 
@@ -110,7 +111,7 @@ public class GalleryActivity extends Activity {
         TextView selectButton = pill("Select", false);
         selectButton.setPadding(dp(14), 0, dp(14), 0);
         header.addView(selectButton, new LinearLayout.LayoutParams(-2, dp(44)));
-        selectButton.setOnClickListener(v -> { hapticClick(v); if (isSelectionMode) exitSelectionMode(); else enterSelectionMode(); });
+        selectButton.setOnClickListener(v -> { hapticClick(v); if ((selectionMode == SelectionMode.SELECTING)) exitSelectionMode(); else enterSelectionMode(); });
 
         TextView importButton = pill("Import", true);
         importButton.setPadding(dp(14), 0, dp(14), 0);
@@ -129,7 +130,7 @@ public class GalleryActivity extends Activity {
         scroll.setVerticalScrollBarEnabled(false);
         list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(dp(14), dp(3), dp(14), dp(isSelectionMode ? 110 : 25));
+        list.setPadding(dp(14), dp(3), dp(14), dp((selectionMode == SelectionMode.SELECTING) ? 110 : 25));
         scroll.addView(list);
         page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         root.addView(page, new FrameLayout.LayoutParams(-1, -1));
@@ -178,7 +179,7 @@ public class GalleryActivity extends Activity {
     private void loadPhotos() {
         if (list == null) return;
         list.removeAllViews();
-        list.setPadding(list.getPaddingLeft(), dp(3), list.getPaddingRight(), dp(isSelectionMode ? 110 : 25));
+        list.setPadding(list.getPaddingLeft(), dp(3), list.getPaddingRight(), dp((selectionMode == SelectionMode.SELECTING) ? 110 : 25));
         List<PhotoRepository.Photo> allPhotos = PhotoRepository.all(this);
         List<PhotoRepository.Photo> photos = new ArrayList<>();
         for (PhotoRepository.Photo photo : allPhotos) {
@@ -249,7 +250,7 @@ public class GalleryActivity extends Activity {
 
     private void addPhotoTile(LinearLayout row, PhotoRepository.Photo photo) {
         FrameLayout tile = new FrameLayout(this);
-        boolean isSelected = isSelectionMode && selectedUris.contains(photo.uri);
+        boolean isSelected = (selectionMode == SelectionMode.SELECTING) && selectedUris.contains(photo.uri);
         tile.setBackground(round(0xff202626, 9, isSelected ? 0xffd7b574 : 0xff293031, isSelected ? dp(2) : dp(1)));
         tile.setClipToOutline(true);
 
@@ -269,7 +270,7 @@ public class GalleryActivity extends Activity {
             tile.addView(gifBadge, gLp);
         }
 
-        if (isSelectionMode && isSelected) {
+        if ((selectionMode == SelectionMode.SELECTING) && isSelected) {
             int seqNum = selectedUris.indexOf(photo.uri) + 1;
             TextView numBadge = text(String.valueOf(seqNum), 8, 0xff0b0d0e, true);
             numBadge.setBackground(round(0xffd7b574, 8, 0xffd7b574, 0));
@@ -285,7 +286,7 @@ public class GalleryActivity extends Activity {
 
         tile.setOnClickListener(v -> {
             hapticClick(v);
-            if (isSelectionMode) {
+            if ((selectionMode == SelectionMode.SELECTING)) {
                 if (selectedUris.contains(photo.uri)) {
                     selectedUris.remove(photo.uri);
                 } else {
@@ -300,8 +301,8 @@ public class GalleryActivity extends Activity {
 
         tile.setOnLongClickListener(v -> {
             hapticClick(v);
-            if (!isSelectionMode) {
-                isSelectionMode = true;
+            if (!(selectionMode == SelectionMode.SELECTING)) {
+                selectionMode = SelectionMode.SELECTING;
                 selectedUris.add(photo.uri);
                 updateSelectionBar();
                 loadPhotos();
@@ -312,7 +313,7 @@ public class GalleryActivity extends Activity {
     }
 
     private void handleGifButtonClick() {
-        if (isSelectionMode && selectedUris.size() >= 2) {
+        if ((selectionMode == SelectionMode.SELECTING) && selectedUris.size() >= 2) {
             launchGifStudioWithSelection();
             return;
         }
@@ -324,7 +325,7 @@ public class GalleryActivity extends Activity {
     }
 
     private void enterSelectionMode() {
-        isSelectionMode = true;
+        selectionMode = SelectionMode.SELECTING;
         selectedUris.clear();
         updateSelectionBar();
         loadPhotos();
@@ -332,7 +333,7 @@ public class GalleryActivity extends Activity {
     }
 
     private void exitSelectionMode() {
-        isSelectionMode = false;
+        selectionMode = SelectionMode.BROWSING;
         selectedUris.clear();
         updateSelectionBar();
         loadPhotos();
@@ -341,13 +342,15 @@ public class GalleryActivity extends Activity {
     private void updateSelectionBar() {
         if (selectionBar == null) return;
         if (selectionActionButton != null) {
-            selectionActionButton.setEnabled(!selectedUris.isEmpty() && !exporting);
+            selectionActionButton.setEnabled(!selectedUris.isEmpty() && !exportJob.isBusy());
             selectionActionButton.setAlpha(selectionActionButton.isEnabled() ? 1f : 0.45f);
         }
-        if (isSelectionMode && !selectedUris.isEmpty()) {
+        if(exportJob.isBusy()) {
+            selectionBar.setVisibility(View.VISIBLE);selectionCountView.setText("SAVING COPIES…");
+        } else if ((selectionMode == SelectionMode.SELECTING) && !selectedUris.isEmpty()) {
             selectionBar.setVisibility(View.VISIBLE);
             selectionCountView.setText(String.format(Locale.US, "%d selected", selectedUris.size()));
-        } else if (isSelectionMode) {
+        } else if ((selectionMode == SelectionMode.SELECTING)) {
             selectionBar.setVisibility(View.VISIBLE);
             selectionCountView.setText("SELECT PHOTOS");
         } else {
@@ -462,10 +465,15 @@ public class GalleryActivity extends Activity {
             Toast.makeText(this, "No photos to generate proof sheet", Toast.LENGTH_SHORT).show();
             return;
         }
+        final long proofTicket=exportJob.tryBegin(JobState.Phase.SAVING);
+        if(proofTicket==0) return;
+        updateSelectionBar();
         Toast.makeText(this, "Developing 35mm Darkroom Proof Sheet…", Toast.LENGTH_SHORT).show();
         ContactSheetGenerator.generate(this, photos, new ContactSheetGenerator.Callback() {
             @Override
             public void onCompleted(Uri savedUri, String fileName) {
+                if(!exportJob.move(proofTicket,JobState.Phase.READY) || isDestroyed() || isFinishing()) return;
+                updateSelectionBar();
                 Toast.makeText(GalleryActivity.this, "Proof sheet saved to Pictures/Lika Lens", Toast.LENGTH_LONG).show();
                 loadPhotos();
                 Intent view = new Intent(GalleryActivity.this, PhotoViewerActivity.class);
@@ -477,6 +485,8 @@ public class GalleryActivity extends Activity {
 
             @Override
             public void onError(String message) {
+                if(!exportJob.move(proofTicket,JobState.Phase.FAILED) || isDestroyed() || isFinishing()) return;
+                updateSelectionBar();
                 Toast.makeText(GalleryActivity.this, message, Toast.LENGTH_SHORT).show();
             }
         });
@@ -535,7 +545,7 @@ public class GalleryActivity extends Activity {
     }
 
     private void showSelectionActions() {
-        if (selectedUris.isEmpty() || exporting) return;
+        if (selectedUris.isEmpty() || exportJob.isBusy()) return;
         new AlertDialog.Builder(this).setTitle(selectedUris.size() + " photos selected")
                 .setItems(new String[]{"Share", "Apply copied look…", "Create GIF…", "Proof sheet…", "Video to GIF…", "Delete selected…"}, (d, which) -> {
                     if (which == 0) shareSelection();
@@ -568,29 +578,36 @@ public class GalleryActivity extends Activity {
     }
 
     private void applyCopiedLook(List<PhotoRepository.Photo> photos, RawDeveloper.Look look) {
-        exporting = true;
+        final long exportTicket = exportJob.tryBegin(JobState.Phase.SAVING);
+        if(exportTicket==0) return;
+        final List<PhotoRepository.Photo> snapshot = new ArrayList<>(photos);
+        final RawDeveloper.Look recipe = look.copy();
         updateSelectionBar();
         selectionCountView.setText("SAVING COPIES…");
         android.content.Context context = getApplicationContext();
         new Thread(() -> {
             int saved = 0;
-            for (PhotoRepository.Photo photo : photos) {
+            for (PhotoRepository.Photo photo : snapshot) {
                 try {
                     String key = PhotoRepository.archiveKey(photo.name);
-                    PhotoCopyExporter.export(context, key, RawArchive.read(context, key), look.copy());
+                    PhotoCopyExporter.export(context, key, RawArchive.read(context, key), recipe.copy());
                     saved++;
                 } catch (Exception e) { android.util.Log.e("GalleryActivity", "Could not export selected photo", e); }
             }
             final int completed = saved;
             mainHandler.post(() -> {
-                exporting = false;
-                if (isFinishing() || isDestroyed()) return;
+                if(!exportJob.move(exportTicket,JobState.Phase.READY) || isFinishing() || isDestroyed()) return;
                 exitSelectionMode();
-                Toast.makeText(this, "Saved " + completed + " of " + photos.size() + " copies. Originals unchanged.", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Saved " + completed + " of " + snapshot.size() + " copies. Originals unchanged.", Toast.LENGTH_LONG).show();
             });
         }, "LibraryLookExport").start();
     }
 
+
+    @Override protected void onDestroy() {
+        exportJob.close(); mainHandler.removeCallbacksAndMessages(null);
+        super.onDestroy();
+    }
 
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 }
