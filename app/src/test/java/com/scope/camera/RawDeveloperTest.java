@@ -374,8 +374,8 @@ public class RawDeveloperTest {
 
         float sceneGain = RawDeveloper.computeSceneExposureGain(
                 samples, frame, 1023f, frame.wbGains, identity, crop, 0, false, look);
-        org.junit.Assert.assertTrue("Indoor HDR scene with bright lamp must still boost dark room (>= 2.4x), got " + sceneGain,
-                sceneGain >= 2.4f);
+        org.junit.Assert.assertTrue("Indoor recovery should lift real shadow signal without exceeding 3x, got " + sceneGain,
+                sceneGain > 1f && sceneGain <= 3f);
 
         float[] localGrid = RawDeveloper.buildLocalToneGainGrid(
                 samples, frame, 1023f, frame.wbGains, identity, true, identity, sceneGain,
@@ -383,7 +383,78 @@ public class RawDeveloperTest {
         assertNotNull(localGrid);
         float shadowGain = localGrid[7 * 12 + 2]; // bottom-left dark region
         float lampGain = localGrid[1 * 12 + 10];  // top-right bright lamp
-        org.junit.Assert.assertTrue("Shadow region should get local lift (> 1.15x), got " + shadowGain, shadowGain > 1.15f);
-        org.junit.Assert.assertTrue("Bright highlight region should be compressed (< 1.0x), got " + lampGain, lampGain < 1.0f);
+        org.junit.Assert.assertTrue("Shadow region should get restrained local lift, got " + shadowGain,
+                shadowGain > 1f && shadowGain <= 1.65f);
+        org.junit.Assert.assertTrue("Bright region must not receive shadow amplification, got " + lampGain, lampGain <= 1.0f);
     }
+    @Test public void recoveryRespectsIsoManualExposureAndDeliberateUnderexposure() {
+        RawArchive.Frame frame = new RawArchive.Frame();
+        frame.width = 32; frame.height = 24;
+        frame.blackLevels = new float[]{0f,0f,0f,0f};
+        frame.wbGains = new float[]{1f,1f,1f,1f};
+        frame.colorCorrectionTransform = new float[]{1,0,0,0,1,0,0,0,1};
+        short[] samples = new short[32*24];
+        java.util.Arrays.fill(samples, (short) 40);
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        float[] identity = frame.colorCorrectionTransform;
+        float[] crop = {0,0,32,24};
+        frame.sensitivityIso = 100;
+        float lowIso = RawDeveloper.computeSceneExposureGain(samples,frame,1023,frame.wbGains,identity,crop,0,false,look);
+        frame.sensitivityIso = 3200;
+        float highIso = RawDeveloper.computeSceneExposureGain(samples,frame,1023,frame.wbGains,identity,crop,0,false,look);
+        org.junit.Assert.assertTrue(lowIso > highIso);
+        org.junit.Assert.assertTrue(highIso < 2.1f);
+        frame.sensitivityIso = 100;
+        frame.aeCompensationEv = -2f;
+        float darkIntent = RawDeveloper.computeSceneExposureGain(samples,frame,1023,frame.wbGains,identity,crop,0,false,look);
+        org.junit.Assert.assertTrue(darkIntent < lowIso);
+        frame.manualExposure = true;
+        assertEquals(1f, RawDeveloper.computeSceneExposureGain(samples,frame,1023,frame.wbGains,identity,crop,0,false,look),.001f);
+        frame.manualExposure = false;
+        java.util.Arrays.fill(samples, (short) 1);
+        assertEquals(1f, RawDeveloper.computeSceneExposureGain(samples,frame,1023,frame.wbGains,identity,crop,0,false,look),.001f);
+    }
+
+    @Test public void previewReferenceDoesNotApplyCaptureCompensationTwice() {
+        int[] preview = new int[32*24];
+        java.util.Arrays.fill(preview, 0xff404040);
+        float target = RawDeveloper.previewMidTarget(preview,32,24);
+        org.junit.Assert.assertTrue(target > .045f && target < .06f);
+        RawArchive.Frame frame = new RawArchive.Frame();
+        frame.width=32; frame.height=24; frame.previewMidTarget=target;
+        frame.blackLevels = new float[]{0,0,0,0};
+        frame.colorCorrectionTransform = new float[]{1,0,0,0,1,0,0,0,1};
+        short[] samples = new short[32*24];
+        java.util.Arrays.fill(samples, (short) 40);
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        float[] crop = {0,0,32,24};
+        float normal = RawDeveloper.computeSceneExposureGain(samples,frame,1023,frame.wbGains,frame.colorCorrectionTransform,crop,0,false,look);
+        frame.aeCompensationEv = -2f;
+        assertEquals(normal, RawDeveloper.computeSceneExposureGain(samples,frame,1023,frame.wbGains,frame.colorCorrectionTransform,crop,0,false,look),.0001f);
+    }
+
+    @Test public void grainIsNeutralDeterministicAndScalesWithOutputSize() {
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.grain=1f;
+        RawDeveloper.PreparedLook prepared = RawDeveloper.prepareDisplayLook(look);
+        int[] small = new int[80*60], large = new int[160*120];
+        java.util.Arrays.fill(small,0xff808080);
+        java.util.Arrays.fill(large,0xff808080);
+        RawDeveloper.applyFilmGrain(small,80,60,prepared,17);
+        RawDeveloper.applyFilmGrain(large,160,120,prepared,17);
+        boolean changed=false;
+        for (int y=0;y<60;y++) for (int x=0;x<80;x++) {
+            int c=small[y*80+x];
+            if(c != 0xff808080) changed=true;
+            assertEquals(c,large[(y*2)*160+x*2]);
+            assertEquals((c>>16)&255,c&255);
+            assertEquals((c>>8)&255,c&255);
+        }
+        org.junit.Assert.assertTrue(changed);
+        look.grain=0;
+        int[] disabled={0xff123456};
+        RawDeveloper.applyFilmGrain(disabled,1,1,RawDeveloper.prepareDisplayLook(look),17);
+        assertEquals(0xff123456,disabled[0]);
+    }
+
 }

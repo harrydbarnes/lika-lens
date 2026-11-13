@@ -250,9 +250,14 @@ final class RawDeveloper {
         final boolean uniformGrain;
         final LutManager.Lut3D lut;
         final float lutIntensity;
+        final float exposureScale;
+        final float displayWbShift;
 
         PreparedLook(Look look, RawArchive.Frame frame, LutManager.Lut3D lut) {
             this.look = look != null ? look : new Look();
+            this.exposureScale = (float) Math.pow(2.0, this.look.exposureEv);
+            this.displayWbShift = this.look.whiteBalanceKelvin <= 0 ? 1f
+                    : (float) Math.sqrt(clamp(this.look.whiteBalanceKelvin / 5600f, .55f, 1.45f));
             String brain = this.look.brain == null ? "LIKA / FILM" : this.look.brain;
             if (brain.startsWith("MONO")) {
                 this.brainId = BRAIN_ID_MONO;
@@ -403,10 +408,14 @@ final class RawDeveloper {
             if (this.look.whiteBalanceKelvin > 0 && this.look.whiteBalanceKelvin < 4000) {
                 ambWarmth = clamp(0.5f + 0.5f * (this.look.whiteBalanceKelvin - 2800f) / 1200f, 0.35f, 1.0f);
             } else if (frame != null && frame.wbGains != null && frame.wbGains.length >= 4) {
+                // Low red / high blue AWB gains indicate warm illumination. Do not add a second
+                // full tungsten tint on top of a scene that has already been white balanced.
+                float redBlue = frame.wbGains[0] / Math.max(.01f, frame.wbGains[3]);
+                ambWarmth = .35f + .65f * smoothstep(.5f, 1.1f, redBlue);
                 float greenGain = (frame.wbGains[1] + frame.wbGains[2]) * .5f;
                 if (greenGain > 1.35f * frame.wbGains[0] && greenGain > 1.35f * frame.wbGains[3]) {
                     fluo = true;
-                    ambWarmth = this.look.easyMode ? 0.50f : 0.65f;
+                    ambWarmth = Math.min(ambWarmth, this.look.easyMode ? 0.50f : 0.65f);
                 }
             }
             this.ambientWarmthFactor = ambWarmth;
@@ -488,9 +497,9 @@ final class RawDeveloper {
         final float[] cct = frame.colorCorrectionTransform;
         final boolean flipH = look.flipHorizontal;
         final float vigAmount = look.vignette;
-        final int lgW = look.easyMode ? Math.min(48, Math.max(4, outW)) : 0;
-        final int lgH = look.easyMode ? Math.min(36, Math.max(4, outH)) : 0;
-        final float[] localGainGrid = look.easyMode
+        final int lgW = look.easyMode && !frame.manualExposure ? Math.min(48, Math.max(4, outW)) : 0;
+        final int lgH = look.easyMode && !frame.manualExposure ? Math.min(36, Math.max(4, outH)) : 0;
+        final float[] localGainGrid = lgW > 0
                 ? buildLocalToneGainGrid(rawShorts, frame, white, gains, cameraToXyz, hasCct, cct,
                         exposureScale, crop, cropWidth, cropHeight, orientation, applyLsm, flipH,
                         outW, outH, lgW, lgH, prep.brainId)
@@ -565,12 +574,14 @@ final class RawDeveloper {
 
         float effectiveChromaNr = look.chromaNr;
         if (look.easyMode && frame.sensitivityIso >= 400 && effectiveChromaNr < 0.25f) {
-            effectiveChromaNr = Math.max(effectiveChromaNr, 0.25f);
+            effectiveChromaNr = Math.max(effectiveChromaNr,
+                    .25f + .15f * (1f - shadowRecoveryConfidence(frame.sensitivityIso)));
         }
         if (effectiveChromaNr > 0f) applyChromaDenoise(allPixels, outW, outH, effectiveChromaNr);
         if (look.halation > 0f) applyHalation(allPixels, outW, outH, look.halation, aspect);
         if (look.sharpening > 0f) applySharpen(allPixels, outW, outH, Math.min(.14f, look.sharpening * .14f));
 
+        applyFilmGrain(allPixels, outW, outH, prep, seed);
         Bitmap bitmap = createColorSpaceAwareBitmap(allPixels, outW, outH, look);
         if (look.frameBorder != null && !look.frameBorder.startsWith("None")) {
             bitmap = applyFrameBorder(bitmap, look, frame);
@@ -659,9 +670,14 @@ final class RawDeveloper {
     }
 
     public static Bitmap developJpeg(byte[] bytes, Look look) {
+        return developJpeg(bytes, look, 0);
+    }
+
+    public static Bitmap developJpeg(byte[] bytes, Look look, int fallbackOrientation) {
         if (bytes == null || bytes.length == 0) return null;
         Bitmap source = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
         if (source == null) return null;
+        source = CaptureOrientation.orientJpeg(source, bytes, fallbackOrientation);
         int maxSide = 3000;
         float scale = Math.min(1f, maxSide / (float) Math.max(source.getWidth(), source.getHeight()));
         Bitmap bitmap = scale < 1 ? Bitmap.createScaledBitmap(source,
@@ -678,9 +694,6 @@ final class RawDeveloper {
         if (bitmap == null) return null;
         if (look == null) look = new Look();
 
-        float exposureScale = (float) Math.pow(2.0, look.exposureEv);
-        float wbRatio = look.whiteBalanceKelvin <= 0 ? 1f : clamp(look.whiteBalanceKelvin / 5600f, .55f, 1.45f);
-        float wbShift = (float) Math.sqrt(wbRatio);
         int w = bitmap.getWidth(), h = bitmap.getHeight();
         int[] pixels = new int[w * h];
         bitmap.getPixels(pixels, 0, w, 0, 0, w, h);
@@ -688,9 +701,7 @@ final class RawDeveloper {
             bitmap.recycle();
         }
 
-        LutManager.Lut3D lut = (look.lutName != null && !look.lutName.equals("None") && look.lutIntensity > 0.001f)
-                ? LutManager.get(look.lutName) : null;
-        final PreparedLook prep = new PreparedLook(look, null, lut);
+        final PreparedLook prep = prepareDisplayLook(look);
         final boolean flipH = look.flipHorizontal;
         final float vigAmount = look.vignette;
         final int[] srcPixels = flipH ? pixels.clone() : pixels;
@@ -702,10 +713,8 @@ final class RawDeveloper {
             for (int x = 0; x < w; x++) {
                 int srcX = flipH ? (w - 1 - x) : x;
                 int c = srcPixels[rowOffset + srcX];
-                float r = srgbToLinear(((c >> 16) & 0xFF) / 255f) * exposureScale * wbShift;
-                float g = srgbToLinear(((c >> 8) & 0xFF) / 255f) * exposureScale;
-                float b = srgbToLinear((c & 0xFF) / 255f) * exposureScale / wbShift;
-                int rendered = renderPreparedLook(r, g, b, prep, x, y, 0x53434f50);
+                int rendered = renderDisplayRgb(((c >> 16) & 0xff) / 255f,
+                        ((c >> 8) & 0xff) / 255f, (c & 0xff) / 255f, prep);
                 if (vigAmount > 0f) {
                     float nx = w <= 1 ? 0f : x / (float) (w - 1) * 2f - 1f;
                     float falloff = Math.max(.72f, 1f - vigAmount * .18f * (nx * nx + nySq));
@@ -721,11 +730,80 @@ final class RawDeveloper {
         if (look.halation > 0f) applyHalation(pixels, w, h, look.halation, look.aspectRatio);
         if (look.sharpening > 0f) applySharpen(pixels, w, h, Math.min(.14f, look.sharpening * .14f));
 
+        applyFilmGrain(pixels, w, h, prep, 0x53434f50);
         Bitmap result = createColorSpaceAwareBitmap(pixels, w, h, look);
         if (look.frameBorder != null && !look.frameBorder.startsWith("None")) {
             result = applyFrameBorder(result, look, null);
         }
         return result;
+    }
+
+    static PreparedLook prepareDisplayLook(Look look) {
+        return prepareDisplayLook(look, null);
+    }
+
+    static PreparedLook prepareDisplayLook(Look look, RawArchive.Frame frame) {
+        LutManager.Lut3D lut = look.lutName != null && !"None".equalsIgnoreCase(look.lutName)
+                && look.lutIntensity > .001f ? LutManager.get(look.lutName) : null;
+        return new PreparedLook(look, frame, lut);
+    }
+
+    static int renderDisplayRgb(float r, float g, float b, PreparedLook prep) {
+        return renderPreparedLook(srgbToLinear(r) * prep.exposureScale * prep.displayWbShift,
+                srgbToLinear(g) * prep.exposureScale,
+                srgbToLinear(b) * prep.exposureScale / prep.displayWbShift, prep, 0, 0, 0);
+    }
+
+    static float previewMidTarget(int[] pixels, int w, int h) {
+        if (pixels == null || w <= 0 || h <= 0 || pixels.length < w * h) return 0f;
+        float[] values = new float[w * h * 3];
+        int count = 0;
+        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+            int c = pixels[y * w + x];
+            float luma = .2126f * srgbToLinear(((c >> 16) & 255) / 255f)
+                    + .7152f * srgbToLinear(((c >> 8) & 255) / 255f)
+                    + .0722f * srgbToLinear((c & 255) / 255f);
+            if (luma >= .92f) continue;
+            int weight = x >= w / 4 && x < w * 3 / 4 && y >= h / 4 && y < h * 3 / 4 ? 3 : 1;
+            for (int i = 0; i < weight; i++) values[count++] = luma;
+        }
+        if (count < 16) return 0f;
+        java.util.Arrays.sort(values, 0, count);
+        return .65f * values[(int) ((count - 1) * .50f)] + .35f * values[(int) ((count - 1) * .70f)];
+    }
+
+    static float shadowRecoveryConfidence(int iso) {
+        if (iso <= 400) return 1f;
+        return clamp((float) Math.sqrt(400f / iso), .25f, 1f);
+    }
+
+    /** Grain is an output texture, added after sensor-noise cleanup and sharpening. */
+    static void applyFilmGrain(int[] pixels, int w, int h, PreparedLook prep, int seed) {
+        if (prep.grainAmount <= 0f) return;
+        // Anchor grain to a 3000-pixel reference long edge, independent of output resolution.
+        float coordinateScale = 3000f / Math.max(w, h);
+        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+            int c = pixels[y * w + x];
+            int r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
+            float lightness = (.2126f * r + .7152f * g + .0722f * b) / 255f;
+            float fine = grainNoise(x * coordinateScale / prep.grainScale,
+                    y * coordinateScale / prep.grainScale, seed);
+            float coarse = grainNoise(x * coordinateScale / prep.coarseDiv,
+                    y * coordinateScale / prep.coarseDiv, seed ^ 0x51ed270b);
+            float texture = (fine * prep.fineWeight + coarse * prep.coarseWeight)
+                    * prep.grainAmount * 9f * smoothstep(.025f, .11f, lightness);
+            if (!prep.uniformGrain) texture *= .38f + .62f * 4f * lightness * (1f - lightness);
+            pixels[y * w + x] = 0xff000000 | (clamp255(r + texture) << 16)
+                    | (clamp255(g + texture) << 8) | clamp255(b + texture);
+        }
+    }
+
+    private static float grainNoise(float x, float y, int seed) {
+        int ix = (int) Math.floor(x), iy = (int) Math.floor(y);
+        float dx = x - ix, dy = y - iy;
+        float top = hashNoise(ix, iy, seed) * (1f - dx) + hashNoise(ix + 1, iy, seed) * dx;
+        float bottom = hashNoise(ix, iy + 1, seed) * (1f - dx) + hashNoise(ix + 1, iy + 1, seed) * dx;
+        return top * (1f - dy) + bottom * dy;
     }
 
     private static float[] sampleLsm(RawArchive.Frame frame, int sx, int sy) {
@@ -1015,7 +1093,7 @@ final class RawDeveloper {
         float boostScale = frame.postRawSensitivityBoost > 100
                 ? clamp(frame.postRawSensitivityBoost / 100f, 1.0f, 8.0f)
                 : 1.0f;
-        if (look == null || !look.easyMode || rawShorts == null || frame.width <= 0 || frame.height <= 0) {
+        if (look == null || !look.easyMode || frame.manualExposure || rawShorts == null || frame.width <= 0 || frame.height <= 0) {
             return boostScale;
         }
         int width = frame.width, height = frame.height;
@@ -1088,11 +1166,17 @@ final class RawDeveloper {
         float p70 = midLuma[(int) ((midCount - 1) * 0.70f)];
         float p96 = allLuma[(int) ((allCount - 1) * 0.96f)];
         float midMetric = 0.65f * p50 + 0.35f * p70;
-        float targetMid = 0.22f;
+        // Respect capture compensation and noise instead of lifting every dark scene to daylight.
+        // The pre-look preview already includes Camera2 exposure compensation, so do not add it twice.
+        float targetMid = frame.previewMidTarget > 0f ? clamp(frame.previewMidTarget, .01f, .50f)
+                : 0.18f * (float) Math.pow(2.0, clamp(frame.aeCompensationEv, -3f, 2f));
         if (midMetric >= targetMid) return boostScale;
-        float neededGain = (float) Math.pow(targetMid / Math.max(0.004f, midMetric), 0.92);
-        float maxHighlightGain = p96 > 0.40f ? (4.40f / Math.max(0.10f, p96)) : 7.5f;
-        float sceneGain = clamp(Math.min(neededGain, Math.max(2.4f, maxHighlightGain)), 1.0f, 7.5f);
+        float neededGain = (float) Math.pow(targetMid / Math.max(0.004f, midMetric), 0.75);
+        float isoConfidence = shadowRecoveryConfidence(frame.sensitivityIso);
+        float maxGain = 1.5f + 1.5f * isoConfidence;
+        float maxHighlightGain = p96 > 0.40f ? Math.max(1f, 1.6f / p96) : maxGain;
+        float signalConfidence = smoothstep(.003f, .025f, p50 / boostScale);
+        float sceneGain = 1f + (clamp(Math.min(neededGain, maxHighlightGain), 1f, maxGain) - 1f) * signalConfidence;
         return boostScale * sceneGain;
     }
 
@@ -1172,7 +1256,10 @@ final class RawDeveloper {
                 gainGrid[i] = compressed / avgY;
             } else {
                 float shadowNeed = smoothstep(0.20f, 0.015f, avgY);
-                gainGrid[i] = 1.0f + 1.15f * brainRecoveryScale * shadowNeed;
+                float signalConfidence = smoothstep(.003f, .025f, avgY / Math.max(1f, exposureScale));
+                float exposureIntent = (float) Math.pow(2.0, Math.min(0f, frame.aeCompensationEv));
+                gainGrid[i] = 1.0f + .65f * brainRecoveryScale * shadowNeed * signalConfidence
+                        * shadowRecoveryConfidence(frame.sensitivityIso) * exposureIntent;
             }
         }
         return gainGrid;
@@ -1394,8 +1481,9 @@ final class RawDeveloper {
             } else if (brainId == BRAIN_ID_KODACHROME) {
                 // Kodachrome 64: rich crimson-gold couplers in midtones and deep cobalt skies in blues
                 float midWeight = Math.max(0f, 1f - shadowWeight - highlightWeight);
-                a += 0.010f * midWeight * midWarmGate;
-                bb += 0.006f * midWeight * midWarmGate;
+                float warmSceneGate = prep.ambientWarmthFactor * alreadyWarmAtten;
+                a += 0.010f * midWeight * midWarmGate * warmSceneGate;
+                bb += 0.006f * midWeight * midWarmGate * warmSceneGate;
                 if (bb < -0.01f) {
                     // Deepen cyan-blues slightly toward classic reversal cobalt
                     a += (-bb) * 0.10f * midWarmGate;
@@ -1436,16 +1524,6 @@ final class RawDeveloper {
             outB = -.00419609f*lp - .70341861f*mp + 1.70761470f*sp;
         }
 
-        if (prep.grainAmount > 0f) {
-            float fine = hashNoise(x, y, seed);
-            float coarse = hashNoise(x / prep.coarseDiv, y / prep.coarseDiv, seed ^ 0x51ed270b);
-            float shadowGrainGate = smoothstep(0.025f, 0.11f, lightness);
-            float texture = (fine * prep.fineWeight + coarse * prep.coarseWeight) * prep.grainAmount * .05f * shadowGrainGate;
-            if (!prep.uniformGrain) {
-                texture *= .38f + .62f * 4f * lightness * (1f - lightness);
-            }
-            outR += texture; outG += texture; outB += texture;
-        }
         if (prep.lut != null) {
             float sR = toSrgb(outR) / 255f;
             float sG = toSrgb(outG) / 255f;

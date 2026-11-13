@@ -120,7 +120,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private static final float MIN_INTERACTIVE_ZOOM = .5f;
     private static final float MAX_INTERACTIVE_ZOOM = 5f;
 
+    private boolean activityResumed;
     private TextureView textureView;
+    private final LiveLookPreview liveLookPreview = new LiveLookPreview();
     private TextView cameraState;
     private TextView aeLockBadge;
     private TextView brainButton;
@@ -285,7 +287,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     lastTripodCropUpdateAt = now;
                     try {
                         applyZoom(previewRequest);
-                        captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+                        captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
                     } catch (Throwable ignored) {
                     }
                 }
@@ -400,6 +402,24 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
     private CaptureRequest.Builder previewRequest;
+    private volatile RawArchive.Frame previewColourMetadata;
+    private long lastPreviewMetadataAt;
+    private final CameraCaptureSession.CaptureCallback previewMetadataCallback = new CameraCaptureSession.CaptureCallback() {
+        @Override public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
+            long now = SystemClock.elapsedRealtime();
+            if (session != captureSession || videoMode || now - lastPreviewMetadataAt < 500L) return;
+            lastPreviewMetadataAt = now;
+            android.hardware.camera2.params.RggbChannelVector gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS);
+            RawArchive.Frame metadata = new RawArchive.Frame();
+            if (gains != null) metadata.wbGains = new float[]{gains.getRed(), gains.getGreenEven(), gains.getGreenOdd(), gains.getBlue()};
+            Long exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+            Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
+            metadata.exposureTimeNs = exposure == null ? 0L : exposure;
+            metadata.sensitivityIso = iso == null ? 0 : iso;
+            previewColourMetadata = metadata;
+            runOnUiThread(MainActivity.this::applyLiveFilmPreview);
+        }
+    };
     private Surface previewSurface;
     private ImageReader rawReader;
     private ImageReader jpegReader;
@@ -925,6 +945,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     @Override protected void onResume() {
         super.onResume();
+        activityResumed = true;
         applyFullScreenImmersive();
         if (root != null) {
             root.postDelayed(this::applyFullScreenImmersive, 150L);
@@ -980,6 +1001,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     @Override protected void onPause() {
+        activityResumed = false;
+        liveLookPreview.clear();
         if (sensorManager != null) {
             sensorManager.unregisterListener(sensorEventListener);
         }
@@ -991,6 +1014,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     @Override protected void onDestroy() {
+        liveLookPreview.close();
         closeCamera();
         if (cameraThread != null) {
             cameraThread.quitSafely();
@@ -2195,7 +2219,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             try {
                 applyOpticalSettings(previewRequest, videoMode);
                 applyZoom(previewRequest);
-                captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+                captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
             } catch (Throwable ignored) {
             }
         }
@@ -3235,7 +3259,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
                 captureSession.capture(previewRequest.build(), null, cameraHandler);
                 if (doAf) previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
-                captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+                captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
             } catch (Exception e) {
                 Log.w(TAG, "Failed to apply manual focus/metering region", e);
             }
@@ -3318,7 +3342,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 Integer maxAe = characteristics != null ? characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) : null;
                 if (maxAf != null && maxAf > 0) previewRequest.set(CaptureRequest.CONTROL_AF_REGIONS, null);
                 if (maxAe != null && maxAe > 0) previewRequest.set(CaptureRequest.CONTROL_AE_REGIONS, null);
-                captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+                captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
             } catch (Exception e) {
                 Log.w(TAG, "Failed to reset focus to continuous", e);
             }
@@ -3341,7 +3365,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         try {
             previewRequest.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentAeIndex);
-            captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+            captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
         } catch (Exception e) {
             Log.w(TAG, "Failed to set exposure compensation", e);
         }
@@ -3355,7 +3379,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         try {
             previewRequest.set(CaptureRequest.CONTROL_AE_LOCK, aeLocked);
-            captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+            captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
         } catch (Exception e) {
             Log.w(TAG, "Failed to toggle AE lock", e);
         }
@@ -3746,6 +3770,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     };
 
     private void createPreviewSession() {
+        previewColourMetadata = null;
+        lastPreviewMetadataAt = 0L;
         if (cameraDevice == null || textureView == null || !textureView.isAvailable()) return;
         try {
             SurfaceTexture texture = textureView.getSurfaceTexture();
@@ -3771,7 +3797,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         setFocusMode(previewRequest);
                         applyOpticalSettings(previewRequest, false);
                         applyZoom(previewRequest);
-                        captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+                        captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
                         runOnUiThread(() -> {
                             if (textureView != null) {
                                 configureTransform(textureView.getWidth(), textureView.getHeight());
@@ -3815,6 +3841,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void closeSessionOnly() {
+        previewColourMetadata = null;
+        lastPreviewMetadataAt = 0L;
         if (captureSession != null) { captureSession.close(); captureSession = null; }
         if (previewSurface != null) { previewSurface.release(); previewSurface = null; }
         previewRequest = null;
@@ -3835,32 +3863,30 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
         }
         if (pair != null) {
-            dispatchCompletedCapture(pair.image, pair.result);
+            dispatchCompletedCapture(pair.image, pair.result, pair.recipe);
         }
     }
 
-    private void dispatchCompletedCapture(Image image, TotalCaptureResult result) {
+    private void dispatchCompletedCapture(Image image, TotalCaptureResult result, CaptureRecipe recipe) {
         stillCaptureState = StillCaptureState.IDLE;
         runOnUiThread(() -> captureButton.setAlpha(1f));
-        CameraCharacteristics capturedCharacteristics = characteristics;
-        int capturedOrientation = jpegOrientation();
-        String capturedAspect = AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3");
-        boolean mirrorSelfie = isFrontCamera() && AppSettings.getBoolean(this, AppSettings.MIRROR_FRONT, true);
-        RawDeveloper.Look captureLook = RawDeveloper.Look.fromPreferences(this);
-        if (mirrorSelfie) captureLook.flipHorizontal = true;
+        CameraCharacteristics capturedCharacteristics = recipe.characteristics;
+        int capturedOrientation = recipe.orientation;
+        RawDeveloper.Look captureLook = recipe.look;
+        String capturedAspect = captureLook.aspectRatio;
         pendingRenders.incrementAndGet();
         processor.execute(() -> {
             boolean raw = image.getFormat() == ImageFormat.RAW_SENSOR;
             String archiveKey = null;
-            String dngPolicy = AppSettings.get(this, AppSettings.DNG_POLICY, "Save DNG beside JPEG (Pictures/RAW)");
+            String dngPolicy = recipe.dngPolicy;
             boolean keepEditableSource = raw && !dngPolicy.startsWith("Do not save RAW")
-                    && AppSettings.getBoolean(this, AppSettings.KEEP_RAW, true)
-                    && !"Rendered JPEG only".equals(AppSettings.get(this, AppSettings.CAPTURE_FORMAT, "RAW + rendered JPEG"));
+                    && recipe.keepRaw
+                    && !"Rendered JPEG only".equals(recipe.format);
             try {
                 String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
-                String format = AppSettings.get(this, AppSettings.CAPTURE_FORMAT, "RAW + rendered JPEG");
+                String format = recipe.format;
                 boolean saveDng = raw && dngPolicy.startsWith("Save DNG")
-                        && (AppSettings.getBoolean(this, AppSettings.KEEP_RAW, true) || "DNG only".equals(format))
+                        && (recipe.keepRaw || "DNG only".equals(format))
                         && !"Rendered JPEG only".equals(format);
 
                 String prefix = resolvedFilePrefix();
@@ -3892,7 +3918,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (saveDng) {
                     try {
                         String dngSubfolder = orgSub.isEmpty() ? "RAW" : orgSub + "/RAW";
-                        writeDng(image, result, capturedCharacteristics, baseFileStem + ".dng", dngSubfolder);
+                        writeDng(image, result, capturedCharacteristics, capturedOrientation, baseFileStem + ".dng", dngSubfolder);
                         dngSaved = true;
                     } catch (Exception dngError) {
                         dngWarning = dngError.getClass().getSimpleName();
@@ -3903,6 +3929,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (raw) {
                     RawArchive.Frame frame = RawArchive.createFrame(archiveKey, image, capturedCharacteristics,
                             result, capturedOrientation, capturedAspect);
+                    frame.previewMidTarget = recipe.previewMidTarget;
                     try {
                         developed = RawDeveloper.develop(frame, captureLook, 0);
                     } catch (IllegalArgumentException resolutionError) {
@@ -3921,13 +3948,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     ByteBuffer buffer = image.getPlanes()[0].getBuffer();
                     byte[] bytes = new byte[buffer.remaining()];
                     buffer.get(bytes);
-                    RawDeveloper.Look jpegLook = RawDeveloper.Look.fromPreferences(this);
-                    jpegLook.flipHorizontal = mirrorSelfie;
+                    RawDeveloper.Look jpegLook = captureLook.copy();
                     String savedBorder = jpegLook.frameBorder;
                     jpegLook.frameBorder = "None";
-                    developed = RawDeveloper.developJpeg(bytes, jpegLook);
+                    developed = RawDeveloper.developJpeg(bytes, jpegLook, capturedOrientation);
                     if (developed == null) throw new IllegalStateException("Renderer returned no image");
-                    developed = rotateForDisplay(developed);
                     developed = cropToAspect(developed, capturedAspect);
                     if (savedBorder != null && !savedBorder.startsWith("None")) {
                         jpegLook.frameBorder = savedBorder;
@@ -4064,7 +4089,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 cameraHandler.postDelayed(() -> {
                     if (stillCaptureState == StillCaptureState.SCREEN_FLASH) {
                         stillCaptureState = StillCaptureState.CAPTURING;
-                        performCapture();
+                        runOnUiThread(this::performCapture);
                     }
                     runOnUiThread(() -> {
                         screenFlashOverlay.animate().alpha(0f).setDuration(240).withEndAction(() -> {
@@ -4105,14 +4130,23 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             CaptureRequest.Builder still = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             still.addTarget(target);
             String astroSetting = AppSettings.get(this, AppSettings.ASTROPHOTOGRAPHY, "Auto (when stationary at night)");
-            boolean isAstro = !astroSetting.startsWith("Off") && (isDeviceStationary || astroSetting.startsWith("Always"));
+            RawArchive.Frame meteredPreview = previewColourMetadata;
+            long meteredExposure = meteredPreview == null ? 0L : meteredPreview.exposureTimeNs;
+            int meteredIso = meteredPreview == null ? 0 : meteredPreview.sensitivityIso;
+            boolean manualExposure = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual");
+            boolean isAstro = CameraExposureHelper.shouldUseNightIntegration(astroSetting, isDeviceStationary,
+                    manualExposure, meteredExposure, meteredIso)
+                    && "Off".equals(AppSettings.get(this, AppSettings.FLASH, "Off"));
+            setExposure(still);
             if (isAstro && characteristics != null) {
                 Range<Long> expRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
                 Range<Integer> sensRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
                 if (expRange != null && sensRange != null) {
-                    // Engage long night integration: 2.0s or maximum supported exposure, with clean low ISO (200-400)
-                    long targetAstroExp = Math.min(expRange.getUpper(), 2_000_000_000L); // 2 seconds
+                    // Auto trades ISO for shutter time at the metered exposure; Always requests up to 2s.
                     int targetAstroIso = Math.max(sensRange.getLower(), Math.min(sensRange.getUpper(), 200));
+                    long desiredAstroExp = astroSetting.startsWith("Always") ? Math.min(expRange.getUpper(), 2_000_000_000L)
+                            : CameraExposureHelper.matchedNightExposure(meteredExposure, meteredIso, targetAstroIso, expRange.getUpper());
+                    final long targetAstroExp = Math.max(expRange.getLower(), desiredAstroExp);
                     still.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
                     still.set(CaptureRequest.SENSOR_EXPOSURE_TIME, targetAstroExp);
                     still.set(CaptureRequest.SENSOR_SENSITIVITY, targetAstroIso);
@@ -4121,10 +4155,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     }
                     runOnUiThread(() -> showMessage("✨ Night integration exposure: " + String.format(Locale.US, "%.1fs", targetAstroExp / 1_000_000_000f)));
                 }
-            } else {
-                setExposure(still);
             }
-            still.set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation());
+            final int capturedOrientation = jpegOrientation();
+            RawDeveloper.Look captureLook = RawDeveloper.Look.fromPreferences(this);
+            captureLook.flipHorizontal = isFrontCamera() && AppSettings.getBoolean(this, AppSettings.MIRROR_FRONT, true);
+            CaptureRecipe recipe = new CaptureRecipe(characteristics, capturedOrientation, captureLook,
+                    AppSettings.get(this, AppSettings.DNG_POLICY, "Save DNG beside JPEG (Pictures/RAW)"),
+                    AppSettings.get(this, AppSettings.CAPTURE_FORMAT, "RAW + rendered JPEG"),
+                    AppSettings.getBoolean(this, AppSettings.KEEP_RAW, true), samplePreviewMidTarget());
+            still.set(CaptureRequest.JPEG_ORIENTATION, capturedOrientation);
             setFocusMode(still);
             setFlash(still, false);
             applyOpticalSettings(still, false);
@@ -4136,7 +4175,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (activeCapture != null) {
                     activeCapture.cancel(Image::close);
                 }
-                captureToken = new InFlightCapture<>(nextCaptureId++, useRawForThisCamera);
+                captureToken = new InFlightCapture<>(nextCaptureId++, useRawForThisCamera, recipe);
                 activeCapture = captureToken;
             }
             final InFlightCapture<Image, TotalCaptureResult> submittedCapture = captureToken;
@@ -4152,7 +4191,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         }
                     }
                     if (pair != null) {
-                        dispatchCompletedCapture(pair.image, pair.result);
+                        dispatchCompletedCapture(pair.image, pair.result, pair.recipe);
                     }
                 }
                 @Override public void onCaptureFailed(CameraCaptureSession session, CaptureRequest request, CaptureFailure failure) {
@@ -4181,6 +4220,24 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
+    private float samplePreviewMidTarget() {
+        if (Looper.myLooper() != Looper.getMainLooper() || textureView == null || !textureView.isAvailable()) return 0f;
+        Bitmap sample = null;
+        try {
+            // TextureView reads its camera buffer before the View's look effect, avoiding feedback.
+            sample = textureView.getBitmap(64, 48);
+            if (sample == null) return 0f;
+            int[] pixels = new int[64 * 48];
+            sample.getPixels(pixels, 0, 64, 0, 0, 64, 48);
+            return RawDeveloper.previewMidTarget(pixels, 64, 48);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "Could not meter preview reference", e);
+            return 0f;
+        } finally {
+            if (sample != null) sample.recycle();
+        }
+    }
+
     private int jpegOrientation() {
         if (characteristics == null) return 0;
         Integer sensor = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
@@ -4193,16 +4250,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         } else {
             return (sensorOrientation - deviceDegrees + 360) % 360;
         }
-    }
-
-    private Bitmap rotateForDisplay(Bitmap bitmap) {
-        int rotation = jpegOrientation();
-        if (rotation == 0 || rotation == 180) return bitmap;
-        Matrix matrix = new Matrix();
-        matrix.postRotate(rotation == 90 ? 90 : -90);
-        Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
-        if (rotated != bitmap) bitmap.recycle();
-        return rotated;
     }
 
     /** Applies the selected composition to the render. The DNG remains full-frame. */
@@ -4287,13 +4334,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         return degrees + "/1," + minutes + "/1," + seconds + "/1000";
     }
 
-    private void writeDng(Image image, TotalCaptureResult result, CameraCharacteristics captureCharacteristics, String name, String subfolder) throws Exception {
+    private void writeDng(Image image, TotalCaptureResult result, CameraCharacteristics captureCharacteristics, int orientation, String name, String subfolder) throws Exception {
         if (result == null || captureCharacteristics == null) throw new IllegalStateException("Missing capture metadata");
         OutputTarget target = createOutput(name, "image/x-adobe-dng", subfolder);
         boolean published = false;
         DngCreator creator = null;
         try {
             creator = new DngCreator(captureCharacteristics, result);
+            creator.setOrientation(CaptureOrientation.toExif(orientation));
             Location loc = getCaptureLocation();
             if (loc != null) {
                 creator.setLocation(loc);
@@ -4333,6 +4381,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 exif.setAttribute(ExifInterface.TAG_MAKE, Build.MANUFACTURER);
                 exif.setAttribute(ExifInterface.TAG_MODEL, Build.MODEL);
                 exif.setAttribute(ExifInterface.TAG_SOFTWARE, "Lika Lens (Cinematic Raw)");
+                exif.setAttribute(ExifInterface.TAG_ORIENTATION, String.valueOf(ExifInterface.ORIENTATION_NORMAL));
                 String timeStamp = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(new Date());
                 exif.setAttribute(ExifInterface.TAG_DATETIME, timeStamp);
 
@@ -4784,16 +4833,20 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void applyLiveFilmPreview() {
-        if (textureView == null) return;
-        boolean livePreview = AppSettings.getBoolean(this, AppSettings.LIVE_FILM_PREVIEW, true);
-        String brain = AppSettings.brain(this);
-        String activeLut = AppSettings.get(this, AppSettings.LUT_NAME, "None");
-        if (!livePreview) {
+        if (!activityResumed || textureView == null) return;
+        if (!AppSettings.getBoolean(this, AppSettings.LIVE_FILM_PREVIEW, true)) {
+            liveLookPreview.clear();
             textureView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
             textureView.invalidate();
             return;
         }
+        RawDeveloper.Look look = RawDeveloper.Look.fromPreferences(this);
+        if (!liveLookPreview.apply(textureView, look, previewColourMetadata, this::applyLegacyFilmPreview)) applyLegacyFilmPreview();
+    }
 
+    private void applyLegacyFilmPreview() {
+        String brain = AppSettings.brain(this);
+        String activeLut = AppSettings.get(this, AppSettings.LUT_NAME, "None");
         RawDeveloper.Look look = RawDeveloper.Look.fromPreferences(this);
         String pp = look.filmPushPull != null ? look.filmPushPull : "";
         boolean hasPushPull = pp.startsWith("+1") || pp.startsWith("+2") || pp.startsWith("-1");
@@ -4906,6 +4959,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             cm.postConcat(gradingAdjust);
         }
 
+        // Legacy devices retain a matrix approximation; honour the actual LUT strength.
+        ColorMatrix beforeLut = new ColorMatrix(cm);
         // Apply active 3D LUT matrix in viewfinder
         if (LutManager.LUT_PORTRA.equalsIgnoreCase(activeLut)) {
             ColorMatrix portra = new ColorMatrix(new float[] {
@@ -4969,6 +5024,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             cm.postConcat(bleach);
         }
 
+        float lutMix = Math.max(0f, Math.min(1f, look.lutIntensity));
+        float[] before = beforeLut.getArray(), after = cm.getArray();
+        float[] blended = new float[20];
+        for (int i = 0; i < blended.length; i++) blended[i] = before[i] + (after[i] - before[i]) * lutMix;
+        cm.set(blended);
         paint.setColorFilter(new ColorMatrixColorFilter(cm));
         textureView.setLayerType(View.LAYER_TYPE_HARDWARE, paint);
         textureView.invalidate();
@@ -5227,7 +5287,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (previewRequest != null && captureSession != null) {
             try {
                 applyZoom(previewRequest);
-                captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+                captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
             } catch (CameraAccessException | IllegalStateException e) {
                 Log.w(TAG, "Failed to apply interactive zoom", e);
             }
@@ -5341,7 +5401,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 lastRequestTime[0] = now;
                 try {
                     applyZoom(previewRequest);
-                    captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+                    captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
                 } catch (CameraAccessException | IllegalStateException e) {
                     Log.w(TAG, "Failed to update zoom during animation", e);
                 }
@@ -5353,7 +5413,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (previewRequest != null && captureSession != null) {
                     try {
                         applyZoom(previewRequest);
-                        captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+                        captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
                     } catch (CameraAccessException | IllegalStateException e) {
                         Log.w(TAG, "Failed to apply final zoom", e);
                     }
@@ -5670,7 +5730,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             setExposure(previewRequest);
             setFlash(previewRequest, true);
             applyOpticalSettings(previewRequest, videoMode);
-            captureSession.setRepeatingRequest(previewRequest.build(), null, cameraHandler);
+            captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
         } catch (CameraAccessException | IllegalStateException e) {
             Log.w(TAG, "Failed to refresh preview request", e);
         }
