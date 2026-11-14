@@ -84,81 +84,20 @@ final class PhotoRepository {
                 ? displayName.substring(0, displayName.length() - 4) : displayName;
     }
 
-    static Uri saveBitmap(Context context, Bitmap bmp, String name) {
-        if (bmp == null) return null;
-        Uri pending = null;
-        File legacyFile = null;
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
-                values.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
-                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Lika Lens");
-                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
-                Uri uri = context.getContentResolver().insert(
-                        MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values);
-                pending = uri;
-                if (uri != null) {
-                    try (OutputStream out = context.getContentResolver().openOutputStream(uri)) {
-                        if (out == null || !bmp.compress(Bitmap.CompressFormat.JPEG, 96, out))
-                            throw new java.io.IOException("Could not write photo copy");
-                    }
-                    values.clear();
-                    values.put(MediaStore.MediaColumns.IS_PENDING, 0);
-                    context.getContentResolver().update(uri, values, null, null);
-                    return uri;
-                }
-            }
-            File parent = new File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "Lika Lens");
-            if (!parent.exists()) parent.mkdirs();
-            File file = new File(parent, name);
-            legacyFile = file;
-            try (OutputStream out = new FileOutputStream(file)) {
-                if (!bmp.compress(Bitmap.CompressFormat.JPEG, 96, out)) throw new java.io.IOException("Could not write photo copy");
-            }
-            return Uri.fromFile(file);
-        } catch (Exception e) {
-            if (pending != null) {
-                try { context.getContentResolver().delete(pending, null, null); }
-                catch (RuntimeException cleanup) { Log.w(TAG, "Could not remove incomplete photo", cleanup); }
-            }
-            if (legacyFile != null && legacyFile.isFile()) legacyFile.delete();
-            Log.e(TAG, "Could not save bitmap", e);
-            return null;
-        }
+    static Uri saveBitmap(Context context,Bitmap bitmap,String name) {
+        if(bitmap==null) return null;
+        try(MediaOutput output=MediaOutput.allocate(context,name,"image/jpeg",Environment.DIRECTORY_PICTURES+"/Lika Lens",true)) {
+            try(OutputStream stream=output.open()) { if(!bitmap.compress(Bitmap.CompressFormat.JPEG,96,stream)) throw new java.io.IOException("JPEG encode failed"); }
+            output.publish();return output.result();
+        } catch(Exception error) { Log.e(TAG,"Could not save photo",error);return null; }
     }
 
-    static Uri saveGif(Context context, byte[] gifBytes, String name) {
-        if (gifBytes == null || gifBytes.length == 0) return null;
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
-                values.put(MediaStore.MediaColumns.MIME_TYPE, "image/gif");
-                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Lika Lens");
-                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
-                Uri uri = context.getContentResolver().insert(
-                        MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values);
-                if (uri != null) {
-                    try (OutputStream out = context.getContentResolver().openOutputStream(uri)) {
-                        if (out != null) out.write(gifBytes);
-                    }
-                    values.clear();
-                    values.put(MediaStore.MediaColumns.IS_PENDING, 0);
-                    context.getContentResolver().update(uri, values, null, null);
-                    return uri;
-                }
-            }
-            File parent = new File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "Lika Lens");
-            if (!parent.exists()) parent.mkdirs();
-            File file = new File(parent, name);
-            try (OutputStream out = new FileOutputStream(file)) {
-                out.write(gifBytes);
-            }
-            return Uri.fromFile(file);
-        } catch (Exception e) {
-            return null;
-        }
+    static Uri saveGif(Context context,byte[] bytes,String name) {
+        if(bytes==null || bytes.length==0) return null;
+        try(MediaOutput output=MediaOutput.allocate(context,name,"image/gif",Environment.DIRECTORY_PICTURES+"/Lika Lens",true)) {
+            try(OutputStream stream=output.open()) { stream.write(bytes); }
+            output.publish();return output.result();
+        } catch(Exception error) { Log.e(TAG,"Could not save GIF",error);return null; }
     }
 
     private static List<Photo> queryMediaStore(Context context) {

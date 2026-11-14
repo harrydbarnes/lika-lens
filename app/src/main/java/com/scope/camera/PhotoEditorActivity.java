@@ -47,8 +47,12 @@ public class PhotoEditorActivity extends Activity {
     private ImageView preview;
     private TextView status;
     private TextView saveButton;
+    private TextView menuButton;
     private LinearLayout controlsList;
-    private int renderGeneration;
+    private final JobState sourceJob = new JobState();
+    private final JobState previewJob = new JobState();
+    private final JobState saveJob = new JobState();
+    private long previewTicket;
 
     enum CompareMode {
         OFF,
@@ -63,11 +67,12 @@ public class PhotoEditorActivity extends Activity {
     private TextView compareBadge;
     private TextView loupeBadge;
     private boolean isLoupe1to1 = false;
-    private boolean isScrubbing = false;
+    private enum EditGesture { IDLE, SCRUBBING }
+    private EditGesture editGesture = EditGesture.IDLE;
     private ScrollView controlsScroll;
     private final LookEditHistory history = new LookEditHistory();
     private TextView undoButton, redoButton;
-    private boolean sliderGesture, advancedLooks, saving;
+    private boolean advancedLooks;
     private RawDeveloper.Look initialLook;
     private volatile int thumbnailGeneration;
 
@@ -221,11 +226,11 @@ public class PhotoEditorActivity extends Activity {
         title.setEllipsize(TextUtils.TruncateAt.END);
         title.setPadding(dp(8), 0, dp(8), 0);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView more = pill("⋮", false);
-        more.setTextSize(22);
-        more.setContentDescription("More editing actions");
-        header.addView(more, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        more.setOnClickListener(v -> showEditorMenu(more));
+        menuButton = pill("⋮", false);
+        menuButton.setTextSize(22);
+        menuButton.setContentDescription("More editing actions");
+        header.addView(menuButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        menuButton.setOnClickListener(v -> showEditorMenu(menuButton));
         saveButton = pill("Save copy", true);
         saveButton.setPadding(dp(14), 0, dp(14), 0);
         LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(-2, dp(44));
@@ -437,6 +442,7 @@ public class PhotoEditorActivity extends Activity {
         } else if ("Crop".equals(activeTab)) {
             addCropControls();
         }
+        updateInputAvailability();
     }
 
     private void addGrainStructureChoice() {
@@ -769,16 +775,16 @@ public class PhotoEditorActivity extends Activity {
             new LookRecipeControl.OnChangeListener() {
                 @Override
                 public void onValueChanged(int ctrlType, int value, boolean fromUser, boolean isTrackingTouch) {
-                    if (fromUser && !sliderGesture) recordEdit();
+                    if (fromUser && editGesture != EditGesture.SCRUBBING) recordEdit();
                     LookRecipeControl.applyToLook(look, ctrlType, value);
                     if (fromUser) {
-                        isScrubbing = isTrackingTouch;
+                        editGesture = isTrackingTouch ? EditGesture.SCRUBBING : EditGesture.IDLE;
                         queuePreview(isTrackingTouch ? 40 : 160);
                     }
                 }
 
-                @Override public void onTrackingStarted() { recordEdit(); sliderGesture = true; }
-                @Override public void onTrackingStopped() { sliderGesture = false; }
+                @Override public void onTrackingStarted() { recordEdit(); editGesture = EditGesture.SCRUBBING; }
+                @Override public void onTrackingStopped() { editGesture = EditGesture.IDLE; }
                 @Override
                 public void onReset(int ctrlType) {
                     resetControlToDefault(ctrlType);
@@ -794,6 +800,10 @@ public class PhotoEditorActivity extends Activity {
     }
 
     private void loadSource() {
+        final long loadTicket = sourceJob.begin(JobState.Phase.LOADING);
+        final RawDeveloper.Look loadLook = look.copy();
+        saveButton.setEnabled(false);
+        updateInputAvailability();
         status.setText("READING SENSOR ORIGINAL");
         worker.execute(() -> {
             try {
@@ -821,9 +831,9 @@ public class PhotoEditorActivity extends Activity {
                 neutralLook.warmth = 0f;
                 neutralLook.lutName = "None";
                 neutralLook.frameBorder = "None";
-                neutralLook.aspectRatio = look.aspectRatio != null ? look.aspectRatio : loaded.aspectRatio;
-                neutralLook.flipHorizontal = look.flipHorizontal;
-                Bitmap bitmap = RawDeveloper.develop(loaded, look.copy(), 1400);
+                neutralLook.aspectRatio = loadLook.aspectRatio != null ? loadLook.aspectRatio : loaded.aspectRatio;
+                neutralLook.flipHorizontal = loadLook.flipHorizontal;
+                Bitmap bitmap = RawDeveloper.develop(loaded, loadLook, 1400);
                 int targetW = bitmap != null ? bitmap.getWidth() : 1400;
                 int targetH = bitmap != null ? bitmap.getHeight() : 1400;
                 int targetDim = Math.max(targetW, targetH);
@@ -837,11 +847,13 @@ public class PhotoEditorActivity extends Activity {
                 }
                 final Bitmap finalNeutralBmp = neutralBmp;
                 mainHandler.post(() -> {
-                    if (isFinishing() || isDestroyed()) {
+                    if (!sourceJob.accepts(loadTicket) || isFinishing() || isDestroyed()) {
                         if (bitmap != null) bitmap.recycle();
                         if (finalNeutralBmp != null) finalNeutralBmp.recycle();
                         return;
                     }
+                    sourceJob.move(loadTicket, JobState.Phase.READY);
+                    saveButton.setEnabled(true);
                     frame = loaded;
                     rawOriginalBitmap = finalNeutralBmp;
                     setPreview(bitmap);
@@ -850,8 +862,10 @@ public class PhotoEditorActivity extends Activity {
                 });
             } catch (Exception e) {
                 mainHandler.post(() -> {
+                    if (!sourceJob.move(loadTicket, JobState.Phase.FAILED) || isDestroyed()) return;
                     status.setText("COULD NOT OPEN SENSOR ORIGINAL");
                     saveButton.setEnabled(false);
+                    updateInputAvailability();
                     Toast.makeText(this, "Could not develop this frame.", Toast.LENGTH_SHORT).show();
                 });
             }
@@ -859,12 +873,13 @@ public class PhotoEditorActivity extends Activity {
     }
 
     private void queuePreview() {
-        queuePreview(isScrubbing ? 40 : 160);
+        queuePreview(editGesture == EditGesture.SCRUBBING ? 40 : 160);
     }
 
     private void queuePreview(long delayMs) {
-        status.setText(isScrubbing ? "SCRUBBING PREVIEW" : "DEVELOPING PREVIEW");
-        renderGeneration++;
+        if (previewJob.isClosed() || saveJob.isBusy()) return;
+        status.setText(editGesture == EditGesture.SCRUBBING ? "SCRUBBING PREVIEW" : "DEVELOPING PREVIEW");
+        previewTicket = previewJob.begin(JobState.Phase.RENDERING);
         mainHandler.removeCallbacks(previewRunnable);
         if (delayMs <= 0) {
             previewRunnable.run();
@@ -877,17 +892,23 @@ public class PhotoEditorActivity extends Activity {
 
     private void renderPreviewNow() {
         if (frame == null) return;
-        int generation = renderGeneration;
+        long generation = previewTicket;
         RawDeveloper.Look snapshot = look.copy();
         RawArchive.Frame source = frame;
-        int maxDim = isScrubbing ? 720 : 1600;
+        int maxDim = editGesture == EditGesture.SCRUBBING ? 720 : 1600;
         worker.execute(() -> {
-            Bitmap bitmap = RawDeveloper.develop(source, snapshot, maxDim);
-            mainHandler.post(() -> {
-                if (generation != renderGeneration || isFinishing()) { if (bitmap != null) bitmap.recycle(); return; }
-                setPreview(bitmap);
-                status.setText("Edits affect this photo only · Original preserved");
-            });
+            if (!previewJob.accepts(generation)) return;
+            try {
+                Bitmap bitmap = RawDeveloper.develop(source, snapshot, maxDim);
+                mainHandler.post(() -> {
+                    if (!previewJob.accepts(generation) || isFinishing() || isDestroyed()) { if (bitmap != null) bitmap.recycle(); return; }
+                    previewJob.move(generation, bitmap == null ? JobState.Phase.FAILED : JobState.Phase.READY);
+                    setPreview(bitmap);
+                    if (!saveJob.isBusy()) status.setText(bitmap == null ? "Could not develop preview" : "Edits affect this photo only · Original preserved");
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> { if (previewJob.move(generation, JobState.Phase.FAILED) && !isDestroyed() && !saveJob.isBusy()) status.setText("Could not develop preview. Adjust a control to retry."); });
+            }
         });
     }
 
@@ -911,9 +932,13 @@ public class PhotoEditorActivity extends Activity {
     }
 
     private void saveRender() {
-        if (frame == null || photoUri == null || saving) return;
-        saving = true;
+        if (frame == null || photoUri == null) return;
+        final long saveTicket = saveJob.tryBegin(JobState.Phase.SAVING);
+        if (saveTicket == 0) return;
+        previewJob.cancel();
+        mainHandler.removeCallbacks(previewRunnable);
         saveButton.setEnabled(false);
+        updateInputAvailability();
         saveButton.setText("Saving…");
         status.setText("Saving copy to Pictures/Lika Lens…");
         RawDeveloper.Look snapshot = look.copy();
@@ -926,8 +951,7 @@ public class PhotoEditorActivity extends Activity {
             final String error = failure;
             final PhotoRepository.Photo savedPhoto = output;
             mainHandler.post(() -> {
-                saving = false;
-                if (isFinishing() || isDestroyed()) return;
+                if (!saveJob.move(saveTicket, error == null ? JobState.Phase.READY : JobState.Phase.FAILED) || isFinishing() || isDestroyed()) return;
                 if (error == null) {
                     Toast.makeText(this, "Copy saved to Pictures/Lika Lens. Original unchanged.", Toast.LENGTH_LONG).show();
                     setResult(RESULT_OK, new Intent().setData(savedPhoto.uri)
@@ -935,6 +959,7 @@ public class PhotoEditorActivity extends Activity {
                     finish();
                 } else {
                     saveButton.setEnabled(true);
+                    updateInputAvailability();
                     saveButton.setText("Save copy");
                     status.setText("Could not save copy");
                     new AlertDialog.Builder(this).setTitle("Save failed").setMessage(error).setPositiveButton("OK", null).show();
@@ -944,18 +969,37 @@ public class PhotoEditorActivity extends Activity {
     }
     @Override public void onBackPressed() { requestCloseEditor(); }
     private void requestCloseEditor() {
-        if (saving) { Toast.makeText(this, "Finishing your photo copy…", Toast.LENGTH_SHORT).show(); return; }
+        if (saveJob.isBusy()) { Toast.makeText(this, "Finishing your photo copy…", Toast.LENGTH_SHORT).show(); return; }
         if (initialLook != null && !initialLook.toJson().equals(look.toJson())) {
             new AlertDialog.Builder(this).setTitle("Discard adjustments?")
                     .setMessage("Your original is unchanged. These unsaved adjustments will be lost.")
                     .setNegativeButton("Keep editing", null).setPositiveButton("Discard", (d, w) -> finish()).show();
         } else finish();
     }
+    private void updateInputAvailability() {
+        boolean enabled=sourceJob.phase()==JobState.Phase.READY && !saveJob.isBusy();
+        setInputTreeEnabled(controlsList,enabled);setInputTreeEnabled(tabBar,enabled);
+        if(menuButton!=null) {
+            menuButton.setEnabled(enabled);
+            menuButton.setAlpha(enabled?1f:.45f);
+        }
+        updateHistoryButtons();
+    }
+    private void setInputTreeEnabled(View view,boolean enabled) {
+        if(view==null) return;view.setEnabled(enabled);
+        if(view instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group=(android.view.ViewGroup)view;
+            for(int i=0;i<group.getChildCount();i++) setInputTreeEnabled(group.getChildAt(i),enabled);
+        }
+    }
     private void recordEdit() { history.record(look); updateHistoryButtons(); }
     private void updateHistoryButtons() {
         if (undoButton == null || redoButton == null) return;
-        undoButton.setEnabled(history.canUndo()); redoButton.setEnabled(history.canRedo());
-        undoButton.setAlpha(history.canUndo() ? 1f : .4f); redoButton.setAlpha(history.canRedo() ? 1f : .4f);
+        boolean interactive = sourceJob.phase() == JobState.Phase.READY && !saveJob.isBusy();
+        undoButton.setEnabled(interactive && history.canUndo());
+        redoButton.setEnabled(interactive && history.canRedo());
+        undoButton.setAlpha(interactive && history.canUndo() ? 1f : .4f);
+        redoButton.setAlpha(interactive && history.canRedo() ? 1f : .4f);
     }
     private void refreshEditingState() {
         stopComparing();
@@ -963,6 +1007,7 @@ public class PhotoEditorActivity extends Activity {
         populateControls(); updateHistoryButtons(); queuePreview();
     }
     private void showEditorMenu(View anchor) {
+        if (sourceJob.phase() != JobState.Phase.READY || saveJob.isBusy()) return;
         PopupMenu menu = new PopupMenu(this, anchor);
         for (String title : new String[]{"Copy look", "Paste look", "Save as custom look…", "Reset adjustments…"}) menu.getMenu().add(title);
         menu.getMenu().getItem(1).setEnabled(PhotoEditStore.hasClipboard(this));
@@ -1097,6 +1142,7 @@ public class PhotoEditorActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        sourceJob.close(); previewJob.close(); saveJob.close();
         thumbnailGeneration++;
         mainHandler.removeCallbacksAndMessages(null);
         worker.shutdown();

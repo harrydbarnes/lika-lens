@@ -66,8 +66,12 @@ public class SettingsActivity extends Activity {
     private Bitmap baseHeroBitmap;
     private Bitmap cachedHeroSource;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private volatile boolean isUpdatingHero = false;
-    private volatile boolean hasPendingHeroUpdate = false;
+    private final JobState heroJob = new JobState();
+    private final java.util.concurrent.ExecutorService heroWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private enum HeroCompare { GRADED, ORIGINAL }
+    private HeroCompare heroCompare = HeroCompare.GRADED;
+    private Bitmap heroGradedBitmap;
+    private Runnable heroRender;
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -543,12 +547,15 @@ public class SettingsActivity extends Activity {
                 if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
                     frame.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
                 }
+                heroCompare = HeroCompare.ORIGINAL;
                 heroImageView.setImageBitmap(baseHeroBitmap);
                 heroCompareBadge.setVisibility(View.VISIBLE);
                 return true;
             } else if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                heroCompare = HeroCompare.GRADED;
                 heroCompareBadge.setVisibility(View.GONE);
-                triggerHeroUpdate();
+                if (heroGradedBitmap != null && !heroGradedBitmap.isRecycled()) heroImageView.setImageBitmap(heroGradedBitmap);
+                else triggerHeroUpdate();
                 return true;
             }
             return false;
@@ -587,44 +594,30 @@ public class SettingsActivity extends Activity {
     }
 
     private void triggerHeroUpdate() {
-        if (heroImageView == null || cachedHeroSource == null || cachedHeroSource.isRecycled()) return;
-        synchronized (this) {
-            hasPendingHeroUpdate = true;
-            if (isUpdatingHero) return;
-            isUpdatingHero = true;
-        }
-        new Thread(() -> {
-            try {
-                while (true) {
-                    synchronized (SettingsActivity.this) {
-                        hasPendingHeroUpdate = false;
-                    }
-                    if (cachedHeroSource == null || cachedHeroSource.isRecycled()) break;
-                    // Develop directly in memory from cachedHeroSource without JPEG re-compression
-                    Bitmap copy = cachedHeroSource.copy(Bitmap.Config.ARGB_8888, true);
-                    RawDeveloper.Look look = RawDeveloper.Look.fromPreferences(SettingsActivity.this);
-                    Bitmap developed = RawDeveloper.developBitmap(copy, look, true);
-                    if (developed != null) {
-                        mainHandler.post(() -> {
-                            if (heroImageView != null && (heroCompareBadge == null || heroCompareBadge.getVisibility() != View.VISIBLE)) {
-                                heroImageView.setImageBitmap(developed);
-                            }
-                        });
-                    }
-                    synchronized (SettingsActivity.this) {
-                        if (!hasPendingHeroUpdate) {
-                            isUpdatingHero = false;
-                            break;
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "Hero image preview update failed", e);
-                synchronized (SettingsActivity.this) {
-                    isUpdatingHero = false;
-                }
-            }
-        }).start();
+        if (heroJob.isClosed() || heroImageView == null || cachedHeroSource == null || cachedHeroSource.isRecycled()) return;
+        final long ticket=heroJob.begin(JobState.Phase.RENDERING);
+        if(heroRender!=null) mainHandler.removeCallbacks(heroRender);
+        heroRender=() -> {
+            if(!heroJob.accepts(ticket) || cachedHeroSource==null || cachedHeroSource.isRecycled()) return;
+            final Bitmap source=cachedHeroSource.copy(Bitmap.Config.ARGB_8888,true);
+            final RawDeveloper.Look recipe=RawDeveloper.Look.fromPreferences(this);
+            heroWorker.execute(() -> {
+                try {
+                    if(!heroJob.accepts(ticket)) return;
+                    Bitmap developed=RawDeveloper.developBitmap(source,recipe,true);
+                    mainHandler.post(() -> {
+                        if(!heroJob.accepts(ticket) || isDestroyed()) { if(developed!=null) developed.recycle();return; }
+                        heroJob.move(ticket,developed==null?JobState.Phase.FAILED:JobState.Phase.READY);
+                        if(developed==null) return;
+                        Bitmap old=heroGradedBitmap;heroGradedBitmap=developed;
+                        if(developed!=null && heroCompare==HeroCompare.GRADED) heroImageView.setImageBitmap(developed);
+                        if(old!=null && old!=developed && !old.isRecycled()) old.recycle();
+                    });
+                } catch(Exception error) { heroJob.move(ticket,JobState.Phase.FAILED);Log.w(TAG,"Hero preview failed",error); }
+                finally { if(source!=null && !source.isRecycled()) source.recycle(); }
+            });
+        };
+        mainHandler.postDelayed(heroRender,60);
     }
 
     private void addVerticalControl(LinearLayout row, String label, String key, int fallback) {
@@ -1251,8 +1244,14 @@ public class SettingsActivity extends Activity {
         }
     }
 
+    @Override protected void onPause() { AppUpdateManager.onPause(this);super.onPause(); }
+
     @Override
     protected void onDestroy() {
+        heroJob.close();
+        mainHandler.removeCallbacksAndMessages(null);
+        heroWorker.shutdown();
+        if(heroGradedBitmap!=null && !heroGradedBitmap.isRecycled()) heroGradedBitmap.recycle();
         super.onDestroy();
         if (cachedHeroSource != null && !cachedHeroSource.isRecycled()) {
             cachedHeroSource.recycle();

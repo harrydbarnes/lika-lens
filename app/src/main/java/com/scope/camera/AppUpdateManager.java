@@ -61,13 +61,44 @@ public final class AppUpdateManager {
         DOWNLOADING,
         FAILED,
         READY_TO_INSTALL,
-        AWAITING_PERMISSION
+        AWAITING_PERMISSION,
+        INSTALLER_OPEN,
+        CANCELLED
     }
 
-    private static volatile File sPendingInstallApk;
-    private static volatile UpdateInfo sPendingUpdateInfo;
-    private static volatile UpdateState sUpdateState = UpdateState.AVAILABLE;
+    private static final UpdateSession session = new UpdateSession();
+    private static final JobState checkJob = new JobState();
+    static final class UpdateSession {
+        volatile File apk;
+        volatile UpdateInfo info;
+        volatile UpdateState state = UpdateState.AVAILABLE;
+        private long ticket;
+        synchronized long beginDownload(UpdateInfo release) {
+            if(state==UpdateState.DOWNLOADING) return 0;
+            info=release;apk=null;state=UpdateState.DOWNLOADING;return ++ticket;
+        }
+        synchronized boolean owns(long id) { return id!=0 && id==ticket; }
+        synchronized boolean select(UpdateInfo release) {
+            if(state==UpdateState.DOWNLOADING) return false;
+            info=release;return true;
+        }
+        synchronized void clear() { ++ticket;apk=null;info=null;state=UpdateState.AVAILABLE; }
+    }
     private static Dialog sCurrentUpdateDialog;
+    private static java.lang.ref.WeakReference<Activity> dialogOwner = new java.lang.ref.WeakReference<>(null);
+    private static java.lang.ref.WeakReference<Activity> resumedActivity = new java.lang.ref.WeakReference<>(null);
+
+    static boolean isActivityForeground(boolean sameResumedActivity, boolean hasShowingDialogForActivity, boolean hasWindowFocus) {
+        return sameResumedActivity || hasShowingDialogForActivity || hasWindowFocus;
+    }
+
+    private static boolean isForegroundActivity(Activity activity) {
+        if (activity == null || activity.isFinishing()) return false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed()) return false;
+        boolean sameResumed = resumedActivity.get() == activity;
+        boolean showingDialog = sCurrentUpdateDialog != null && sCurrentUpdateDialog.isShowing() && dialogOwner.get() == activity;
+        return isActivityForeground(sameResumed, showingDialog, activity.hasWindowFocus());
+    }
 
     static String actionLabelForState(UpdateState state) {
         if (state == null) return "DOWNLOAD & INSTALL";
@@ -269,6 +300,7 @@ public final class AppUpdateManager {
      * Asynchronously checks GitHub Releases for an available update.
      */
     public static void checkForUpdate(Context context, boolean isManual, UpdateCallback callback) {
+        final long checkTicket=checkJob.begin(JobState.Phase.LOADING);
         String channel = AppSettings.get(context, AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_BETA);
         String currentVersionName = getAppVersionName(context);
         int currentVersionCode = getAppVersionCode(context);
@@ -297,6 +329,8 @@ public final class AppUpdateManager {
                     AppSettings.prefs(context).edit().putLong(AppSettings.LAST_UPDATE_CHECK_TIME, System.currentTimeMillis()).apply();
 
                     mainHandler.post(() -> {
+                        if(!checkJob.accepts(checkTicket) || (context instanceof Activity && (((Activity)context).isFinishing() || ((Activity)context).isDestroyed()))) return;
+                        checkJob.move(checkTicket,JobState.Phase.READY);
                         if (info != null) {
                             if (callback != null) callback.onUpdateAvailable(info);
                         } else {
@@ -305,12 +339,16 @@ public final class AppUpdateManager {
                     });
                 } else {
                     mainHandler.post(() -> {
+                        if(!checkJob.accepts(checkTicket) || (context instanceof Activity && (((Activity)context).isFinishing() || ((Activity)context).isDestroyed()))) return;
+                        checkJob.move(checkTicket,JobState.Phase.READY);
                         if (callback != null) callback.onError("GitHub API HTTP " + code);
                     });
                 }
             } catch (Exception e) {
                 Log.w(TAG, "Update check failed", e);
                 mainHandler.post(() -> {
+                        if(!checkJob.accepts(checkTicket) || (context instanceof Activity && (((Activity)context).isFinishing() || ((Activity)context).isDestroyed()))) return;
+                        checkJob.move(checkTicket,JobState.Phase.READY);
                     if (callback != null) callback.onError(e.getMessage() != null ? e.getMessage() : "Network error");
                 });
             } finally {
@@ -323,6 +361,8 @@ public final class AppUpdateManager {
      * Downloads APK file in background with progress and prompts installation.
      */
     public static void downloadAndInstall(Activity activity, UpdateInfo info, DownloadProgressListener listener) {
+        final long downloadTicket = session.beginDownload(info);
+        if(downloadTicket==0) return;
         worker.execute(() -> {
             cleanStaleApks(activity, info.tagName);
             File destFile = getApkFileForTag(activity, info.tagName);
@@ -377,6 +417,7 @@ public final class AppUpdateManager {
                             final long finalDownloaded = downloaded;
                             final long finalTotal = totalBytes;
                             mainHandler.post(() -> {
+                                if (!session.owns(downloadTicket) || activity.isDestroyed()) return;
                                 if (listener != null) listener.onProgress(percent, finalDownloaded, finalTotal);
                             });
                         }
@@ -384,22 +425,28 @@ public final class AppUpdateManager {
                     output.flush();
                 }
 
-                if (destFile.exists()) destFile.delete();
-                tempFile.renameTo(destFile);
+                if (destFile.exists() && !destFile.delete()) {
+                    throw new java.io.IOException("Could not replace existing APK");
+                }
+                if (!tempFile.renameTo(destFile)) {
+                    throw new java.io.IOException("Could not finalize downloaded APK");
+                }
                 destFile.setReadable(true, false);
-                sPendingInstallApk = destFile;
-                sPendingUpdateInfo = info;
-                sUpdateState = UpdateState.READY_TO_INSTALL;
+                if(!session.owns(downloadTicket)) return;
+                session.apk = destFile;
+                session.state = UpdateState.READY_TO_INSTALL;
 
                 mainHandler.post(() -> {
+                    if(!session.owns(downloadTicket) || !isForegroundActivity(activity)) return;
                     if (listener != null) listener.onComplete(destFile);
                     promptInstall(activity, destFile, info);
                 });
             } catch (Exception e) {
                 if (tempFile.exists()) tempFile.delete();
+                if(session.owns(downloadTicket)) session.state=UpdateState.FAILED;
                 Log.e(TAG, "Download failed", e);
                 mainHandler.post(() -> {
-                    if (listener != null) listener.onError("Download failed: " + e.getMessage());
+                    if(session.owns(downloadTicket) && !activity.isDestroyed() && listener != null) listener.onError("Download failed: " + e.getMessage());
                 });
             } finally {
                 if (conn != null) conn.disconnect();
@@ -411,7 +458,7 @@ public final class AppUpdateManager {
      * Prompts the Android Package Installer for the specified APK file.
      */
     public static void promptInstall(Activity activity, File apkFile) {
-        promptInstall(activity, apkFile, sPendingUpdateInfo);
+        promptInstall(activity, apkFile, session.info);
     }
 
     public static void promptInstall(Activity activity, File apkFile, UpdateInfo info) {
@@ -419,13 +466,13 @@ public final class AppUpdateManager {
         if (activity.isFinishing()) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed()) return;
 
-        sPendingInstallApk = apkFile;
-        if (info != null) sPendingUpdateInfo = info;
+        session.apk = apkFile;
+        if (info != null) session.info = info;
 
         // Check for Unknown App Sources permission on Android 8.0+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (!activity.getPackageManager().canRequestPackageInstalls()) {
-                sUpdateState = UpdateState.AWAITING_PERMISSION;
+                session.state = UpdateState.AWAITING_PERMISSION;
                 Toast.makeText(activity, "Please allow Lika Lens to install updates", Toast.LENGTH_LONG).show();
                 Intent permissionIntent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
                 permissionIntent.setData(Uri.parse("package:" + activity.getPackageName()));
@@ -438,7 +485,7 @@ public final class AppUpdateManager {
             }
         }
 
-        sUpdateState = UpdateState.READY_TO_INSTALL;
+        session.state = UpdateState.READY_TO_INSTALL;
         try {
             apkFile.setReadable(true, false);
             Uri apkUri = ApkFileProvider.getUriForFile(activity, apkFile);
@@ -448,11 +495,13 @@ public final class AppUpdateManager {
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity.startActivity(intent);
+            session.state=UpdateState.INSTALLER_OPEN;
         } catch (Exception e) {
+            session.state=UpdateState.READY_TO_INSTALL;
             Log.e(TAG, "Failed to start package installer", e);
             Toast.makeText(activity, "Could not open installer: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-            if (sPendingUpdateInfo != null) {
-                showUpdateDialog(activity, sPendingUpdateInfo);
+            if (session.info != null) {
+                showUpdateDialog(activity, session.info);
             }
         }
     }
@@ -461,33 +510,49 @@ public final class AppUpdateManager {
      * Called on Activity onResume to automatically resume pending installation
      * once unknown app sources permission has been granted, or re-show update dialog if returned.
      */
+    public static void onPause(Activity activity) {
+        if (resumedActivity.get() == activity) {
+            resumedActivity.clear();
+        }
+        if(sCurrentUpdateDialog!=null && dialogOwner.get()==activity) {
+            sCurrentUpdateDialog.dismiss();sCurrentUpdateDialog=null;dialogOwner.clear();
+        }
+    }
+
     public static void onResume(Activity activity) {
         if (activity == null || activity.isFinishing()) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed()) return;
+        resumedActivity = new java.lang.ref.WeakReference<>(activity);
 
         // If the app has already updated to or past the pending update, clear pending state
-        if (sPendingUpdateInfo != null) {
+        if (session.info != null) {
             String currentVer = getAppVersionName(activity);
             int currentCode = getAppVersionCode(activity);
-            if (!isNewerVersion(sPendingUpdateInfo.tagName, currentVer, currentCode)) {
+            if (!isNewerVersion(session.info.tagName, currentVer, currentCode)) {
                 cleanStaleApks(activity, "");
-                sPendingInstallApk = null;
-                sPendingUpdateInfo = null;
-                sUpdateState = UpdateState.AVAILABLE;
+                session.clear();
                 return;
             }
         }
 
-        if (sUpdateState == UpdateState.AWAITING_PERMISSION) {
-            sUpdateState = UpdateState.READY_TO_INSTALL;
+        if(session.state==UpdateState.READY_TO_INSTALL && session.apk!=null && session.info!=null) {
+            showUpdateDialog(activity,session.info);return;
+        }
+        if(session.state==UpdateState.INSTALLER_OPEN) {
+            session.state=UpdateState.READY_TO_INSTALL;
+            if(session.info!=null) showUpdateDialog(activity,session.info);
+            return;
+        }
+        if (session.state == UpdateState.AWAITING_PERMISSION) {
+            session.state = UpdateState.READY_TO_INSTALL;
             boolean canInstall = Build.VERSION.SDK_INT < Build.VERSION_CODES.O
                     || activity.getPackageManager().canRequestPackageInstalls();
 
-            if (canInstall && sPendingInstallApk != null && sPendingInstallApk.exists()) {
+            if (canInstall && session.apk != null && session.apk.exists()) {
                 Toast.makeText(activity, "Permission granted. Starting installation…", Toast.LENGTH_SHORT).show();
-                promptInstall(activity, sPendingInstallApk, sPendingUpdateInfo);
-            } else if (sPendingUpdateInfo != null) {
-                showUpdateDialog(activity, sPendingUpdateInfo);
+                promptInstall(activity, session.apk, session.info);
+            } else if (session.info != null) {
+                showUpdateDialog(activity, session.info);
             }
         }
     }
@@ -499,18 +564,20 @@ public final class AppUpdateManager {
         if (activity == null || activity.isFinishing() || info == null) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed()) return;
 
+        if(!session.select(info)) return;
         if (sCurrentUpdateDialog != null && sCurrentUpdateDialog.isShowing()) {
             try {
                 sCurrentUpdateDialog.dismiss();
             } catch (Exception ignored) {}
         }
-        sPendingUpdateInfo = info;
 
         Dialog dialog = new Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar);
         sCurrentUpdateDialog = dialog;
+        dialogOwner = new java.lang.ref.WeakReference<>(activity);
         dialog.setOnDismissListener(d -> {
             if (sCurrentUpdateDialog == dialog) {
                 sCurrentUpdateDialog = null;
+                dialogOwner.clear();
             }
         });
 
@@ -646,21 +713,18 @@ public final class AppUpdateManager {
         LinearLayout.LayoutParams laterLp = new LinearLayout.LayoutParams(0, Math.round(44 * density), 1f);
         laterLp.rightMargin = dp6;
         actions.addView(laterBtn, laterLp);
-        laterBtn.setOnClickListener(v -> dialog.dismiss());
+        laterBtn.setOnClickListener(v -> { session.state=UpdateState.CANCELLED;dialog.dismiss(); });
 
         File destFile = getApkFileForTag(activity, info.tagName);
         boolean isAlreadyDownloaded = destFile.exists() && destFile.length() > 1024
                 && (info.apkSize <= 0 || Math.abs(destFile.length() - info.apkSize) < 100000);
         if (isAlreadyDownloaded) {
-            sPendingInstallApk = destFile;
+            session.apk = destFile;
         }
-        final UpdateState[] dialogState = {
-                isAlreadyDownloaded ? UpdateState.READY_TO_INSTALL : UpdateState.AVAILABLE
-        };
-        sUpdateState = dialogState[0];
+        session.state = isAlreadyDownloaded ? UpdateState.READY_TO_INSTALL : UpdateState.AVAILABLE;
 
         TextView installBtn = new TextView(activity);
-        installBtn.setText(actionLabelForState(dialogState[0]));
+        installBtn.setText(actionLabelForState(session.state));
         installBtn.setTextSize(11);
         installBtn.setTextColor(0xff0b0d0e);
         installBtn.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
@@ -682,18 +746,16 @@ public final class AppUpdateManager {
                 installBtn.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
             }
             boolean hasApk = destFile.exists() && destFile.length() > 1024;
-            if (shouldPromptInstallInsteadOfDownload(dialogState[0], hasApk)) {
-                dialogState[0] = UpdateState.READY_TO_INSTALL;
+            if (shouldPromptInstallInsteadOfDownload(session.state, hasApk)) {
+                session.state = UpdateState.READY_TO_INSTALL;
                 dialog.dismiss();
                 promptInstall(activity, destFile, info);
                 return;
             }
 
-            dialogState[0] = UpdateState.DOWNLOADING;
-            sUpdateState = UpdateState.DOWNLOADING;
             installBtn.setEnabled(false);
             laterBtn.setEnabled(false);
-            installBtn.setText(actionLabelForState(dialogState[0]));
+            installBtn.setText(actionLabelForState(UpdateState.DOWNLOADING));
             progressBar.setVisibility(View.VISIBLE);
             progressText.setVisibility(View.VISIBLE);
 
@@ -706,20 +768,18 @@ public final class AppUpdateManager {
 
                 @Override
                 public void onComplete(File apkFile) {
-                    dialogState[0] = UpdateState.READY_TO_INSTALL;
-                    sUpdateState = UpdateState.READY_TO_INSTALL;
+                    session.state = UpdateState.READY_TO_INSTALL;
                     dialog.dismiss();
                 }
 
                 @Override
                 public void onError(String message) {
-                    dialogState[0] = UpdateState.FAILED;
-                    sUpdateState = UpdateState.FAILED;
+                    session.state = UpdateState.FAILED;
                     progressBar.setVisibility(View.GONE);
                     progressText.setText(message);
                     installBtn.setEnabled(true);
                     laterBtn.setEnabled(true);
-                    installBtn.setText(actionLabelForState(dialogState[0]));
+                    installBtn.setText(actionLabelForState(session.state));
                 }
             });
         });

@@ -26,8 +26,8 @@ final class InFlightCapture<I, R> {
     final CaptureRecipe recipe;
     private I image;
     private R result;
-    private boolean cancelled;
-    private boolean completed;
+    private enum Phase { WAITING, COMPLETED, CANCELLED }
+    private Phase phase = Phase.WAITING;
 
     InFlightCapture(long captureId, boolean expectsMetadata) {
         this(captureId, expectsMetadata, null);
@@ -40,7 +40,7 @@ final class InFlightCapture<I, R> {
     }
 
     synchronized boolean isActive() {
-        return !cancelled && !completed;
+        return phase == Phase.WAITING;
     }
 
     synchronized CompletedPair<I, R> attachImage(I newImage, Consumer<I> disposer) {
@@ -63,8 +63,8 @@ final class InFlightCapture<I, R> {
     }
 
     synchronized void cancel(Consumer<I> disposer) {
-        if (cancelled || completed) return;
-        cancelled = true;
+        if (!isActive()) return;
+        phase = Phase.CANCELLED;
         if (this.image != null) {
             if (disposer != null) disposer.accept(this.image);
             this.image = null;
@@ -75,7 +75,7 @@ final class InFlightCapture<I, R> {
     private CompletedPair<I, R> takeCompletedPairIfReady() {
         if (!isActive() || this.image == null) return null;
         if (expectsMetadata && this.result == null) return null;
-        this.completed = true;
+        phase = Phase.COMPLETED;
         CompletedPair<I, R> pair = new CompletedPair<>(this.image, this.result, this.recipe);
         this.image = null;
         this.result = null;

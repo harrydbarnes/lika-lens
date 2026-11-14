@@ -16,6 +16,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -49,7 +50,18 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
     private static final int PICK_VIDEO_REQUEST = 62;
 
     // Source state
-    private boolean isVideoMode = false;
+    private enum SourceMode { PHOTOS, VIDEO }
+    private SourceMode sourceMode = SourceMode.PHOTOS;
+    private enum ScreenState { ACTIVE, PAUSED, CLOSED }
+    private ScreenState screenState = ScreenState.PAUSED;
+    private enum Playback { PLAYING, PAUSED }
+    private Playback playback = Playback.PLAYING;
+    private enum Picker { NONE, PHOTOS, VIDEO }
+    private Picker picker = Picker.NONE;
+    private final JobState previewJob = new JobState();
+    private final JobState exportJob = new JobState();
+    private GifStudioDialogs.ProgressHandle exportProgress;
+    private boolean isVideoMode() { return sourceMode == SourceMode.VIDEO; }
     private final List<Uri> photoUris = new ArrayList<>();
     private Uri videoUri = null;
     private long videoDurationMs = 0;
@@ -70,7 +82,7 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
     private TextView previewTimecode;
     private final List<Bitmap> previewFrames = new ArrayList<>();
     private int currentPreviewIndex = 0;
-    private boolean isPreviewPlaying = true;
+
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
 
@@ -102,7 +114,7 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
     private final Runnable previewLoopRunnable = new Runnable() {
         @Override
         public void run() {
-            if (!isPreviewPlaying || previewFrames.isEmpty()) return;
+            if (screenState != ScreenState.ACTIVE || playback != Playback.PLAYING || previewFrames.isEmpty()) return;
             currentPreviewIndex = (currentPreviewIndex + 1) % previewFrames.size();
             if (previewImageView != null && currentPreviewIndex < previewFrames.size()) {
                 Bitmap bmp = previewFrames.get(currentPreviewIndex);
@@ -138,9 +150,9 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
         }
 
         String vUri = getIntent().getStringExtra(EXTRA_VIDEO_URI);
-        if (vUri != null) {
+        if (vUri != null && !vUri.trim().isEmpty()) {
             videoUri = Uri.parse(vUri);
-            isVideoMode = true;
+            sourceMode = SourceMode.VIDEO;
         }
 
         // If nothing passed, default to loading latest photos from library
@@ -159,17 +171,22 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
     @Override
     protected void onResume() {
         super.onResume();
+        screenState = ScreenState.ACTIVE;
         startPreviewPlayback();
     }
 
     @Override
     protected void onPause() {
+        screenState = ScreenState.PAUSED;
         stopPreviewPlayback();
         super.onPause();
     }
 
     @Override
     protected void onDestroy() {
+        screenState = ScreenState.CLOSED;
+        previewJob.close(); exportJob.close();
+        if (exportProgress != null) exportProgress.dismiss();
         stopPreviewPlayback();
         recyclePreviewFrames();
         worker.shutdown();
@@ -245,27 +262,27 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
         title.setPadding(dp(8), 0, 0, 0);
         topBar.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        modePhotosTab = controlsBuilder.pill("PHOTOS", !isVideoMode);
+        modePhotosTab = controlsBuilder.pill("PHOTOS", !isVideoMode());
         modePhotosTab.setOnClickListener(v -> {
             hapticClick(v);
-            if (isVideoMode) {
-                isVideoMode = false;
+            if (isVideoMode()) {
+                sourceMode = SourceMode.PHOTOS;
                 updateModeUi();
                 loadPreviewFramesAsync();
             }
         });
         topBar.addView(modePhotosTab, new LinearLayout.LayoutParams(-2, dp(30)));
 
-        modeVideoTab = controlsBuilder.pill("VIDEO", isVideoMode);
+        modeVideoTab = controlsBuilder.pill("VIDEO", isVideoMode());
         LinearLayout.LayoutParams mvLp = new LinearLayout.LayoutParams(-2, dp(30));
         mvLp.leftMargin = dp(6);
         topBar.addView(modeVideoTab, mvLp);
         modeVideoTab.setOnClickListener(v -> {
             hapticClick(v);
-            if (!isVideoMode) {
-                isVideoMode = true;
+            if (!isVideoMode()) {
                 if (videoUri == null) promptPickVideo();
                 else {
+                    sourceMode = SourceMode.VIDEO;
                     updateModeUi();
                     loadPreviewFramesAsync();
                 }
@@ -296,7 +313,7 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
 
     private View buildControlsPane(boolean isWide) {
         return controlsBuilder.buildControlsPane(
-                isVideoMode,
+                isVideoMode(),
                 selectedFps,
                 selectedResolution,
                 bounceMode,
@@ -311,26 +328,26 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
     }
 
     private void updateModeUi() {
-        controlsBuilder.applyPillStyle(modePhotosTab, !isVideoMode);
-        controlsBuilder.applyPillStyle(modeVideoTab, isVideoMode);
+        controlsBuilder.applyPillStyle(modePhotosTab, !isVideoMode());
+        controlsBuilder.applyPillStyle(modeVideoTab, isVideoMode());
         if (controlsBuilder.photoControlsGroup != null) {
-            controlsBuilder.photoControlsGroup.setVisibility(isVideoMode ? View.GONE : View.VISIBLE);
+            controlsBuilder.photoControlsGroup.setVisibility(isVideoMode() ? View.GONE : View.VISIBLE);
         }
         if (controlsBuilder.videoControlsGroup != null) {
-            controlsBuilder.videoControlsGroup.setVisibility(isVideoMode ? View.VISIBLE : View.GONE);
+            controlsBuilder.videoControlsGroup.setVisibility(isVideoMode() ? View.VISIBLE : View.GONE);
         }
     }
 
 
     private void togglePreviewPlayPause() {
         hapticClick(previewImageView);
-        isPreviewPlaying = !isPreviewPlaying;
-        if (isPreviewPlaying) startPreviewPlayback();
+        playback = playback == Playback.PLAYING ? Playback.PAUSED : Playback.PLAYING;
+        if (playback == Playback.PLAYING) startPreviewPlayback();
         else stopPreviewPlayback();
     }
 
     private void startPreviewPlayback() {
-        isPreviewPlaying = true;
+        if (screenState != ScreenState.ACTIVE || playback != Playback.PLAYING) return;
         mainHandler.removeCallbacks(previewLoopRunnable);
         mainHandler.post(previewLoopRunnable);
     }
@@ -352,39 +369,40 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
     // Frame Extraction & Preview Loading
     // =========================================================================
     private void loadPreviewFramesAsync() {
+        if (screenState == ScreenState.CLOSED) return;
+        final long ticket = previewJob.begin(JobState.Phase.LOADING);
+        final boolean video = isVideoMode();
+        final Uri sourceVideo = videoUri;
+        final List<Uri> photos = new ArrayList<>(photoUris);
+        final int fps = selectedFps, start = videoStartSec, duration = videoDurationSec;
+        final String lut = selectedLutProfile;
+        final boolean bounce = bounceMode;
         stopPreviewPlayback();
         if (previewTimecode != null) previewTimecode.setText("PREPARING FRAMES…");
-
         worker.execute(() -> {
-            List<Bitmap> loaded = GifMediaHelper.loadPreviewFrames(
-                    this,
-                    isVideoMode,
-                    videoUri,
-                    photoUris,
-                    selectedFps,
-                    videoStartSec,
-                    videoDurationSec,
-                    selectedLutProfile,
-                    bounceMode,
-                    (dur, rot) -> {
-                        videoDurationMs = dur;
-                        videoRotation = rot;
-                    }
-            );
-
-            final List<Bitmap> finalFrames = loaded;
+            if (!previewJob.accepts(ticket)) return;
+            final long[] metadata = new long[2];
+            List<Bitmap> loaded;
+            try {
+                loaded = GifMediaHelper.loadPreviewFrames(getApplicationContext(), video, sourceVideo, photos,
+                        fps, start, duration, lut, bounce, (dur,rot) -> { metadata[0]=dur; metadata[1]=rot; },() -> previewJob.accepts(ticket));
+            } catch (Exception error) {
+                mainHandler.post(() -> { if (previewJob.move(ticket, JobState.Phase.FAILED) && screenState != ScreenState.CLOSED)
+                    previewTimecode.setText("COULD NOT LOAD PREVIEW"); });
+                return;
+            }
             mainHandler.post(() -> {
-                recyclePreviewFrames();
-                previewFrames.addAll(finalFrames);
-                currentPreviewIndex = 0;
-                if (!previewFrames.isEmpty()) {
-                    updatePreviewBitmap();
-                    startPreviewPlayback();
-                } else {
-                    if (previewTimecode != null) {
-                        previewTimecode.setText(isVideoMode ? "SELECT A VIDEO TO START" : "SELECT PHOTOS TO START");
-                    }
+                if (!previewJob.accepts(ticket) || screenState == ScreenState.CLOSED) {
+                    for (Bitmap b : loaded) if (b != null && !b.isRecycled()) b.recycle();
+                    return;
                 }
+                recyclePreviewFrames();
+                previewFrames.addAll(loaded);
+                videoDurationMs=metadata[0]; videoRotation=(int) metadata[1];
+                currentPreviewIndex=0;
+                previewJob.move(ticket, JobState.Phase.READY);
+                if (!previewFrames.isEmpty()) { updatePreviewBitmap(); startPreviewPlayback(); }
+                else if (previewTimecode != null) previewTimecode.setText(video ? "SELECT A VIDEO TO START" : "SELECT PHOTOS TO START");
             });
         });
     }
@@ -400,10 +418,11 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
     // GIF Export Pipeline
     // =========================================================================
     private void startGifExport() {
+        if (exportJob.isBusy() || exportJob.isClosed()) return;
         GifExporter.Params params = new GifExporter.Params();
-        params.isVideoMode = isVideoMode;
+        params.isVideoMode = isVideoMode();
         params.videoUri = videoUri;
-        params.photoUris = photoUris;
+        params.photoUris = new ArrayList<>(photoUris);
         params.targetRes = selectedResolution;
         params.targetFps = selectedFps;
         params.boomerang = bounceMode;
@@ -411,28 +430,43 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
         params.videoStartSec = videoStartSec;
         params.videoDurationSec = videoDurationSec;
 
-        GifExporter.startExport(this, params, worker, mainHandler);
+        exportProgress = GifExporter.startExport(this, params, worker, mainHandler, exportJob);
     }
 
     // =========================================================================
     // System Pickers
     // =========================================================================
     private void promptPickPhotos() {
+        if (picker != Picker.NONE) return;
+        picker = Picker.PHOTOS;
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.setType("image/*");
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        startActivityForResult(Intent.createChooser(intent, "Select Photos for GIF"), PICK_PHOTO_REQUEST);
+        try {
+            startActivityForResult(Intent.createChooser(intent, "Select Photos for GIF"), PICK_PHOTO_REQUEST);
+        } catch (RuntimeException e) {
+            picker = Picker.NONE;
+            Toast.makeText(this, "No photo picker available.", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void promptPickVideo() {
+        if (picker != Picker.NONE) return;
+        picker = Picker.VIDEO;
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.setType("video/*");
-        startActivityForResult(Intent.createChooser(intent, "Select Video for GIF"), PICK_VIDEO_REQUEST);
+        try {
+            startActivityForResult(Intent.createChooser(intent, "Select Video for GIF"), PICK_VIDEO_REQUEST);
+        } catch (RuntimeException e) {
+            picker = Picker.NONE;
+            Toast.makeText(this, "No video picker available.", Toast.LENGTH_SHORT).show();
+        }
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        picker = Picker.NONE;
         if (resultCode != RESULT_OK || data == null) return;
 
         if (requestCode == PICK_PHOTO_REQUEST) {
@@ -446,14 +480,14 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
                 Uri u = data.getData();
                 if (!photoUris.contains(u)) photoUris.add(u);
             }
-            isVideoMode = false;
+            sourceMode = SourceMode.PHOTOS;
             updateModeUi();
             refreshFilmstripUi();
             loadPreviewFramesAsync();
         } else if (requestCode == PICK_VIDEO_REQUEST) {
             if (data.getData() != null) {
                 videoUri = data.getData();
-                isVideoMode = true;
+                sourceMode = SourceMode.VIDEO;
                 updateModeUi();
                 loadPreviewFramesAsync();
             }

@@ -172,6 +172,8 @@ public class CameraStateMachinesTest {
 
         assertTrue(sm.beginStandardTrigger());
         assertTrue(sm.markPermissionPending());
+        assertFalse(sm.beginPreparing());
+        assertTrue(sm.markPermissionReady());
         assertTrue(sm.beginPreparing());
         assertTrue(sm.isPreparing());
         assertTrue(sm.isBusy());

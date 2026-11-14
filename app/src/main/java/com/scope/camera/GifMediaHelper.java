@@ -36,6 +36,11 @@ public final class GifMediaHelper {
             int durationSec,
             VideoMetadataListener listener
     ) {
+        return extractVideoFrames(context,uri,maxDimension,fps,startSec,durationSec,listener,() -> true);
+    }
+
+    static List<Bitmap> extractVideoFrames(Context context,Uri uri,int maxDimension,int fps,int startSec,
+                                           int durationSec,VideoMetadataListener listener,java.util.function.BooleanSupplier current) {
         List<Bitmap> frames = new ArrayList<>();
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
         try {
@@ -58,6 +63,7 @@ public final class GifMediaHelper {
             int maxFrames = 60; // Safe upper bound for memory
 
             for (long timeMs = startMs; timeMs < endMs && frames.size() < maxFrames; timeMs += intervalMs) {
+                if(!current.getAsBoolean()) break;
                 long timeUs = timeMs * 1000L;
                 Bitmap frame = null;
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
@@ -198,14 +204,21 @@ public final class GifMediaHelper {
             boolean bounceMode,
             VideoMetadataListener listener
     ) {
+        return loadPreviewFrames(context,isVideoMode,videoUri,photoUris,fps,startSec,durationSec,lutProfile,bounceMode,listener,() -> true);
+    }
+
+    static List<Bitmap> loadPreviewFrames(Context context,boolean isVideoMode,Uri videoUri,List<Uri> photoUris,
+            int fps,int startSec,int durationSec,String lutProfile,boolean bounceMode,VideoMetadataListener listener,
+            java.util.function.BooleanSupplier current) {
         List<Bitmap> loaded = new ArrayList<>();
         try {
             if (isVideoMode) {
                 if (videoUri != null) {
-                    loaded.addAll(extractVideoFrames(context, videoUri, 320, fps, startSec, durationSec, listener));
+                    loaded.addAll(extractVideoFrames(context, videoUri, 320, fps, startSec, durationSec, listener,current));
                 }
             } else {
                 for (Uri uri : photoUris) {
+                    if(!current.getAsBoolean()) break;
                     Bitmap bmp = decodeAndScaleBitmap(context, uri, 320);
                     if (bmp != null) loaded.add(bmp);
                 }
@@ -214,6 +227,7 @@ public final class GifMediaHelper {
             if (!"NONE".equals(lutProfile)) {
                 LutManager.Lut3D lut = LutManager.generateBuiltIn(lutProfile, 17);
                 for (int i = 0; i < loaded.size(); i++) {
+                    if(!current.getAsBoolean()) break;
                     Bitmap orig = loaded.get(i);
                     Bitmap graded = LutManager.applyToBitmap(orig, lut, 1.0f);
                     if (graded != null && graded != orig) {
@@ -223,7 +237,7 @@ public final class GifMediaHelper {
                 }
             }
 
-            if (bounceMode && loaded.size() > 2) {
+            if (current.getAsBoolean() && bounceMode && loaded.size() > 2) {
                 List<Bitmap> bounced = new ArrayList<>(loaded);
                 for (int i = loaded.size() - 2; i > 0; i--) {
                     bounced.add(loaded.get(i));
