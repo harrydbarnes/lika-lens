@@ -47,6 +47,7 @@ public class PhotoEditorActivity extends Activity {
     private ImageView preview;
     private TextView status;
     private TextView saveButton;
+    private TextView menuButton;
     private LinearLayout controlsList;
     private final JobState sourceJob = new JobState();
     private final JobState previewJob = new JobState();
@@ -225,11 +226,11 @@ public class PhotoEditorActivity extends Activity {
         title.setEllipsize(TextUtils.TruncateAt.END);
         title.setPadding(dp(8), 0, dp(8), 0);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView more = pill("⋮", false);
-        more.setTextSize(22);
-        more.setContentDescription("More editing actions");
-        header.addView(more, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        more.setOnClickListener(v -> showEditorMenu(more));
+        menuButton = pill("⋮", false);
+        menuButton.setTextSize(22);
+        menuButton.setContentDescription("More editing actions");
+        header.addView(menuButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        menuButton.setOnClickListener(v -> showEditorMenu(menuButton));
         saveButton = pill("Save copy", true);
         saveButton.setPadding(dp(14), 0, dp(14), 0);
         LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(-2, dp(44));
@@ -802,6 +803,7 @@ public class PhotoEditorActivity extends Activity {
         final long loadTicket = sourceJob.begin(JobState.Phase.LOADING);
         final RawDeveloper.Look loadLook = look.copy();
         saveButton.setEnabled(false);
+        updateInputAvailability();
         status.setText("READING SENSOR ORIGINAL");
         worker.execute(() -> {
             try {
@@ -863,6 +865,7 @@ public class PhotoEditorActivity extends Activity {
                     if (!sourceJob.move(loadTicket, JobState.Phase.FAILED) || isDestroyed()) return;
                     status.setText("COULD NOT OPEN SENSOR ORIGINAL");
                     saveButton.setEnabled(false);
+                    updateInputAvailability();
                     Toast.makeText(this, "Could not develop this frame.", Toast.LENGTH_SHORT).show();
                 });
             }
@@ -976,8 +979,11 @@ public class PhotoEditorActivity extends Activity {
     private void updateInputAvailability() {
         boolean enabled=sourceJob.phase()==JobState.Phase.READY && !saveJob.isBusy();
         setInputTreeEnabled(controlsList,enabled);setInputTreeEnabled(tabBar,enabled);
-        if(undoButton!=null) undoButton.setEnabled(enabled && history.canUndo());
-        if(redoButton!=null) redoButton.setEnabled(enabled && history.canRedo());
+        if(menuButton!=null) {
+            menuButton.setEnabled(enabled);
+            menuButton.setAlpha(enabled?1f:.45f);
+        }
+        updateHistoryButtons();
     }
     private void setInputTreeEnabled(View view,boolean enabled) {
         if(view==null) return;view.setEnabled(enabled);
@@ -989,8 +995,11 @@ public class PhotoEditorActivity extends Activity {
     private void recordEdit() { history.record(look); updateHistoryButtons(); }
     private void updateHistoryButtons() {
         if (undoButton == null || redoButton == null) return;
-        undoButton.setEnabled(history.canUndo()); redoButton.setEnabled(history.canRedo());
-        undoButton.setAlpha(history.canUndo() ? 1f : .4f); redoButton.setAlpha(history.canRedo() ? 1f : .4f);
+        boolean interactive = sourceJob.phase() == JobState.Phase.READY && !saveJob.isBusy();
+        undoButton.setEnabled(interactive && history.canUndo());
+        redoButton.setEnabled(interactive && history.canRedo());
+        undoButton.setAlpha(interactive && history.canUndo() ? 1f : .4f);
+        redoButton.setAlpha(interactive && history.canRedo() ? 1f : .4f);
     }
     private void refreshEditingState() {
         stopComparing();
@@ -998,6 +1007,7 @@ public class PhotoEditorActivity extends Activity {
         populateControls(); updateHistoryButtons(); queuePreview();
     }
     private void showEditorMenu(View anchor) {
+        if (sourceJob.phase() != JobState.Phase.READY || saveJob.isBusy()) return;
         PopupMenu menu = new PopupMenu(this, anchor);
         for (String title : new String[]{"Copy look", "Paste look", "Save as custom look…", "Reset adjustments…"}) menu.getMenu().add(title);
         menu.getMenu().getItem(1).setEnabled(PhotoEditStore.hasClipboard(this));

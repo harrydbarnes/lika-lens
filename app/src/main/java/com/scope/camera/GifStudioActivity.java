@@ -441,7 +441,12 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.setType("image/*");
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        startActivityForResult(Intent.createChooser(intent, "Select Photos for GIF"), PICK_PHOTO_REQUEST);
+        try {
+            startActivityForResult(Intent.createChooser(intent, "Select Photos for GIF"), PICK_PHOTO_REQUEST);
+        } catch (RuntimeException e) {
+            picker = Picker.NONE;
+            Toast.makeText(this, "No photo picker available.", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void promptPickVideo() {
@@ -449,7 +454,12 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
         picker = Picker.VIDEO;
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.setType("video/*");
-        startActivityForResult(Intent.createChooser(intent, "Select Video for GIF"), PICK_VIDEO_REQUEST);
+        try {
+            startActivityForResult(Intent.createChooser(intent, "Select Video for GIF"), PICK_VIDEO_REQUEST);
+        } catch (RuntimeException e) {
+            picker = Picker.NONE;
+            Toast.makeText(this, "No video picker available.", Toast.LENGTH_SHORT).show();
+        }
     }
 
     @Override

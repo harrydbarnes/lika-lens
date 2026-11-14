@@ -733,16 +733,20 @@ public class PhotoViewerActivity extends Activity {
             if(!imageJob.accepts(ticket)) return;
             try {
                 if(name!=null && name.toLowerCase(Locale.US).endsWith(".gif") && Build.VERSION.SDK_INT>=28) {
-                    android.graphics.drawable.Drawable drawable=android.graphics.ImageDecoder.decodeDrawable(
-                            android.graphics.ImageDecoder.createSource(getContentResolver(),uri));
-                    mainHandler.post(() -> {
-                        if(!imageJob.move(ticket,JobState.Phase.READY) || isDestroyed()) return;
-                        photoView.setImageDrawable(drawable);
-                        if(viewerActive && drawable instanceof android.graphics.drawable.AnimatedImageDrawable)
-                            ((android.graphics.drawable.AnimatedImageDrawable)drawable).start();
-                        photoView.post(this::fitImageToView);
-                    });
-                    return;
+                    try {
+                        android.graphics.drawable.Drawable drawable=android.graphics.ImageDecoder.decodeDrawable(
+                                android.graphics.ImageDecoder.createSource(getContentResolver(),uri));
+                        mainHandler.post(() -> {
+                            if(!imageJob.move(ticket,JobState.Phase.READY) || isDestroyed() || isFinishing()) return;
+                            photoView.setImageDrawable(drawable);
+                            if(viewerActive && drawable instanceof android.graphics.drawable.AnimatedImageDrawable)
+                                ((android.graphics.drawable.AnimatedImageDrawable)drawable).start();
+                            photoView.post(this::fitImageToView);
+                        });
+                        return;
+                    } catch(Exception decodeError) {
+                        android.util.Log.w("PhotoViewerActivity","ImageDecoder failed, falling back to BitmapFactory",decodeError);
+                    }
                 }
                 BitmapFactory.Options options=new BitmapFactory.Options();options.inJustDecodeBounds=true;
                 try(InputStream in=getContentResolver().openInputStream(uri)) { BitmapFactory.decodeStream(in,null,options); }

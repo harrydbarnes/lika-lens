@@ -117,5 +117,31 @@ public class WorkflowStateTest {
         assertFalse(video.isPermissionPending());assertTrue(video.isPermissionReady());
         video.cancelPermissionPending();assertFalse(video.beginPreparing());
     }
+    @Test public void fileBackedMediaOutputPreservesNestedSubdirectories() {
+        assertEquals("Lika Lens",MediaOutput.relativeSubdirectory("Pictures/Lika Lens","Pictures"));
+        assertEquals("Lika Lens/RAW",MediaOutput.relativeSubdirectory("Pictures/Lika Lens/RAW","Pictures"));
+        assertEquals("Lika Lens/2026-03/RAW",MediaOutput.relativeSubdirectory("Pictures/Lika Lens/2026-03/RAW","Pictures"));
+        assertEquals("Lika Lens",MediaOutput.relativeSubdirectory("Movies/Lika Lens/","Movies"));
+        assertEquals("Lika Lens",MediaOutput.relativeSubdirectory(null,"Pictures"));
+        assertEquals("Lika Lens",MediaOutput.relativeSubdirectory("Pictures","Pictures"));
+    }
+    @Test public void updateInstallPromptAllowsForegroundDialogWithoutActivityWindowFocus() {
+        assertTrue(AppUpdateManager.isActivityForeground(true,false,false));
+        assertTrue(AppUpdateManager.isActivityForeground(false,true,false));
+        assertTrue(AppUpdateManager.isActivityForeground(false,false,true));
+        assertFalse(AppUpdateManager.isActivityForeground(false,false,false));
+    }
+    @Test public void switchingCameraVideoTakeCanStopAndResetCleanly() {
+        VideoStateMachine video=new VideoStateMachine();
+        assertTrue(video.beginStandardTrigger());
+        assertTrue(video.beginPreparing());
+        assertTrue(video.markRecording());
+        assertTrue(video.beginCameraSwitch());
+        assertTrue(video.isSwitchingCamera());
+        video.beginStopping();
+        assertTrue(video.isStopping());
+        video.reset();
+        assertTrue(video.isIdle());
+    }
 
 }

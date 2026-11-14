@@ -31,6 +31,18 @@ final class MediaOutput implements AutoCloseable {
         this.context=context.getApplicationContext();this.uri=uri;this.file=file;
         temporary=file==null?null:new File(file.getPath()+".part");
     }
+    static String relativeSubdirectory(String directory,String rootDirectory) {
+        if(directory==null) return "Lika Lens";
+        String trimmed=directory.trim();
+        while(trimmed.startsWith("/")) trimmed=trimmed.substring(1);
+        while(trimmed.endsWith("/")) trimmed=trimmed.substring(0,trimmed.length()-1);
+        if(rootDirectory!=null && !rootDirectory.isEmpty()) {
+            if(trimmed.equals(rootDirectory)) return "Lika Lens";
+            String prefix=rootDirectory+"/";
+            if(trimmed.startsWith(prefix)) trimmed=trimmed.substring(prefix.length());
+        }
+        return trimmed.isEmpty()?"Lika Lens":trimmed;
+    }
     static MediaOutput allocate(Context context,String name,String mime,String directory,boolean publicFile) throws IOException {
         if(Build.VERSION.SDK_INT>=29 && publicFile) {
             ContentValues values=new ContentValues();values.put(MediaStore.MediaColumns.DISPLAY_NAME,name);
@@ -42,9 +54,13 @@ final class MediaOutput implements AutoCloseable {
             if(uri==null) throw new IOException("Could not allocate media output");
             return new MediaOutput(context,uri,null);
         }
-        File parent=publicFile && mime.startsWith("video/")
-                ?new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),"Lika Lens")
-                :new File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES),"Lika Lens");
+        boolean publicVideo=publicFile && mime!=null && mime.startsWith("video/");
+        String rootName=publicVideo?Environment.DIRECTORY_MOVIES:Environment.DIRECTORY_PICTURES;
+        File root=publicVideo
+                ?Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
+                :context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+        if(root==null) throw new IOException("Storage directory unavailable");
+        File parent=new File(root,relativeSubdirectory(directory,rootName).replace('/',File.separatorChar));
         if(!parent.isDirectory() && !parent.mkdirs()) throw new IOException("Could not create output directory");
         return new MediaOutput(context,null,new File(parent,name));
     }

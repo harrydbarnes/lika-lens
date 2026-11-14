@@ -339,6 +339,8 @@ public class GalleryActivity extends Activity {
         loadPhotos();
     }
 
+    private String exportStatusLabel = "SAVING COPIES…";
+
     private void updateSelectionBar() {
         if (selectionBar == null) return;
         if (selectionActionButton != null) {
@@ -346,7 +348,7 @@ public class GalleryActivity extends Activity {
             selectionActionButton.setAlpha(selectionActionButton.isEnabled() ? 1f : 0.45f);
         }
         if(exportJob.isBusy()) {
-            selectionBar.setVisibility(View.VISIBLE);selectionCountView.setText("SAVING COPIES…");
+            selectionBar.setVisibility(View.VISIBLE);selectionCountView.setText(exportStatusLabel);
         } else if ((selectionMode == SelectionMode.SELECTING) && !selectedUris.isEmpty()) {
             selectionBar.setVisibility(View.VISIBLE);
             selectionCountView.setText(String.format(Locale.US, "%d selected", selectedUris.size()));
@@ -467,6 +469,7 @@ public class GalleryActivity extends Activity {
         }
         final long proofTicket=exportJob.tryBegin(JobState.Phase.SAVING);
         if(proofTicket==0) return;
+        exportStatusLabel = "CREATING PROOF SHEET…";
         updateSelectionBar();
         Toast.makeText(this, "Developing 35mm Darkroom Proof Sheet…", Toast.LENGTH_SHORT).show();
         ContactSheetGenerator.generate(this, photos, new ContactSheetGenerator.Callback() {
@@ -582,8 +585,8 @@ public class GalleryActivity extends Activity {
         if(exportTicket==0) return;
         final List<PhotoRepository.Photo> snapshot = new ArrayList<>(photos);
         final RawDeveloper.Look recipe = look.copy();
+        exportStatusLabel = "SAVING COPIES…";
         updateSelectionBar();
-        selectionCountView.setText("SAVING COPIES…");
         android.content.Context context = getApplicationContext();
         new Thread(() -> {
             int saved = 0;

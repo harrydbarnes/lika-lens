@@ -86,6 +86,19 @@ public final class AppUpdateManager {
     }
     private static Dialog sCurrentUpdateDialog;
     private static java.lang.ref.WeakReference<Activity> dialogOwner = new java.lang.ref.WeakReference<>(null);
+    private static java.lang.ref.WeakReference<Activity> resumedActivity = new java.lang.ref.WeakReference<>(null);
+
+    static boolean isActivityForeground(boolean sameResumedActivity, boolean hasShowingDialogForActivity, boolean hasWindowFocus) {
+        return sameResumedActivity || hasShowingDialogForActivity || hasWindowFocus;
+    }
+
+    private static boolean isForegroundActivity(Activity activity) {
+        if (activity == null || activity.isFinishing()) return false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed()) return false;
+        boolean sameResumed = resumedActivity.get() == activity;
+        boolean showingDialog = sCurrentUpdateDialog != null && sCurrentUpdateDialog.isShowing() && dialogOwner.get() == activity;
+        return isActivityForeground(sameResumed, showingDialog, activity.hasWindowFocus());
+    }
 
     static String actionLabelForState(UpdateState state) {
         if (state == null) return "DOWNLOAD & INSTALL";
@@ -412,15 +425,19 @@ public final class AppUpdateManager {
                     output.flush();
                 }
 
-                if (destFile.exists()) destFile.delete();
-                tempFile.renameTo(destFile);
+                if (destFile.exists() && !destFile.delete()) {
+                    throw new java.io.IOException("Could not replace existing APK");
+                }
+                if (!tempFile.renameTo(destFile)) {
+                    throw new java.io.IOException("Could not finalize downloaded APK");
+                }
                 destFile.setReadable(true, false);
                 if(!session.owns(downloadTicket)) return;
                 session.apk = destFile;
                 session.state = UpdateState.READY_TO_INSTALL;
 
                 mainHandler.post(() -> {
-                    if(!session.owns(downloadTicket) || activity.isFinishing() || activity.isDestroyed() || !activity.hasWindowFocus()) return;
+                    if(!session.owns(downloadTicket) || !isForegroundActivity(activity)) return;
                     if (listener != null) listener.onComplete(destFile);
                     promptInstall(activity, destFile, info);
                 });
@@ -494,14 +511,18 @@ public final class AppUpdateManager {
      * once unknown app sources permission has been granted, or re-show update dialog if returned.
      */
     public static void onPause(Activity activity) {
+        if (resumedActivity.get() == activity) {
+            resumedActivity.clear();
+        }
         if(sCurrentUpdateDialog!=null && dialogOwner.get()==activity) {
-            sCurrentUpdateDialog.dismiss();sCurrentUpdateDialog=null;
+            sCurrentUpdateDialog.dismiss();sCurrentUpdateDialog=null;dialogOwner.clear();
         }
     }
 
     public static void onResume(Activity activity) {
         if (activity == null || activity.isFinishing()) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed()) return;
+        resumedActivity = new java.lang.ref.WeakReference<>(activity);
 
         // If the app has already updated to or past the pending update, clear pending state
         if (session.info != null) {

@@ -453,6 +453,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private long accumulatedVideoDurationMs;
     private int lockedVideoOrientation = -1;
     private final List<File> videoSegments = new ArrayList<>();
+    private AlertDialog videoRecoveryDialog;
+    private boolean videoRecoveryDeferred;
     private final InteractionState.Lock videoLock = new InteractionState.Lock();
     private String cameraId;
     private String mainCameraId;
@@ -991,6 +993,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     @Override protected void onPause() {
         activityResumed = false;
         AppUpdateManager.onPause(this);
+        if (videoRecoveryDialog != null && videoRecoveryDialog.isShowing()) {
+            videoRecoveryDialog.dismiss();
+            videoRecoveryDialog = null;
+        }
         gesture.cancel();motion.reset();palm.resetTracking();dirtyLens.resetTracking();
         videoLock.cancelHold();
         if(videoState.isQuickTake()) videoState.cancelPermissionPending();
@@ -2443,7 +2449,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void startVideoRecording() {
-        if ((!videoMode && !videoState.isQuickTake()) || videoState.isBusy()) return;
+        if ((!videoMode && !videoState.isQuickTake())
+                || videoState.isBusy()
+                || videoState.isPermissionPending()
+                || videoState.isPermissionReady()) return;
         if (cameraDevice == null || !cameraLifecycleState.isStarted()) {
             videoState.reset();
             showMessage("Camera is warming up.");
@@ -2467,12 +2476,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             requestPermissions(requestedPermissions.toArray(new String[0]), VIDEO_PERMISSION);
             return;
         }
-        synchronized (videoSegments) {
-            for (File f : videoSegments) if (f != null && f.exists()) f.delete();
-            videoSegments.clear();
-        }
-        accumulatedVideoDurationMs = 0L;
-        lockedVideoOrientation = jpegOrientation();
         beginVideoRecording(wantAudio && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED);
     }
 
@@ -2481,6 +2484,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 || cameraDevice == null || !videoState.beginPreparing()) {
             return;
         }
+        synchronized (videoSegments) {
+            for (File f : videoSegments) if (f != null && f.exists()) f.delete();
+            videoSegments.clear();
+        }
+        accumulatedVideoDurationMs = 0L;
+        lockedVideoOrientation = jpegOrientation();
         runOnUiThread(this::updateVideoModeUi);
         if (cameraHandler == null) {
             failVideoStart("Camera is not ready for video.");
@@ -2922,19 +2931,42 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void offerVideoRecovery() {
-        if (videoSaveJobs.get() > 0 || videoState.isBusy()) return;
+        if (videoSaveJobs.get() > 0 || videoState.isBusy()
+                || videoState.isPermissionPending() || videoState.isPermissionReady()
+                || videoRecoveryDeferred
+                || (videoRecoveryDialog != null && videoRecoveryDialog.isShowing())) {
+            return;
+        }
         try {
-            File[] files = VideoSaveJob.recoveryDirectory(getFilesDir()).listFiles((dir,name) -> name.endsWith(".mp4"));
-            if (files != null && files.length > 0 && captureJobs.size() == 0) {
-                java.util.Arrays.sort(files, java.util.Comparator.comparing(File::getName));
+            File[] files = VideoSaveJob.recoveryDirectory(getFilesDir()).listFiles((dir, name) -> name.endsWith(".mp4"));
+            if (files == null || files.length == 0) return;
+            java.util.List<File> validFiles = new java.util.ArrayList<>();
+            for (File f : files) {
+                if (f != null && f.isFile() && f.length() > 1024) validFiles.add(f);
+                else if (f != null && f.isFile()) f.delete();
+            }
+            if (!validFiles.isEmpty()) {
+                validFiles.sort(java.util.Comparator.comparing(File::getName));
                 // Each recording's segment names carry a timestamp; offer individual segments on restart
                 // rather than stitching files from unrelated recordings into one take.
-                new AlertDialog.Builder(this).setTitle("Preserved video recording")
+                AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Preserved video recording")
                         .setMessage("A recording was not fully saved. Save its preserved segments individually?")
-                        .setPositiveButton("Save segments", (d,w) -> { for (File f : files) publishVideoSegments(java.util.Collections.singletonList(f)); })
-                        .setNegativeButton("Later", null).show();
+                        .setPositiveButton("Save segments", (d, w) -> {
+                            for (File f : validFiles) publishVideoSegments(java.util.Collections.singletonList(f));
+                        })
+                        .setNeutralButton("Discard", (d, w) -> {
+                            for (File f : validFiles) f.delete();
+                        })
+                        .setNegativeButton("Later", (d, w) -> videoRecoveryDeferred = true)
+                        .create();
+                dialog.setOnCancelListener(d -> videoRecoveryDeferred = true);
+                dialog.setOnDismissListener(d -> {
+                    if (videoRecoveryDialog == dialog) videoRecoveryDialog = null;
+                });
+                videoRecoveryDialog = dialog;
+                dialog.show();
             }
-        } catch (java.io.IOException e) { Log.w(TAG,"Could not check video recovery",e); }
+        } catch (java.io.IOException e) { Log.w(TAG, "Could not check video recovery", e); }
     }
 
     /** Seamlessly stitches multiple MP4 segments recorded across camera/lens switches into one continuous MP4. */
@@ -4107,11 +4139,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         delayedCaptureEpoch.invalidate();
         timerHandler.removeCallbacksAndMessages(null);
         setTimerTorchPulse(false);
+        boolean wasDelayed = stillCaptureState.isTimerRunning() || stillCaptureState == StillCaptureState.SCREEN_FLASH;
+        if (wasDelayed) stillCaptureState = StillCaptureState.IDLE;
         runOnUiThread(() -> {
             if(screenFlashOverlay!=null) { screenFlashOverlay.animate().cancel();screenFlashOverlay.setVisibility(View.GONE); }
             restoreScreenFlashBrightness();
+            if (wasDelayed && captureButton != null) captureButton.setAlpha(1.0f);
         });
-        if (stillCaptureState.isTimerRunning() || stillCaptureState == StillCaptureState.SCREEN_FLASH) stillCaptureState = StillCaptureState.IDLE;
     }
 
     private void triggerCaptureWithScreenFlashIfNeeded() {
@@ -5265,7 +5299,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         requestedZoom = factor;
         updateLensButtons(factor);
         if (textureView != null) textureView.setAlpha(.82f);
-        closeCamera();
+        closeCamera(true);
         openCameraIfReady();
     }
 
@@ -5461,7 +5495,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 primaryFocalLength = bestFocal;
             }
             updateLensButtons(1f);
-            closeCamera();
+            closeCamera(true);
             openCameraIfReady();
         } catch (CameraAccessException e) {
             showMessage("Could not switch camera.");
@@ -6700,11 +6734,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void closeCamera() {
+        closeCamera(false);
+    }
+
+    private void closeCamera(boolean preserveVideoSwitch) {
         cameraEpoch.invalidate();
         cancelDelayedCapture();
         if(activityResumed || videoState.isQuickTake()) videoState.cancelPermissionPending();
         if (stillCaptureState.isTimerRunning()) cancelTimerCountdown();
-        if (!videoState.isSwitchingCamera() && (videoState.isRecordingOrPaused() || videoState.isPreparing() || mediaRecorder != null)) {
+        boolean shouldStopVideo = videoState.isRecordingOrPaused()
+                || videoState.isPreparing()
+                || mediaRecorder != null
+                || (!preserveVideoSwitch && videoState.isSwitchingCamera());
+        if (shouldStopVideo) {
             stopVideoRecording(false);
         }
         if (zoomAnimator != null) { zoomAnimator.cancel(); zoomAnimator = null; }
