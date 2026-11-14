@@ -1003,6 +1003,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         volumeKeyHandler.removeCallbacks(volumeQuickTakeRunnable);
         volumeKeyHolding = false;
         focusHandler.removeCallbacksAndMessages(null);
+        if (focusMode != FocusMode.LOCKED
+                && (focusMode != FocusMode.CONTINUOUS || currentAfRegions != null || currentAeRegions != null)) {
+            if (focusReticle != null) focusReticle.fadeOut();
+            resetFocusToContinuous();
+        }
         timerHandler.removeCallbacksAndMessages(null);
         liveLookPreview.clear();
         if (sensorManager != null) {
