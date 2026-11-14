@@ -222,6 +222,7 @@ final class RawDeveloper {
     /** Precomputed frame-invariant look constants to eliminate per-pixel String checks and redundant math. */
     static final class PreparedLook {
         final Look look;
+        final boolean displayReferred;
         final int brainId;
         final int curveId;
         final int hlRecId;
@@ -234,7 +235,7 @@ final class RawDeveloper {
         final float logContrast;
         final float shadowDepth;
         final float knee;
-        final float shoulderFactor;
+        final float shoulderSpan;
         final float satBase;
         final float rollOff;
         final float rollOffSlope;
@@ -254,7 +255,12 @@ final class RawDeveloper {
         final float displayWbShift;
 
         PreparedLook(Look look, RawArchive.Frame frame, LutManager.Lut3D lut) {
+            this(look, frame, lut, false);
+        }
+
+        PreparedLook(Look look, RawArchive.Frame frame, LutManager.Lut3D lut, boolean displayReferred) {
             this.look = look != null ? look : new Look();
+            this.displayReferred = displayReferred;
             this.exposureScale = (float) Math.pow(2.0, this.look.exposureEv);
             this.displayWbShift = this.look.whiteBalanceKelvin <= 0 ? 1f
                     : (float) Math.sqrt(clamp(this.look.whiteBalanceKelvin / 5600f, .55f, 1.45f));
@@ -297,6 +303,16 @@ final class RawDeveloper {
             } else {
                 effectiveContrast = this.look.contrast * 1.06f;
             }
+            if (displayReferred) {
+                // Camera2 preview and JPEG inputs already include the ISP baseline S-curve (~1.12);
+                // normalize relative to 1.12 so NEUTRAL stays display-neutral and film brains don't double-stack.
+                if (this.brainId == BRAIN_ID_NEUTRAL) {
+                    effectiveContrast = this.look.contrast / 1.12f;
+                } else {
+                    effectiveContrast = 1.0f + (effectiveContrast - 1.12f) * 0.72f;
+                }
+                effectivePivot = clamp(effectivePivot * 1.15f, 0.18f, 0.45f);
+            }
             if (push1) {
                 effectiveContrast *= 1.14f;
                 effectivePivot *= 0.92f;
@@ -310,7 +326,11 @@ final class RawDeveloper {
             this.safePivot = clamp(effectivePivot, 0.02f, 0.85f);
             this.safeContrast = clamp(effectiveContrast, 0.35f, 2.50f);
             if (this.look.easyMode && !push1 && !push2) {
-                if (this.brainId == BRAIN_ID_KODACHROME) {
+                if (displayReferred) {
+                    this.toeContrast = this.brainId == BRAIN_ID_NEUTRAL
+                            ? this.safeContrast
+                            : clamp(this.safeContrast * 0.94f, 0.86f, 1.25f);
+                } else if (this.brainId == BRAIN_ID_KODACHROME) {
                     this.toeContrast = clamp(this.safeContrast * 0.94f, 0.95f, 1.38f);
                 } else if (this.brainId == BRAIN_ID_BLEACH) {
                     this.toeContrast = clamp(this.safeContrast * 0.96f, 1.05f, 1.45f);
@@ -344,19 +364,24 @@ final class RawDeveloper {
             if (this.brainId == BRAIN_ID_NEUTRAL && !push1 && !push2 && !pull1) {
                 this.liftedShadows = false;
                 sDepth = Math.max(0f, sDepth - 0.36f) * 0.50f;
-            } else if (shadowProf.startsWith("Lifted") || this.brainId == BRAIN_ID_FUJI_ETERNA || pull1) {
-                this.liftedShadows = !push1 && !push2;
-                sDepth *= pull1 ? 0.28f : 0.32f;
             } else {
-                this.liftedShadows = false;
-                if (shadowProf.startsWith("Neutral")) {
-                    sDepth *= 0.45f;
-                } else if (this.brainId == BRAIN_ID_KODACHROME) {
-                    sDepth = Math.min(1.25f, sDepth * 1.15f);
-                } else if (this.brainId == BRAIN_ID_BLEACH) {
-                    sDepth = Math.min(1.35f, sDepth * 1.30f);
+                if (shadowProf.startsWith("Lifted") || this.brainId == BRAIN_ID_FUJI_ETERNA || pull1) {
+                    this.liftedShadows = !push1 && !push2;
+                    sDepth *= pull1 ? 0.28f : 0.32f;
                 } else {
-                    sDepth *= 0.68f;
+                    this.liftedShadows = false;
+                    if (shadowProf.startsWith("Neutral")) {
+                        sDepth *= 0.45f;
+                    } else if (this.brainId == BRAIN_ID_KODACHROME) {
+                        sDepth = Math.min(1.25f, sDepth * 1.15f);
+                    } else if (this.brainId == BRAIN_ID_BLEACH) {
+                        sDepth = Math.min(1.35f, sDepth * 1.30f);
+                    } else {
+                        sDepth *= 0.68f;
+                    }
+                }
+                if (displayReferred) {
+                    sDepth *= 0.45f;
                 }
             }
             if (push1) sDepth = Math.min(1.30f, sDepth * 1.25f + 0.15f);
@@ -368,8 +393,9 @@ final class RawDeveloper {
                 shoulder = 0.65f;
             }
             if (pull1) shoulder = Math.min(1.0f, shoulder + 0.18f);
-            this.knee = this.look.easyMode ? 0.52f : 0.68f;
-            this.shoulderFactor = 1.6f + shoulder * 3.8f;
+            this.knee = this.look.easyMode ? (0.78f - 0.30f * shoulder) : (0.86f - 0.24f * shoulder);
+            float shoulderCeil = 1.15f - 0.13f * shoulder;
+            this.shoulderSpan = Math.max(0.10f, shoulderCeil - this.knee);
 
             String hlRec = this.look.highlightRecovery == null ? "Adaptive blend" : this.look.highlightRecovery;
             if (hlRec.startsWith("Hard")) {
@@ -403,23 +429,8 @@ final class RawDeveloper {
             this.applySmartVibrance = (this.look.smartVibrance || this.look.easyMode)
                     && this.brainId != BRAIN_ID_NEUTRAL && this.brainId != BRAIN_ID_MONO && this.brainId != BRAIN_ID_BLEACH;
 
-            float ambWarmth = 1.0f;
-            boolean fluo = false;
-            if (this.look.whiteBalanceKelvin > 0 && this.look.whiteBalanceKelvin < 4000) {
-                ambWarmth = clamp(0.5f + 0.5f * (this.look.whiteBalanceKelvin - 2800f) / 1200f, 0.35f, 1.0f);
-            } else if (frame != null && frame.wbGains != null && frame.wbGains.length >= 4) {
-                // Low red / high blue AWB gains indicate warm illumination. Do not add a second
-                // full tungsten tint on top of a scene that has already been white balanced.
-                float redBlue = frame.wbGains[0] / Math.max(.01f, frame.wbGains[3]);
-                ambWarmth = .35f + .65f * smoothstep(.5f, 1.1f, redBlue);
-                float greenGain = (frame.wbGains[1] + frame.wbGains[2]) * .5f;
-                if (greenGain > 1.35f * frame.wbGains[0] && greenGain > 1.35f * frame.wbGains[3]) {
-                    fluo = true;
-                    ambWarmth = Math.min(ambWarmth, this.look.easyMode ? 0.50f : 0.65f);
-                }
-            }
-            this.ambientWarmthFactor = ambWarmth;
-            this.fluorescentSpike = fluo;
+            this.fluorescentSpike = isFluorescentSpike(this.look, frame);
+            this.ambientWarmthFactor = computeAmbientWarmth(this.look, frame, this.fluorescentSpike);
 
             float gAmt = clamp(this.look.grain, 0f, 1f);
             if (this.look.easyMode && frame != null && frame.sensitivityIso > 0) {
@@ -445,6 +456,30 @@ final class RawDeveloper {
             this.lut = lut;
             this.lutIntensity = this.look.lutIntensity;
         }
+    }
+
+    private static boolean isFluorescentSpike(Look look, RawArchive.Frame frame) {
+        if (look != null && look.whiteBalanceKelvin > 0 && look.whiteBalanceKelvin < 4000) return false;
+        if (frame == null || frame.wbGains == null || frame.wbGains.length < 4) return false;
+        float greenGain = (frame.wbGains[1] + frame.wbGains[2]) * .5f;
+        return greenGain > 1.35f * frame.wbGains[0] && greenGain > 1.35f * frame.wbGains[3];
+    }
+
+    private static float computeAmbientWarmth(Look look, RawArchive.Frame frame, boolean fluo) {
+        if (look != null && look.whiteBalanceKelvin > 0 && look.whiteBalanceKelvin < 4000) {
+            return clamp(0.5f + 0.5f * (look.whiteBalanceKelvin - 2800f) / 1200f, 0.35f, 1.0f);
+        }
+        if (frame != null && frame.wbGains != null && frame.wbGains.length >= 4) {
+            // Low red / high blue AWB gains indicate warm illumination. Do not add a second
+            // full tungsten tint on top of a scene that has already been white balanced.
+            float redBlue = frame.wbGains[0] / Math.max(.01f, frame.wbGains[3]);
+            float ambWarmth = .35f + .65f * smoothstep(.5f, 1.1f, redBlue);
+            if (fluo) {
+                ambWarmth = Math.min(ambWarmth, look != null && look.easyMode ? 0.50f : 0.65f);
+            }
+            return ambWarmth;
+        }
+        return 1.0f;
     }
 
     /** maxDimension=0 renders at the sensor's available resolution, within the safety pixel budget. */
@@ -743,15 +778,61 @@ final class RawDeveloper {
     }
 
     static PreparedLook prepareDisplayLook(Look look, RawArchive.Frame frame) {
-        LutManager.Lut3D lut = look.lutName != null && !"None".equalsIgnoreCase(look.lutName)
-                && look.lutIntensity > .001f ? LutManager.get(look.lutName) : null;
-        return new PreparedLook(look, frame, lut);
+        Look resolved = look != null ? look : new Look();
+        LutManager.Lut3D lut = resolved.lutName != null && !"None".equalsIgnoreCase(resolved.lutName)
+                && resolved.lutIntensity > .001f ? LutManager.get(resolved.lutName) : null;
+        return new PreparedLook(resolved, frame, lut, true);
+    }
+
+    /** Lightweight cache key for display-referred 3D LUT generation without JSON or LUT I/O. */
+    static String displayLookKey(Look look, RawArchive.Frame frame) {
+        Look l = look != null ? look : new Look();
+        boolean fluo = isFluorescentSpike(l, frame);
+        float ambWarmth = computeAmbientWarmth(l, frame, fluo);
+        return new StringBuilder(160)
+                .append(l.brain).append('|')
+                .append(l.whiteBalanceKelvin).append('|')
+                .append(l.exposureEv).append('|')
+                .append(l.warmth).append('|')
+                .append(l.contrast).append('|')
+                .append(l.pivot).append('|')
+                .append(l.saturation).append('|')
+                .append(l.colorRollOff).append('|')
+                .append(l.highlights).append('|')
+                .append(l.shadows).append('|')
+                .append(l.highlightRecovery).append('|')
+                .append(l.shadowProfile).append('|')
+                .append(l.toneCurve).append('|')
+                .append(l.easyMode).append('|')
+                .append(l.skinProtection).append('|')
+                .append(l.smartVibrance).append('|')
+                .append(l.lutName).append('|')
+                .append(l.lutIntensity).append('|')
+                .append(l.filmPushPull).append('|')
+                .append(Math.round(ambWarmth * 20f)).append('|')
+                .append(fluo)
+                .toString();
     }
 
     static int renderDisplayRgb(float r, float g, float b, PreparedLook prep) {
-        return renderPreparedLook(srgbToLinear(r) * prep.exposureScale * prep.displayWbShift,
-                srgbToLinear(g) * prep.exposureScale,
-                srgbToLinear(b) * prep.exposureScale / prep.displayWbShift, prep, 0, 0, 0);
+        float lr = srgbToLinear(r) * prep.exposureScale * prep.displayWbShift;
+        float lg = srgbToLinear(g) * prep.exposureScale;
+        float lb = srgbToLinear(b) * prep.exposureScale / prep.displayWbShift;
+        float y = .2126f * lr + .7152f * lg + .0722f * lb;
+        if (y > 0.55f) {
+            // Display-referred Camera2/JPEG inputs have already been ISP-compressed below 1.0;
+            // expand luminance smoothly above 0.55 so whites and bright highlights feed the shoulder cleanly.
+            float yc = Math.min(y, 1.02f);
+            float yExpanded = 0.55f + 0.51f * (yc - 0.55f) / Math.max(0.04f, 1.06f - yc);
+            if (y > 1.02f) {
+                yExpanded += (y - 1.02f) * 3.0f;
+            }
+            float scale = yExpanded / y;
+            lr *= scale;
+            lg *= scale;
+            lb *= scale;
+        }
+        return renderPreparedLook(lr, lg, lb, prep, 0, 0, 0);
     }
 
     static float previewMidTarget(int[] pixels, int w, int h) {
@@ -791,7 +872,7 @@ final class RawDeveloper {
             float coarse = grainNoise(x * coordinateScale / prep.coarseDiv,
                     y * coordinateScale / prep.coarseDiv, seed ^ 0x51ed270b);
             float texture = (fine * prep.fineWeight + coarse * prep.coarseWeight)
-                    * prep.grainAmount * 9f * smoothstep(.025f, .11f, lightness);
+                    * prep.grainAmount * 13f * smoothstep(.025f, .11f, lightness);
             if (!prep.uniformGrain) texture *= .38f + .62f * 4f * lightness * (1f - lightness);
             pixels[y * w + x] = 0xff000000 | (clamp255(r + texture) << 16)
                     | (clamp255(g + texture) << 8) | clamp255(b + texture);
@@ -1171,11 +1252,11 @@ final class RawDeveloper {
         float targetMid = frame.previewMidTarget > 0f ? clamp(frame.previewMidTarget, .01f, .50f)
                 : 0.18f * (float) Math.pow(2.0, clamp(frame.aeCompensationEv, -3f, 2f));
         if (midMetric >= targetMid) return boostScale;
-        float neededGain = (float) Math.pow(targetMid / Math.max(0.004f, midMetric), 0.75);
+        float neededGain = (float) Math.pow(targetMid / Math.max(0.004f, midMetric), 0.88);
         float isoConfidence = shadowRecoveryConfidence(frame.sensitivityIso);
         float maxGain = 1.5f + 1.5f * isoConfidence;
-        float maxHighlightGain = p96 > 0.40f ? Math.max(1f, 1.6f / p96) : maxGain;
-        float signalConfidence = smoothstep(.003f, .025f, p50 / boostScale);
+        float maxHighlightGain = p96 > 0.40f ? Math.max(1f, 2.8f / p96) : maxGain;
+        float signalConfidence = smoothstep(.002f, .008f, p50 / boostScale);
         float sceneGain = 1f + (clamp(Math.min(neededGain, maxHighlightGain), 1f, maxGain) - 1f) * signalConfidence;
         return boostScale * sceneGain;
     }
@@ -1256,9 +1337,9 @@ final class RawDeveloper {
                 gainGrid[i] = compressed / avgY;
             } else {
                 float shadowNeed = smoothstep(0.20f, 0.015f, avgY);
-                float signalConfidence = smoothstep(.003f, .025f, avgY / Math.max(1f, exposureScale));
+                float signalConfidence = smoothstep(.002f, .008f, avgY / Math.max(1f, exposureScale));
                 float exposureIntent = (float) Math.pow(2.0, Math.min(0f, frame.aeCompensationEv));
-                gainGrid[i] = 1.0f + .65f * brainRecoveryScale * shadowNeed * signalConfidence
+                gainGrid[i] = 1.0f + .85f * brainRecoveryScale * shadowNeed * signalConfidence
                         * shadowRecoveryConfidence(frame.sensitivityIso) * exposureIntent;
             }
         }
@@ -1357,7 +1438,7 @@ final class RawDeveloper {
 
         if (contrasted > prep.knee) {
             float excess = contrasted - prep.knee;
-            contrasted = prep.knee + excess / (1f + excess * prep.shoulderFactor);
+            contrasted = prep.knee + prep.shoulderSpan * excess / (prep.shoulderSpan + excess);
         }
         float ratio = Math.min(4.0f, contrasted / oldY);
         r *= ratio; g *= ratio; b *= ratio;

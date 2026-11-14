@@ -40,8 +40,8 @@ can still differ. The six authored looks are not claimed to be measured film-sto
 
 - Global scene recovery is capped at 3x at low ISO and reduced as ISO rises; nearly black
   sensor noise is not treated as recoverable subject detail.
-- Local recovery is reduced from 1.15 to 0.65 additional gain at its maximum, with further
-  signal/ISO/exposure-intent gating.
+- Local recovery uses up to 0.85 additional gain at its maximum, with signal/ISO/exposure-intent
+  and bright-highlight gating.
 - Grain is a neutral, deterministic output texture after denoising, halation and sharpening,
   with coordinates tied to a common image-size reference.
 - Warm illumination reduces added Film/Koda warmth rather than stacking a full synthetic

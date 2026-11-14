@@ -32,9 +32,7 @@ final class LiveLookPreview {
     boolean apply(TextureView view, RawDeveloper.Look look, RawArchive.Frame frame, Runnable fallback) {
         if(phase==Phase.DISPOSED) return false;
         if(Build.VERSION.SDK_INT<33 || capability==Capability.UNSUPPORTED) { phase=Phase.FALLBACK;return false; }
-        RawDeveloper.PreparedLook prepared = RawDeveloper.prepareDisplayLook(look, frame);
-        String key = look.toJson() + ":" + Math.round(prepared.ambientWarmthFactor * 20f)
-                + ":" + prepared.fluorescentSpike;
+        String key = RawDeveloper.displayLookKey(look, frame);
         if (view == currentView && key.equals(currentKey)) return true;
         phase=Phase.BUILDING;
         int ticket = generation.incrementAndGet();
@@ -88,19 +86,34 @@ final class LiveLookPreview {
 
     @TargetApi(33)
     private static final class Api33 {
-        // Flattened cube: x = red + SIZE * green, y = blue. Sample texel centres explicitly.
+        // Flattened sRGB cube: x = red + SIZE * green, y = blue. Sample texel centres explicitly.
+        // Convert between RenderNode working color space (e.g. Display P3 on wide-gamut displays)
+        // and the sRGB input/output buffer since setInputBuffer disables automatic conversion.
         private static final String PROGRAM = ""
                 + "uniform shader camera; uniform shader cube; uniform float size;"
-                + "half3 point(float3 p) { return cube.eval(float2(p.r + size*p.g + 0.5, p.b + 0.5)).rgb; }"
+                + "float3 linToSrgb(float3 c) {"
+                + " float3 v = clamp(c, 0.0, 1.0);"
+                + " return mix(v * 12.92, 1.055 * pow(max(v, float3(0.0031308)), float3(1.0 / 2.4)) - 0.055, step(float3(0.0031308), v));"
+                + "}"
+                + "float3 srgbToLin(float3 c) {"
+                + " float3 v = clamp(c, 0.0, 1.0);"
+                + " return mix(v / 12.92, pow(max((v + 0.055) / 1.055, float3(0.0)), float3(2.4)), step(float3(0.04045), v));"
+                + "}"
+                + "float3 point(float3 p) { return float3(cube.eval(float2(p.r + size * p.g + 0.5, p.b + 0.5)).rgb); }"
                 + "half4 main(float2 pos) {"
                 + " half4 c = camera.eval(pos);"
-                + " float3 p = clamp(float3(c.rgb) / max(float(c.a), 0.0001), 0.0, 1.0) * (size-1.0);"
-                + " float3 a=floor(p); float3 b=min(a+1.0, float3(size-1.0)); float3 t=p-a;"
-                + " half3 z0=mix(mix(point(a),point(float3(b.r,a.g,a.b)),t.r),"
-                + "               mix(point(float3(a.r,b.g,a.b)),point(float3(b.r,b.g,a.b)),t.r),t.g);"
-                + " half3 z1=mix(mix(point(float3(a.r,a.g,b.b)),point(float3(b.r,a.g,b.b)),t.r),"
-                + "               mix(point(float3(a.r,b.g,b.b)),point(b),t.r),t.g);"
-                + " return half4(mix(z0,z1,t.b)*c.a,c.a); }";
+                + " float alpha = max(float(c.a), 0.0001);"
+                + " float3 ws = float3(c.rgb) / alpha;"
+                + " float3 srgbIn = linToSrgb(toLinearSrgb(ws));"
+                + " float3 p = clamp(srgbIn, 0.0, 1.0) * (size - 1.0);"
+                + " float3 lo = floor(p); float3 hi = min(lo + 1.0, float3(size - 1.0)); float3 t = p - lo;"
+                + " float3 z0 = mix(mix(point(lo), point(float3(hi.r, lo.g, lo.b)), t.r),"
+                + "                 mix(point(float3(lo.r, hi.g, lo.b)), point(float3(hi.r, hi.g, lo.b)), t.r), t.g);"
+                + " float3 z1 = mix(mix(point(float3(lo.r, lo.g, hi.b)), point(float3(hi.r, lo.g, hi.b)), t.r),"
+                + "                 mix(point(float3(lo.r, hi.g, hi.b)), point(hi), t.r), t.g);"
+                + " float3 srgbOut = mix(z0, z1, t.b);"
+                + " half3 wsOut = half3(fromLinearSrgb(srgbToLin(srgbOut)));"
+                + " return half4(wsOut * c.a, c.a); }";
 
         static void apply(TextureView view, PreviewLookLut table) {
             Bitmap bitmap = Bitmap.createBitmap(table.pixels, PreviewLookLut.SIZE * PreviewLookLut.SIZE,

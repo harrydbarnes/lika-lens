@@ -55,6 +55,26 @@ public class PreviewLookLutTest {
         assertNotEquals(PreviewLookLut.build(look).pixels[index], PreviewLookLut.build(look,warm).pixels[index]);
     }
 
+    @Test public void whitePointIsPreservedAcrossBrainsInDisplayPreview() {
+        for (String brain : AppSettings.BRAIN_CHOICES) {
+            RawDeveloper.Look look = new RawDeveloper.Look();
+            look.brain = brain;
+            RawDeveloper.PreparedLook prepared = RawDeveloper.prepareDisplayLook(look);
+            int white = RawDeveloper.renderDisplayRgb(1f, 1f, 1f, prepared);
+            for (int shift : new int[]{16, 8, 0}) {
+                int channel = (white >> shift) & 255;
+                assertTrue(brain + " should preserve bright white without clipping highlights down, got " + channel,
+                        channel >= 248);
+            }
+        }
+
+        RawDeveloper.Look neutral = new RawDeveloper.Look();
+        neutral.brain = AppSettings.BRAIN_NEUTRAL_RAW;
+        RawDeveloper.PreparedLook neutralPrep = RawDeveloper.prepareDisplayLook(neutral);
+        int neutralMid = RawDeveloper.renderDisplayRgb(0.5f, 0.5f, 0.5f, neutralPrep);
+        assertChannelsClose("NEUTRAL mid-grey passthrough", 0xff808080, neutralMid, 3);
+    }
+
     private static void assertChannelsClose(String label, int expected, int actual, int tolerance) {
         for (int shift : new int[]{16,8,0}) assertTrue(label + " channel " + shift,
                 Math.abs(((expected >> shift) & 255) - ((actual >> shift) & 255)) <= tolerance);

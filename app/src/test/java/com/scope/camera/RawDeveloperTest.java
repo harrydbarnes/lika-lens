@@ -374,8 +374,8 @@ public class RawDeveloperTest {
 
         float sceneGain = RawDeveloper.computeSceneExposureGain(
                 samples, frame, 1023f, frame.wbGains, identity, crop, 0, false, look);
-        org.junit.Assert.assertTrue("Indoor recovery should lift real shadow signal without exceeding 3x, got " + sceneGain,
-                sceneGain > 1f && sceneGain <= 3f);
+        org.junit.Assert.assertTrue("Indoor recovery should lift real shadow signal robustly without exceeding 3x, got " + sceneGain,
+                sceneGain >= 2.4f && sceneGain <= 3f);
 
         float[] localGrid = RawDeveloper.buildLocalToneGainGrid(
                 samples, frame, 1023f, frame.wbGains, identity, true, identity, sceneGain,
@@ -383,8 +383,8 @@ public class RawDeveloperTest {
         assertNotNull(localGrid);
         float shadowGain = localGrid[7 * 12 + 2]; // bottom-left dark region
         float lampGain = localGrid[1 * 12 + 10];  // top-right bright lamp
-        org.junit.Assert.assertTrue("Shadow region should get restrained local lift, got " + shadowGain,
-                shadowGain > 1f && shadowGain <= 1.65f);
+        org.junit.Assert.assertTrue("Shadow region should get local lift without over-brightening, got " + shadowGain,
+                shadowGain > 1.3f && shadowGain <= 1.85f);
         org.junit.Assert.assertTrue("Bright region must not receive shadow amplification, got " + lampGain, lampGain <= 1.0f);
     }
     @Test public void recoveryRespectsIsoManualExposureAndDeliberateUnderexposure() {
@@ -455,6 +455,44 @@ public class RawDeveloperTest {
         int[] disabled={0xff123456};
         RawDeveloper.applyFilmGrain(disabled,1,1,RawDeveloper.prepareDisplayLook(look),17);
         assertEquals(0xff123456,disabled[0]);
+    }
+
+    @Test public void testDisplayReferredWhitePointAndEvResponse() {
+        RawDeveloper.Look neutral = new RawDeveloper.Look();
+        neutral.brain = AppSettings.BRAIN_NEUTRAL_RAW;
+        RawDeveloper.PreparedLook neutralPrep = RawDeveloper.prepareDisplayLook(neutral);
+        int white = RawDeveloper.renderDisplayRgb(1f, 1f, 1f, neutralPrep);
+        assertEquals(255, (white >> 16) & 255);
+        assertEquals(255, (white >> 8) & 255);
+        assertEquals(255, white & 255);
+
+        RawDeveloper.Look darkened = neutral.copy();
+        darkened.exposureEv = -1f;
+        int darkWhite = RawDeveloper.renderDisplayRgb(1f, 1f, 1f, RawDeveloper.prepareDisplayLook(darkened));
+        int dwG = (darkWhite >> 8) & 255;
+        org.junit.Assert.assertTrue("Negative EV on display white should darken smoothly (< 210), got " + dwG,
+                dwG >= 170 && dwG < 210);
+    }
+
+    @Test public void testDisplayLookKeyTracksColorParametersAndWarmthMetadata() {
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        RawArchive.Frame cool = new RawArchive.Frame();
+        cool.wbGains = new float[]{1.8f, 1f, 1f, 1.4f};
+        RawArchive.Frame warm = new RawArchive.Frame();
+        warm.wbGains = new float[]{1.0f, 1f, 1f, 2.8f};
+
+        String baseKey = RawDeveloper.displayLookKey(look, cool);
+        String warmKey = RawDeveloper.displayLookKey(look, warm);
+        org.junit.Assert.assertNotEquals(baseKey, warmKey);
+
+        RawDeveloper.Look spatialChanged = look.copy();
+        spatialChanged.grain = 0.90f;
+        spatialChanged.halation = 0.80f;
+        assertEquals(baseKey, RawDeveloper.displayLookKey(spatialChanged, cool));
+
+        RawDeveloper.Look exposureChanged = look.copy();
+        exposureChanged.exposureEv = 0.4f;
+        org.junit.Assert.assertNotEquals(baseKey, RawDeveloper.displayLookKey(exposureChanged, cool));
     }
 
 }

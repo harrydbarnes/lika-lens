@@ -396,7 +396,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private final CameraCaptureSession.CaptureCallback previewMetadataCallback = new CameraCaptureSession.CaptureCallback() {
         @Override public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
             long now = SystemClock.elapsedRealtime();
-            if (session != captureSession || videoMode || now - lastPreviewMetadataAt < 500L) return;
+            if (session != captureSession || videoState.isRecordingOrPaused() || now - lastPreviewMetadataAt < 500L) return;
             lastPreviewMetadataAt = now;
             android.hardware.camera2.params.RggbChannelVector gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS);
             RawArchive.Frame metadata = new RawArchive.Frame();
@@ -1557,7 +1557,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         shutterFrame = new FrameLayout(this);
         shutterFrame.setBackground(round(0x00202020, 100, 0xfffaf9f5, dp(3)));
-        shutterFrame.addView(captureButton, new FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER));
+        shutterFrame.addView(captureButton, new FrameLayout.LayoutParams(dp(80), dp(80), Gravity.CENTER));
         shutterFrame.setClickable(true);
         shutterFrame.setFocusable(true);
         shutterFrame.setOnTouchListener(new ShutterTouchListener());
@@ -1628,7 +1628,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (galleryButton != null) {
             if (galleryButton.getParent() != null) ((ViewGroup) galleryButton.getParent()).removeView(galleryButton);
             FrameLayout.LayoutParams galleryLp = new FrameLayout.LayoutParams(
-                    dp(52), dp(52), (swapShutterRow ? Gravity.END : Gravity.START) | Gravity.CENTER_VERTICAL);
+                    dp(54), dp(54), (swapShutterRow ? Gravity.END : Gravity.START) | Gravity.CENTER_VERTICAL);
             if (swapShutterRow) {
                 galleryLp.rightMargin = dp(24) + safeInsets.right;
             } else {
@@ -1638,14 +1638,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         if (shutterFrame != null) {
             if (shutterFrame.getParent() != null) ((ViewGroup) shutterFrame.getParent()).removeView(shutterFrame);
-            FrameLayout.LayoutParams shutterLp = new FrameLayout.LayoutParams(dp(86), dp(86), Gravity.CENTER);
+            if (captureButton != null) {
+                captureButton.setLayoutParams(new FrameLayout.LayoutParams(dp(80), dp(80), Gravity.CENTER));
+            }
+            FrameLayout.LayoutParams shutterLp = new FrameLayout.LayoutParams(dp(96), dp(96), Gravity.CENTER);
             shootRow.addView(shutterFrame, shutterLp);
         }
         if (flipButton != null) {
             if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
             flipButton.setPadding(dp(10), dp(10), dp(10), dp(10));
             FrameLayout.LayoutParams flipLp = new FrameLayout.LayoutParams(
-                    dp(52), dp(52), (swapShutterRow ? Gravity.START : Gravity.END) | Gravity.CENTER_VERTICAL);
+                    dp(54), dp(54), (swapShutterRow ? Gravity.START : Gravity.END) | Gravity.CENTER_VERTICAL);
             if (swapShutterRow) {
                 flipLp.leftMargin = dp(24) + safeInsets.left;
             } else {
@@ -1884,7 +1887,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             bottomDeck.setGravity(Gravity.CENTER_HORIZONTAL);
             bottomDeck.setClipChildren(false);
             bottomDeck.setClipToPadding(false);
-            bottomDeck.setPadding(0, 0, 0, Math.max(dp(12), safeInsets.bottom + dp(6)));
+            bottomDeck.setPadding(0, 0, 0, Math.max(dp(24), safeInsets.bottom + dp(22)));
 
             if (lookRow != null) {
                 if (lookRow.getParent() != null) ((ViewGroup) lookRow.getParent()).removeView(lookRow);
@@ -1892,15 +1895,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 lookRow.setClipToPadding(false);
                 lookRow.setPadding(dp(16) + safeInsets.left, 0, dp(16) + safeInsets.right, 0);
                 LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
-                noteLp.bottomMargin = dp(10);
+                noteLp.bottomMargin = dp(16);
                 bottomDeck.addView(lookRow, noteLp);
             }
 
             restoreShootRow();
             if (shootRow != null) {
                 if (shootRow.getParent() != null) ((ViewGroup) shootRow.getParent()).removeView(shootRow);
-                LinearLayout.LayoutParams shootLp = new LinearLayout.LayoutParams(-1, dp(96));
-                shootLp.bottomMargin = dp(14);
+                LinearLayout.LayoutParams shootLp = new LinearLayout.LayoutParams(-1, dp(104));
+                shootLp.bottomMargin = dp(18);
                 bottomDeck.addView(shootRow, shootLp);
             }
 
@@ -2003,6 +2006,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
             if (shutterFrame != null) {
                 if (shutterFrame.getParent() != null) ((ViewGroup) shutterFrame.getParent()).removeView(shutterFrame);
+                if (captureButton != null) {
+                    captureButton.setLayoutParams(new FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER));
+                }
                 sideGrip.addView(shutterFrame, new LinearLayout.LayoutParams(dp(88), dp(88)));
             }
 
@@ -3734,11 +3740,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
             Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
             int topSafe = computeTopSafe(safeInsets, cutoutRect);
-            float topZoneBottom = topSafe + dp(34);
-            float viewfinderTopMin = topZoneBottom + dp(10);
+            float topZoneBottom = topSafe + dp(32);
+            float viewfinderTopMin = topZoneBottom + dp(8);
 
-            float bottomDeckHeight = dp(198) + Math.max(dp(12), safeInsets.bottom + dp(6));
-            float viewfinderBottomMax = height - bottomDeckHeight - dp(10);
+            float bottomDeckHeight = dp(210) + Math.max(dp(24), safeInsets.bottom + dp(22));
+            float viewfinderBottomMax = height - bottomDeckHeight - dp(8);
 
             float availableHeight = Math.max(dp(160), viewfinderBottomMax - viewfinderTopMin);
             float availableWidth = width;
@@ -3751,8 +3757,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 frameWidth = frameHeight * targetRatio;
             }
             float left = (width - frameWidth) * 0.5f;
-            float excess = Math.max(0, availableHeight - frameHeight);
-            float top = viewfinderTopMin + excess * 0.25f;
+            float top = viewfinderTopMin;
             return new RectF(left, top, left + frameWidth, top + frameHeight);
         } else {
             Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
