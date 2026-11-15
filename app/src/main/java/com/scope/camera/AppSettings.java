@@ -191,6 +191,11 @@ final class AppSettings {
     static final String GRAIN_RESPONSE = "grain_response";
     static final String ANTI_BANDING = "anti_banding";
 
+    // 3D LUT (Color Lookup Table) Keys
+    static final String LUT_NAME = "lut_name";
+    static final String LUT_INTENSITY = "lut_intensity";
+    static final int DEFAULT_LUT_INTENSITY = 100;
+
     // Customisable Adjust Controls
     static final String ADJUST_CONTROLS_ORDER = "adjust_controls_order";
     static final List<String> ALL_ADJUST_CONTROLS = Collections.unmodifiableList(Arrays.asList(
@@ -286,11 +291,6 @@ final class AppSettings {
     static final String RECIPE_2_DATA = "recipe_2_data";
     static final String RECIPE_3_NAME = "recipe_3_name";
     static final String RECIPE_3_DATA = "recipe_3_data";
-
-    // 3D LUT (Color Lookup Table) Keys
-    static final String LUT_NAME = "lut_name";
-    static final String LUT_INTENSITY = "lut_intensity";
-    static final int DEFAULT_LUT_INTENSITY = 100;
 
     // File Management & Output Keys
     static final String FOLDER_ORG = "folder_organization";
