@@ -35,7 +35,7 @@ import java.util.TreeMap;
 final class SettingsBackupManager {
     private static final String TAG = "SettingsBackupManager";
     static final String FORMAT_ID = "lika-lens-backup";
-    static final int FORMAT_VERSION = 1;
+    static final int FORMAT_VERSION = 2;
     static final String FILE_EXTENSION = ".likalens.json";
     private static final int MAX_BACKUP_BYTES = 8 * 1024 * 1024;
 
@@ -265,6 +265,16 @@ final class SettingsBackupManager {
                     }
                 }
             }
+            if (version == 1) {
+                Map<String, Object> updates = new LinkedHashMap<>();
+                Set<String> removals = new HashSet<>();
+                if (AppSettings.computeMigration(prefs, updates, removals)) {
+                    for (String rem : removals) {
+                        prefs.remove(rem);
+                    }
+                    prefs.putAll(updates);
+                }
+            }
 
             Map<String, String> customLuts = new LinkedHashMap<>();
             JSONArray lutsJson = root.optJSONArray("customLuts");
@@ -414,7 +424,7 @@ final class SettingsBackupManager {
         }
         editor.commit();
 
-        AppSettings.migrateBranding(context);
+        AppSettings.migrateIfNeeded(context);
         LiveLookPreview.clearCache();
 
         return new RestoreResult(

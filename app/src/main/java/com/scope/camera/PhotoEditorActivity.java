@@ -89,12 +89,17 @@ public class PhotoEditorActivity extends Activity {
     private boolean advancedLooks;
     private RawDeveloper.Look initialLook;
     private volatile int thumbnailGeneration;
+    private boolean archivePinned;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         archiveKey = getIntent().getStringExtra(EXTRA_KEY);
+        if (archiveKey != null && !archiveKey.isEmpty()) {
+            RawArchive.pin(archiveKey);
+            archivePinned = true;
+        }
         String uri = getIntent().getStringExtra(PhotoViewerActivity.EXTRA_URI);
         photoUri = uri == null ? null : Uri.parse(uri);
         LutManager.init(this);
@@ -1237,6 +1242,10 @@ public class PhotoEditorActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        if (archivePinned && archiveKey != null && !archiveKey.isEmpty()) {
+            RawArchive.unpin(archiveKey);
+            archivePinned = false;
+        }
         sourceJob.close(); previewJob.close(); saveJob.close();
         thumbnailGeneration++;
         mainHandler.removeCallbacksAndMessages(null);

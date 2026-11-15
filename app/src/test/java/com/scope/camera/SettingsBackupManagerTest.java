@@ -103,4 +103,33 @@ public class SettingsBackupManagerTest {
         assertThrows(IllegalArgumentException.class, () ->
                 SettingsBackupManager.parseBackup("{\"format\":\"lika-lens-backup\",\"version\":99}"));
     }
+
+    @Test
+    public void testParseV1BackupRunsMigrationAndPreservesRecipes() throws Exception {
+        Map<String, Object> v1Prefs = new LinkedHashMap<>();
+        v1Prefs.put(AppSettings.BRAIN, "SCOPE / CORE");
+        v1Prefs.put(AppSettings.RECIPE_2_NAME, "Silver Punch");
+        v1Prefs.put(AppSettings.RECIPE_2_DATA, "{\"brain\":\"MONO / SILVER\"}");
+        v1Prefs.put("keep_raw", true);
+        v1Prefs.put("strip_geo", true);
+        v1Prefs.put(AppSettings.LOCATION, false);
+        v1Prefs.put("skin_protection", false);
+
+        String json = SettingsBackupManager.serializeBackup(
+                "Legacy V1 Backup",
+                "0.1.70",
+                "2026-10-01T12:00:00Z",
+                v1Prefs,
+                new HashMap<>()
+        ).replace("\"version\": 2", "\"version\": 1").replace("\"version\":2", "\"version\":1");
+
+        SettingsBackupManager.BackupData parsed = SettingsBackupManager.parseBackup(json);
+        assertEquals(AppSettings.BRAIN_LIKA_FILM, parsed.preferences.get(AppSettings.BRAIN));
+        assertEquals("Silver Punch", parsed.preferences.get(AppSettings.RECIPE_2_NAME));
+        assertEquals(AppSettings.PHOTO_OUTPUT_JPEG_ONLY, parsed.preferences.get(AppSettings.PHOTO_OUTPUT));
+        assertEquals(Boolean.TRUE, parsed.preferences.get(AppSettings.LOCATION));
+        assertEquals(AppSettings.OVERRIDE_OFF, parsed.preferences.get(AppSettings.SKIN_PROTECTION_MODE));
+        assertFalse(parsed.preferences.containsKey("keep_raw"));
+        assertFalse(parsed.preferences.containsKey("strip_geo"));
+    }
 }

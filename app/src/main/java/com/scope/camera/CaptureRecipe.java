@@ -7,24 +7,20 @@ final class CaptureRecipe {
     final CameraCharacteristics characteristics;
     final int orientation;
     final RawDeveloper.Look look;
-    final String dngPolicy;
-    final String format;
-    final boolean keepRaw;
+    final String photoOutput;
     final float previewMidTarget;
 
     CaptureRecipe(CameraCharacteristics characteristics, int orientation, RawDeveloper.Look look,
-                  String dngPolicy, String format, boolean keepRaw) {
-        this(characteristics, orientation, look, dngPolicy, format, keepRaw, 0f);
+                  String photoOutput) {
+        this(characteristics, orientation, look, photoOutput, 0f);
     }
 
     CaptureRecipe(CameraCharacteristics characteristics, int orientation, RawDeveloper.Look look,
-                  String dngPolicy, String format, boolean keepRaw, float previewMidTarget) {
+                  String photoOutput, float previewMidTarget) {
         this.previewMidTarget = previewMidTarget;
         this.characteristics = characteristics;
         this.orientation = orientation;
         this.look = look.copy();
-        this.dngPolicy = dngPolicy;
-        this.format = format;
-        this.keepRaw = keepRaw;
+        this.photoOutput = photoOutput != null ? photoOutput : AppSettings.PHOTO_OUTPUT_JPEG_ONLY;
     }
 }

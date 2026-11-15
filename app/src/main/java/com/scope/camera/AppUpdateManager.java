@@ -326,7 +326,7 @@ public final class AppUpdateManager {
         final long checkTicket = checkJob.begin(JobState.Phase.LOADING);
         final Context appContext = context.getApplicationContext();
         final WeakReference<Activity> activityRef = new WeakReference<>(context instanceof Activity ? (Activity) context : null);
-        String channel = AppSettings.get(appContext, AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_BETA);
+        String channel = AppSettings.get(appContext, AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_STABLE);
         String currentVersionName = getAppVersionName(appContext);
         int currentVersionCode = getAppVersionCode(appContext);
 

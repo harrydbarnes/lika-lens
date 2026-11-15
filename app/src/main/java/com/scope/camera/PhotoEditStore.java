@@ -45,8 +45,16 @@ final class PhotoEditStore {
         look.aspectRatio = prefs.getString(prefix + "aspect_ratio", null);
         look.flipHorizontal = prefs.getBoolean(prefix + "flip_h", false);
         look.easyMode = prefs.getBoolean(prefix + "easy_mode", look.easyMode);
-        look.skinProtection = prefs.getBoolean(prefix + "skin_protection", look.skinProtection);
-        look.smartVibrance = prefs.getBoolean(prefix + "smart_vibrance", look.smartVibrance);
+        look.skinProtectionMode = prefs.getString(prefix + "skin_protection_mode",
+                prefs.contains(prefix + "skin_protection")
+                        ? (prefs.getBoolean(prefix + "skin_protection", true) ? AppSettings.OVERRIDE_AUTO : AppSettings.OVERRIDE_OFF)
+                        : look.skinProtectionMode);
+        look.smartVibranceMode = prefs.getString(prefix + "smart_vibrance_mode",
+                prefs.contains(prefix + "smart_vibrance")
+                        ? (prefs.getBoolean(prefix + "smart_vibrance", true) ? AppSettings.OVERRIDE_AUTO : AppSettings.OVERRIDE_OFF)
+                        : look.smartVibranceMode);
+        look.skinProtection = !AppSettings.OVERRIDE_OFF.equals(look.skinProtectionMode);
+        look.smartVibrance = !AppSettings.OVERRIDE_OFF.equals(look.smartVibranceMode);
         look.opticalCorrection = prefs.getBoolean(prefix + "optical_correction", look.opticalCorrection);
         look.frameBorder = prefs.getString(prefix + "frame_border", look.frameBorder);
         look.lutName = prefs.getString(prefix + "lut_name", look.lutName);
@@ -75,6 +83,8 @@ final class PhotoEditStore {
                 .putFloat(p + "vignette", look.vignette)
                 .putInt(p + "white_balance", look.whiteBalanceKelvin)
                 .putBoolean(p + "easy_mode", look.easyMode)
+                .putString(p + "skin_protection_mode", look.skinProtectionMode != null ? look.skinProtectionMode : AppSettings.OVERRIDE_AUTO)
+                .putString(p + "smart_vibrance_mode", look.smartVibranceMode != null ? look.smartVibranceMode : AppSettings.OVERRIDE_AUTO)
                 .putBoolean(p + "skin_protection", look.skinProtection)
                 .putBoolean(p + "smart_vibrance", look.smartVibrance)
                 .putBoolean(p + "optical_correction", look.opticalCorrection)
@@ -96,7 +106,8 @@ final class PhotoEditStore {
                 .remove(p + "highlights").remove(p + "shadows").remove(p + "grain")
                 .remove(p + "halation").remove(p + "sharpening").remove(p + "chroma_nr")
                 .remove(p + "vignette").remove(p + "white_balance")
-                .remove(p + "easy_mode").remove(p + "skin_protection").remove(p + "smart_vibrance")
+                .remove(p + "easy_mode").remove(p + "skin_protection_mode").remove(p + "smart_vibrance_mode")
+                .remove(p + "skin_protection").remove(p + "smart_vibrance")
                 .remove(p + "optical_correction").remove(p + "frame_border")
                 .remove(p + "lut_name").remove(p + "lut_intensity")
                 .remove(p + "aspect_ratio").remove(p + "flip_h").apply();

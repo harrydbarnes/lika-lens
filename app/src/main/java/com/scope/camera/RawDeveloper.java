@@ -41,18 +41,20 @@ final class RawDeveloper {
         float vignette = .10f;
         String aspectRatio;
         boolean flipHorizontal;
-        String highlightRecovery = "Adaptive blend";
-        String shadowProfile = "Deep Cinema Blacks";
+        String highlightRecovery = AppSettings.HL_REC_AUTO;
+        String shadowProfile = AppSettings.SHADOW_PROFILE_AUTO;
         String toneCurve = "Filmic S-Curve";
         String grainResponse = "Luminance-weighted";
         boolean easyMode = true;
+        String skinProtectionMode = AppSettings.OVERRIDE_AUTO;
+        String smartVibranceMode = AppSettings.OVERRIDE_AUTO;
         boolean skinProtection = true;
         boolean smartVibrance = true;
         boolean opticalCorrection = true;
         String frameBorder = "None";
         String lutName = "None";
         float lutIntensity = 1.0f;
-        String colorSpace = "sRGB · Standard Display";
+        String colorSpace = AppSettings.COLOR_SPACE_SRGB;
         String filmPushPull = "Box Speed · EI 400 (Standard)";
         boolean ultraHdr = true;
 
@@ -73,20 +75,24 @@ final class RawDeveloper {
             look.sharpening = AppSettings.getInt(context, AppSettings.SHARPEN, AppSettings.DEFAULT_SHARPEN) / 100f;
             look.chromaNr = AppSettings.getInt(context, AppSettings.COLOR_NR, AppSettings.DEFAULT_COLOR_NR) / 100f;
             look.vignette = AppSettings.getInt(context, AppSettings.VIGNETTE, AppSettings.DEFAULT_VIGNETTE) / 100f;
-            look.grainStructure = AppSettings.get(context, "grain_structure", "Fine · 35 mm");
+            String grainStruct = AppSettings.get(context, AppSettings.GRAIN_STRUCTURE, AppSettings.GRAIN_STRUCTURE_CHOICES[0]);
+            look.grainStructure = "Monochrome".equals(grainStruct) ? AppSettings.GRAIN_STRUCTURE_CHOICES[0] : grainStruct;
             look.aspectRatio = AppSettings.get(context, AppSettings.ASPECT_RATIO, "4:3");
-            look.highlightRecovery = AppSettings.get(context, AppSettings.HIGHLIGHT_RECOVERY, "Adaptive blend");
-            look.shadowProfile = AppSettings.get(context, AppSettings.SHADOW_PROFILE, "Deep Cinema Blacks");
+            look.highlightRecovery = AppSettings.get(context, AppSettings.HIGHLIGHT_RECOVERY, AppSettings.HL_REC_AUTO);
+            look.shadowProfile = AppSettings.get(context, AppSettings.SHADOW_PROFILE, AppSettings.SHADOW_PROFILE_AUTO);
             look.toneCurve = AppSettings.get(context, AppSettings.TONE_CURVE, "Filmic S-Curve");
             look.grainResponse = AppSettings.get(context, AppSettings.GRAIN_RESPONSE, "Luminance-weighted");
             look.easyMode = AppSettings.getBoolean(context, AppSettings.EASY_MODE, true);
-            look.skinProtection = AppSettings.getBoolean(context, AppSettings.SKIN_PROTECTION, true);
-            look.smartVibrance = AppSettings.getBoolean(context, AppSettings.SMART_VIBRANCE, true);
+            look.skinProtectionMode = AppSettings.get(context, AppSettings.SKIN_PROTECTION_MODE, AppSettings.OVERRIDE_AUTO);
+            look.smartVibranceMode = AppSettings.get(context, AppSettings.SMART_VIBRANCE_MODE, AppSettings.OVERRIDE_AUTO);
+            look.skinProtection = !AppSettings.OVERRIDE_OFF.equals(look.skinProtectionMode);
+            look.smartVibrance = !AppSettings.OVERRIDE_OFF.equals(look.smartVibranceMode);
             look.opticalCorrection = AppSettings.getBoolean(context, AppSettings.OPTICAL_CORRECTION, true);
             look.frameBorder = AppSettings.get(context, AppSettings.FRAME_BORDER, "None");
             look.lutName = AppSettings.get(context, AppSettings.LUT_NAME, "None");
             look.lutIntensity = AppSettings.getInt(context, AppSettings.LUT_INTENSITY, AppSettings.DEFAULT_LUT_INTENSITY) / 100f;
-            look.colorSpace = AppSettings.get(context, AppSettings.COLOR_SPACE, "sRGB · Standard Display");
+            String cs = AppSettings.get(context, AppSettings.COLOR_SPACE, AppSettings.COLOR_SPACE_SRGB);
+            look.colorSpace = (cs != null && cs.contains("709")) ? AppSettings.COLOR_SPACE_SRGB : cs;
             look.filmPushPull = AppSettings.get(context, AppSettings.FILM_PUSH_PULL, "Box Speed · EI 400 (Standard)");
             look.ultraHdr = AppSettings.getBoolean(context, AppSettings.ULTRA_HDR, true);
             return look;
@@ -107,6 +113,8 @@ final class RawDeveloper {
             c.toneCurve = toneCurve;
             c.grainResponse = grainResponse;
             c.easyMode = easyMode;
+            c.skinProtectionMode = skinProtectionMode;
+            c.smartVibranceMode = smartVibranceMode;
             c.skinProtection = skinProtection;
             c.smartVibrance = smartVibrance;
             c.opticalCorrection = opticalCorrection;
@@ -145,6 +153,8 @@ final class RawDeveloper {
                 o.put("toneCurve", toneCurve);
                 o.put("grainResponse", grainResponse);
                 o.put("easyMode", easyMode);
+                if (skinProtectionMode != null) o.put("skinProtectionMode", skinProtectionMode);
+                if (smartVibranceMode != null) o.put("smartVibranceMode", smartVibranceMode);
                 o.put("skinProtection", skinProtection);
                 o.put("smartVibrance", smartVibrance);
                 o.put("opticalCorrection", opticalCorrection);
@@ -166,7 +176,10 @@ final class RawDeveloper {
                 JSONObject o = new JSONObject(jsonStr);
                 Look look = new Look();
                 if (o.has("brain")) look.brain = o.getString("brain");
-                if (o.has("grainStructure")) look.grainStructure = o.getString("grainStructure");
+                if (o.has("grainStructure")) {
+                    String gs = o.getString("grainStructure");
+                    look.grainStructure = "Monochrome".equals(gs) ? AppSettings.GRAIN_STRUCTURE_CHOICES[0] : gs;
+                }
                 if (o.has("whiteBalanceKelvin")) look.whiteBalanceKelvin = o.getInt("whiteBalanceKelvin");
                 if (o.has("exposureEv")) look.exposureEv = (float) o.getDouble("exposureEv");
                 if (o.has("warmth")) look.warmth = (float) o.getDouble("warmth");
@@ -188,13 +201,28 @@ final class RawDeveloper {
                 if (o.has("toneCurve")) look.toneCurve = o.getString("toneCurve");
                 if (o.has("grainResponse")) look.grainResponse = o.getString("grainResponse");
                 if (o.has("easyMode")) look.easyMode = o.getBoolean("easyMode");
-                if (o.has("skinProtection")) look.skinProtection = o.getBoolean("skinProtection");
-                if (o.has("smartVibrance")) look.smartVibrance = o.getBoolean("smartVibrance");
+                if (o.has("skinProtectionMode")) {
+                    look.skinProtectionMode = o.getString("skinProtectionMode");
+                    look.skinProtection = !AppSettings.OVERRIDE_OFF.equals(look.skinProtectionMode);
+                } else if (o.has("skinProtection")) {
+                    look.skinProtection = o.getBoolean("skinProtection");
+                    look.skinProtectionMode = look.skinProtection ? AppSettings.OVERRIDE_AUTO : AppSettings.OVERRIDE_OFF;
+                }
+                if (o.has("smartVibranceMode")) {
+                    look.smartVibranceMode = o.getString("smartVibranceMode");
+                    look.smartVibrance = !AppSettings.OVERRIDE_OFF.equals(look.smartVibranceMode);
+                } else if (o.has("smartVibrance")) {
+                    look.smartVibrance = o.getBoolean("smartVibrance");
+                    look.smartVibranceMode = look.smartVibrance ? AppSettings.OVERRIDE_AUTO : AppSettings.OVERRIDE_OFF;
+                }
                 if (o.has("opticalCorrection")) look.opticalCorrection = o.getBoolean("opticalCorrection");
                 if (o.has("frameBorder")) look.frameBorder = o.getString("frameBorder");
                 if (o.has("lutName")) look.lutName = o.getString("lutName");
                 if (o.has("lutIntensity")) look.lutIntensity = (float) o.getDouble("lutIntensity");
-                if (o.has("colorSpace")) look.colorSpace = o.getString("colorSpace");
+                if (o.has("colorSpace")) {
+                    String cs = o.getString("colorSpace");
+                    look.colorSpace = cs.contains("709") ? AppSettings.COLOR_SPACE_SRGB : cs;
+                }
                 if (o.has("filmPushPull")) look.filmPushPull = o.getString("filmPushPull");
                 if (o.has("ultraHdr")) look.ultraHdr = o.getBoolean("ultraHdr");
                 return look;

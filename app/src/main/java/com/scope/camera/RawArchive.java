@@ -22,6 +22,12 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.InflaterInputStream;
@@ -31,6 +37,20 @@ final class RawArchive {
     private static final String TAG = "RawArchive";
     private static final int MAGIC = 0x53524157; // SRAW
     private static final int VERSION = 5;
+    static final long LOW_DISK_HEADROOM_BYTES = 150L * 1024L * 1024L;
+    private static final Map<String, Integer> PINNED_KEYS = new HashMap<>();
+
+    static final class CleanupResult {
+        final int deletedCount;
+        final long freedBytes;
+        final int skippedActiveCount;
+
+        CleanupResult(int deletedCount, long freedBytes, int skippedActiveCount) {
+            this.deletedCount = deletedCount;
+            this.freedBytes = freedBytes;
+            this.skippedActiveCount = skippedActiveCount;
+        }
+    }
 
     static final class Frame {
         int width;
@@ -73,11 +93,179 @@ final class RawArchive {
     private RawArchive() { }
 
     static boolean exists(Context context, String key) { return file(context, key).isFile(); }
-    static void delete(Context context, String key) { File f = file(context, key); if (f.isFile()) f.delete(); }
+    static void delete(Context context, String key) { File f = file(context, key); if (f.isFile() && !isPinned(key)) f.delete(); }
+
+    static File archiveDirectory(Context context) {
+        return new File(context.getFilesDir(), "raw-archive");
+    }
+
+    static String sanitizeKey(String key) {
+        return key == null ? "" : key.replaceAll("[^A-Za-z0-9_.-]", "_");
+    }
 
     static File file(Context context, String key) {
-        String safe = key == null ? "" : key.replaceAll("[^A-Za-z0-9_.-]", "_");
-        return new File(new File(context.getFilesDir(), "raw-archive"), safe + ".sraw");
+        return new File(archiveDirectory(context), sanitizeKey(key) + ".sraw");
+    }
+
+    static void pin(String key) {
+        String safe = sanitizeKey(key);
+        if (safe.isEmpty()) return;
+        synchronized (PINNED_KEYS) {
+            Integer cur = PINNED_KEYS.get(safe);
+            PINNED_KEYS.put(safe, cur == null ? 1 : cur + 1);
+        }
+    }
+
+    static void unpin(String key) {
+        String safe = sanitizeKey(key);
+        if (safe.isEmpty()) return;
+        synchronized (PINNED_KEYS) {
+            Integer cur = PINNED_KEYS.get(safe);
+            if (cur == null || cur <= 1) PINNED_KEYS.remove(safe);
+            else PINNED_KEYS.put(safe, cur - 1);
+        }
+    }
+
+    static boolean isPinned(String key) {
+        String safe = sanitizeKey(key);
+        if (safe.isEmpty()) return false;
+        synchronized (PINNED_KEYS) {
+            Integer cur = PINNED_KEYS.get(safe);
+            return cur != null && cur > 0;
+        }
+    }
+
+    private static String keyFromFileName(String name) {
+        if (name == null || !name.endsWith(".sraw")) return "";
+        return name.substring(0, name.length() - 5);
+    }
+
+    static long calculateDirectoryBytes(File dir) {
+        if (dir == null || !dir.isDirectory()) return 0L;
+        File[] files = dir.listFiles();
+        if (files == null) return 0L;
+        long total = 0L;
+        for (File f : files) {
+            if (f != null && f.isFile() && f.getName().endsWith(".sraw")) {
+                total += f.length();
+            }
+        }
+        return total;
+    }
+
+    static int countArchives(File dir) {
+        if (dir == null || !dir.isDirectory()) return 0;
+        File[] files = dir.listFiles();
+        if (files == null) return 0;
+        int count = 0;
+        for (File f : files) {
+            if (f != null && f.isFile() && f.getName().endsWith(".sraw")) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    static String formatBytes(long bytes) {
+        if (bytes < 1024L) return bytes + " B";
+        if (bytes < 1024L * 1024L) return String.format(Locale.US, "%.0f KB", bytes / 1024.0);
+        if (bytes < 1024L * 1024L * 1024L) return String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0));
+        return String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
+    }
+
+    static String formatArchiveSummary(Context context, String limitChoice) {
+        File dir = archiveDirectory(context);
+        long bytes = calculateDirectoryBytes(dir);
+        int count = countArchives(dir);
+        String countLabel = count == 1 ? "1 editable original" : (count + " editable originals");
+        return String.format(Locale.US, "%s used (%s) · Limit: %s", formatBytes(bytes), countLabel, limitChoice);
+    }
+
+    static boolean hasSufficientSpaceForArchive(Context context) {
+        try {
+            File dir = context.getFilesDir();
+            if (dir == null) return true;
+            return dir.getUsableSpace() > LOW_DISK_HEADROOM_BYTES;
+        } catch (Throwable ignored) {
+            return true;
+        }
+    }
+
+    static CleanupResult enforceStorageLimit(Context context, String limitChoice, String protectedKey) {
+        long maxBytes = AppSettings.parseEditableArchiveLimitBytes(limitChoice);
+        return enforceStorageLimit(archiveDirectory(context), maxBytes, protectedKey);
+    }
+
+    static CleanupResult enforceStorageLimit(File dir, long maxBytes, String protectedKey) {
+        if (dir == null || !dir.isDirectory() || maxBytes == Long.MAX_VALUE) {
+            return new CleanupResult(0, 0L, 0);
+        }
+        File[] rawFiles = dir.listFiles((d, name) -> name != null && name.endsWith(".sraw"));
+        if (rawFiles == null || rawFiles.length == 0) {
+            return new CleanupResult(0, 0L, 0);
+        }
+        long totalBytes = 0L;
+        List<File> list = new ArrayList<>(rawFiles.length);
+        for (File f : rawFiles) {
+            if (f != null && f.isFile()) {
+                totalBytes += f.length();
+                list.add(f);
+            }
+        }
+        if (totalBytes <= maxBytes) {
+            return new CleanupResult(0, 0L, 0);
+        }
+        list.sort(Comparator.comparingLong(File::lastModified));
+        String safeProtected = sanitizeKey(protectedKey);
+        int deleted = 0;
+        long freed = 0L;
+        int skipped = 0;
+        for (File f : list) {
+            if (totalBytes <= maxBytes) break;
+            String k = keyFromFileName(f.getName());
+            if ((!safeProtected.isEmpty() && safeProtected.equals(k)) || isPinned(k)) {
+                skipped++;
+                continue;
+            }
+            long len = f.length();
+            if (f.delete()) {
+                deleted++;
+                freed += len;
+                totalBytes -= len;
+            }
+        }
+        return new CleanupResult(deleted, freed, skipped);
+    }
+
+    static CleanupResult clearEditableOriginals(Context context) {
+        return clearEditableOriginals(archiveDirectory(context));
+    }
+
+    static CleanupResult clearEditableOriginals(File dir) {
+        if (dir == null || !dir.isDirectory()) {
+            return new CleanupResult(0, 0L, 0);
+        }
+        File[] files = dir.listFiles((d, name) -> name != null && name.endsWith(".sraw"));
+        if (files == null || files.length == 0) {
+            return new CleanupResult(0, 0L, 0);
+        }
+        int deleted = 0;
+        long freed = 0L;
+        int skipped = 0;
+        for (File f : files) {
+            if (f == null || !f.isFile()) continue;
+            String k = keyFromFileName(f.getName());
+            if (isPinned(k)) {
+                skipped++;
+                continue;
+            }
+            long len = f.length();
+            if (f.delete()) {
+                deleted++;
+                freed += len;
+            }
+        }
+        return new CleanupResult(deleted, freed, skipped);
     }
 
     static Frame createFrame(String key, Image image, CameraCharacteristics characteristics,

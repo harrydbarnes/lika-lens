@@ -2735,10 +2735,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             mediaRecorder = new MediaRecorder();
             if (recordAudio) {
                 int audioSrc = MediaRecorder.AudioSource.CAMCORDER;
-                boolean speechEnhance = AppSettings.getBoolean(this, AppSettings.SPEECH_ENHANCEMENT, true);
                 if (audioPref.startsWith("Unprocessed") && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                     audioSrc = MediaRecorder.AudioSource.UNPROCESSED;
-                } else if (audioPref.contains("Speech") || audioPref.startsWith("Voice") || speechEnhance) {
+                } else if (audioPref.contains("Speech") || audioPref.startsWith("Voice")) {
                     audioSrc = MediaRecorder.AudioSource.VOICE_RECOGNITION;
                 }
                 try {
@@ -2972,9 +2971,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             base += " · ⚡ ACTIVE";
         }
         String audioPref = AppSettings.get(this, AppSettings.VIDEO_AUDIO, "Camcorder · Stereo");
-        boolean speechEnhance = AppSettings.getBoolean(this, AppSettings.SPEECH_ENHANCEMENT, true);
         if (!audioPref.startsWith("Muted")) {
-            if (audioPref.contains("Speech") || audioPref.startsWith("Voice") || speechEnhance) {
+            if (audioPref.contains("Speech") || audioPref.startsWith("Voice")) {
                 base += " · 🎙 VOICE";
             }
         }
@@ -4282,20 +4280,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         CaptureOutputMeta(boolean raw, CaptureRecipe recipe) {
             String stamp = formatCaptureStamp();
-            String format = recipe.format;
-            String dngPolicy = recipe.dngPolicy;
-            this.keepEditableSource = raw && !dngPolicy.startsWith("Do not save RAW")
-                    && recipe.keepRaw
-                    && !"Rendered JPEG only".equals(format);
-            this.saveDng = raw && dngPolicy.startsWith("Save DNG")
-                    && (recipe.keepRaw || "DNG only".equals(format))
-                    && !"Rendered JPEG only".equals(format);
-            this.captureLocation = (saveDng || !raw || !"DNG only".equals(format)) ? getCaptureLocation() : null;
+            String photoOutput = recipe.photoOutput;
+            boolean dngOnly = raw && AppSettings.isDngOnly(photoOutput);
+            this.keepEditableSource = raw && !dngOnly;
+            this.saveDng = raw && AppSettings.shouldSaveDng(photoOutput);
+            this.captureLocation = getCaptureLocation();
             String prefix = resolvedFilePrefix();
             String namingPattern = AppSettings.get(MainActivity.this, AppSettings.FILE_NAMING, "Prefix + Timestamp");
             if (namingPattern.contains("Film Look")) {
                 String stockName = recipe.look.brain != null ? recipe.look.brain.replaceAll("[^A-Za-z0-9]", "") : "LIKA";
-                this.baseFileStem = stockName + "_" + stamp;
+                this.baseFileStem = prefix + "_" + stockName + "_" + stamp;
             } else if (namingPattern.contains("Roll counter")) {
                 int roll = AppSettings.getInt(MainActivity.this, "roll_counter", 1);
                 AppSettings.prefs(MainActivity.this).edit().putInt("roll_counter", roll + 1).apply();
@@ -4313,7 +4307,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             } else {
                 this.orgSub = "";
             }
-            this.archiveKey = prefix + "_" + stamp;
+            this.archiveKey = this.baseFileStem;
         }
     }
 
@@ -4486,17 +4480,31 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                                        TotalCaptureResult exifResult, Bitmap developed,
                                        boolean dngSaved, String dngWarning, int stackedFrames) throws Exception {
         if (developed == null) throw new IllegalStateException("Renderer returned no image");
-        if (raw && rawFrame != null && meta.keepEditableSource) {
-            try {
-                captureJobs.move(renderJob, CaptureJobs.Phase.ARCHIVING);
-                RawArchive.writeArchive(this, rawFrame);
-                PhotoEditStore.save(this, meta.archiveKey, recipe.look);
-            } catch (Exception archiveErr) {
-                Log.w(TAG, "Could not save editable RAW archive", archiveErr);
+        boolean dngOnly = raw && AppSettings.isDngOnly(recipe.photoOutput);
+        boolean shouldKeepArchive = raw && rawFrame != null && (meta.keepEditableSource || !dngSaved);
+        boolean skippedArchiveForLowSpace = false;
+        if (shouldKeepArchive) {
+            if (!RawArchive.hasSufficientSpaceForArchive(this)) {
+                skippedArchiveForLowSpace = true;
+                Log.w(TAG, "Skipping editable RAW archive due to low internal storage");
+            } else {
+                RawArchive.pin(meta.archiveKey);
+                try {
+                    captureJobs.move(renderJob, CaptureJobs.Phase.ARCHIVING);
+                    RawArchive.writeArchive(this, rawFrame);
+                    PhotoEditStore.save(this, meta.archiveKey, recipe.look);
+                    String limitChoice = AppSettings.get(this, AppSettings.EDITABLE_ARCHIVE_LIMIT,
+                            AppSettings.EDITABLE_ARCHIVE_512MB);
+                    RawArchive.enforceStorageLimit(this, limitChoice, meta.archiveKey);
+                } catch (Exception archiveErr) {
+                    Log.w(TAG, "Could not save editable RAW archive", archiveErr);
+                } finally {
+                    RawArchive.unpin(meta.archiveKey);
+                }
             }
         }
         Bitmap quickThumbnail = null;
-        if (!raw || !"DNG only".equals(recipe.format) || !dngSaved) {
+        if (!dngOnly || !dngSaved) {
             captureJobs.move(renderJob, CaptureJobs.Phase.PUBLISHING);
             writeJpeg(developed, meta.baseFileStem + ".jpg", exifResult, meta.orgSub, true, meta.captureLocation);
             quickThumbnail = createGalleryThumbnail(developed);
@@ -4505,21 +4513,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         final Bitmap finalThumbnail = quickThumbnail;
         final String resultMessage;
+        String suffix = skippedArchiveForLowSpace ? " · storage low (RAW edit cache skipped)" : "";
         if (stackedFrames > 1) {
             if (dngWarning != null) {
-                resultMessage = String.format(Locale.US, "✨ Night stacked (%d frames); DNG failed", stackedFrames);
-            } else if ("DNG only".equals(recipe.format) && raw) {
+                resultMessage = String.format(Locale.US, "✨ Night stacked (%d frames); DNG failed", stackedFrames) + suffix;
+            } else if (dngOnly) {
                 resultMessage = "DNG original saved";
             } else if (dngSaved) {
-                resultMessage = String.format(Locale.US, "✨ Night stacked (%d frames) + DNG saved", stackedFrames);
+                resultMessage = String.format(Locale.US, "✨ Night stacked (%d frames) + DNG saved", stackedFrames) + suffix;
             } else {
-                resultMessage = String.format(Locale.US, "✨ Night stacked (%d frames)", stackedFrames);
+                resultMessage = String.format(Locale.US, "✨ Night stacked (%d frames)", stackedFrames) + suffix;
             }
         } else {
-            resultMessage = dngWarning != null ? "Photo rendered; DNG export failed"
+            resultMessage = (dngWarning != null ? "Photo rendered; DNG export failed"
                     : !raw ? "JPEG fallback captured and rendered"
-                    : "DNG only".equals(recipe.format) ? "DNG original saved"
-                    : dngSaved ? "DNG original + Lika Lens render saved" : "Lika Lens RAW render saved";
+                    : dngOnly ? "DNG original saved"
+                    : dngSaved ? "DNG original + Lika Lens render saved" : "Lika Lens RAW render saved") + suffix;
         }
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed()) {
@@ -4893,9 +4902,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             RawDeveloper.Look captureLook = RawDeveloper.Look.fromPreferences(this);
             captureLook.flipHorizontal = isFrontCamera() && AppSettings.getBoolean(this, AppSettings.MIRROR_FRONT, true);
             CaptureRecipe recipe = new CaptureRecipe(characteristics, capturedOrientation, captureLook,
-                    AppSettings.get(this, AppSettings.DNG_POLICY, "Save DNG beside JPEG (Pictures/RAW)"),
-                    AppSettings.get(this, AppSettings.CAPTURE_FORMAT, "RAW + rendered JPEG"),
-                    AppSettings.getBoolean(this, AppSettings.KEEP_RAW, true), samplePreviewMidTarget());
+                    AppSettings.get(this, AppSettings.PHOTO_OUTPUT, AppSettings.PHOTO_OUTPUT_JPEG_ONLY),
+                    samplePreviewMidTarget());
             if (isAstro) {
                 performNightBurstCapture(target, rawCapture, recipe, astroSetting, meteredExposure, meteredIso);
                 return;
@@ -5139,8 +5147,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private Location getCaptureLocation() {
-        if (!AppSettings.getBoolean(this, AppSettings.LOCATION, false)) return null;
-        if (AppSettings.getBoolean(this, AppSettings.STRIP_GEO, false)) return null;
+        if (!AppSettings.getBoolean(this, AppSettings.LOCATION, true)) return null;
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
                 && checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             return null;
@@ -5301,9 +5308,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     }
                 }
 
-                boolean stripGeo = AppSettings.getBoolean(this, AppSettings.STRIP_GEO, false);
-                boolean writeLocation = AppSettings.getBoolean(this, AppSettings.LOCATION, false);
-                if (stripGeo || !writeLocation) {
+                boolean writeLocation = AppSettings.getBoolean(this, AppSettings.LOCATION, true);
+                if (!writeLocation) {
                     exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE, null);
                     exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE_REF, null);
                     exif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE, null);
@@ -5339,9 +5345,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
-    private MediaOutput createOutput(String name,String mime,String subfolder) throws Exception {
-        boolean publish=!"image/jpeg".equals(mime) || AppSettings.getBoolean(this,AppSettings.AUTO_EXPORT,true);
-        return MediaOutput.allocate(this,name,mime,Environment.DIRECTORY_PICTURES+"/Lika Lens"+(subfolder.isEmpty()?"":"/"+subfolder),publish);
+    private MediaOutput createOutput(String name, String mime, String subfolder) throws Exception {
+        return MediaOutput.allocate(this, name, mime,
+                Environment.DIRECTORY_PICTURES + "/Lika Lens" + (subfolder.isEmpty() ? "" : "/" + subfolder), true);
     }
 
     private void chooseBrain() {
@@ -6327,7 +6333,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             String bestId = mainCameraId;
             float bestPhysical = 1f;
-            boolean keepRaw = AppSettings.getBoolean(this, AppSettings.KEEP_RAW, true);
+            boolean requireDng = AppSettings.shouldSaveDng(
+                    AppSettings.get(this, AppSettings.PHOTO_OUTPUT, AppSettings.PHOTO_OUTPUT_JPEG_ONLY));
             for (String id : cameraManager.getCameraIdList()) {
                 CameraCharacteristics candidate = cameraManager.getCameraCharacteristics(id);
                 Integer candidateFacing = candidate.get(CameraCharacteristics.LENS_FACING);
@@ -6338,7 +6345,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (physical > factor + .001f || physical < bestPhysical) continue;
                 StreamConfigurationMap map = candidate.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
                 boolean raw = isRawCapable(candidate, map);
-                if (keepRaw && !raw) continue;
+                if (requireDng && !raw) continue;
                 bestId = id;
                 bestPhysical = physical;
             }

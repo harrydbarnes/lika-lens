@@ -230,28 +230,27 @@ public class SettingsActivity extends Activity {
         addEditorHero();
         beginSection("SMART POINT & SHOOT", "Automated scene-adaptive colour science for effortless shooting.");
         addSwitch("Easy point & shoot mode", "Automatically adapts warmth, protects skin tones and balances dynamic range", AppSettings.EASY_MODE, true);
-        addSwitch("Intelligent skin tone protection", "Preserves healthy skin hues when warmth or film saturation is pushed", AppSettings.SKIN_PROTECTION, true);
-        addSwitch("Smart filmic vibrance", "Enhances everyday subjects (food, clothing, foliage) without digital oversaturation", AppSettings.SMART_VIBRANCE, true);
+        addChoice("Skin tone protection", "Auto follows the selected brain; On or Off overrides even in Easy Mode", AppSettings.SKIN_PROTECTION_MODE,
+                AppSettings.OVERRIDE_CHOICES, AppSettings.OVERRIDE_AUTO);
+        addChoice("Smart filmic vibrance", "Auto follows the selected brain; On or Off overrides even in Easy Mode", AppSettings.SMART_VIBRANCE_MODE,
+                AppSettings.OVERRIDE_CHOICES, AppSettings.OVERRIDE_AUTO);
 
         beginSection("PROCESSING BRAIN", "The look is developed from sensor data after capture.");
         addChoice("Rendering brain", "Choose the image-making approach", AppSettings.BRAIN,
                 AppSettings.BRAIN_CHOICES, AppSettings.BRAIN_LIKA_FILM);
         addChoice("Film push / pull rating", "Emulate chemical push/pull development latitude & grain", AppSettings.FILM_PUSH_PULL,
                 AppSettings.FILM_PUSH_PULL_CHOICES, AppSettings.FILM_PUSH_PULL_CHOICES[0]);
-        addChoice("Capture output", "DNG stays untouched; Lika Lens develops the JPEG", AppSettings.CAPTURE_FORMAT,
-                new String[]{"RAW + rendered JPEG", "DNG only", "Rendered JPEG only"}, "RAW + rendered JPEG");
-        addSwitch("Keep sensor original", "Save the untouched RAW file beside the render", AppSettings.KEEP_RAW, true);
 
         beginSection("COLOUR PIPELINE & TONE MAPPING", "Transfer functions, contrast geometry and gamut control.");
         addChoice("Colour space", "Target display gamut", AppSettings.COLOR_SPACE,
-                new String[]{"sRGB · Standard Display", "Display P3 · Wide Gamut", "Rec. 709 · Cinema Broadcast"}, "sRGB · Standard Display");
+                AppSettings.COLOR_SPACE_CHOICES, AppSettings.COLOR_SPACE_SRGB);
         addSwitch("Ultra HDR gainmap", "Embed ISO 21496-1 HDR gainmap so film highlights and halation glow on OLED displays", AppSettings.ULTRA_HDR, true);
         addChoice("Tone curve", "Transfer curve geometry", AppSettings.TONE_CURVE,
-                new String[]{"Filmic S-Curve", "Linear Response", "Log / Flat"}, "Filmic S-Curve");
-        addChoice("Shadow profile", "Toe response and shadow depth", AppSettings.SHADOW_PROFILE,
-                new String[]{"Deep Cinema Blacks", "Neutral / Open Shadows", "Lifted Vintage Blacks"}, "Deep Cinema Blacks");
-        addChoice("Highlight recovery", "Roll-off behavior approaching clipping", AppSettings.HIGHLIGHT_RECOVERY,
-                new String[]{"Adaptive blend", "Subtractive roll-off", "Hard clip"}, "Adaptive blend");
+                AppSettings.TONE_CURVE_CHOICES, "Filmic S-Curve");
+        addChoice("Shadow profile", "Auto uses each brain's default toe; choose a manual override to lock blacks", AppSettings.SHADOW_PROFILE,
+                AppSettings.SHADOW_PROFILE_CHOICES, AppSettings.SHADOW_PROFILE_AUTO);
+        addChoice("Highlight recovery", "Auto adapts to scene highlight clipping; choose a manual override to lock roll-off", AppSettings.HIGHLIGHT_RECOVERY,
+                AppSettings.HIGHLIGHT_RECOVERY_CHOICES, AppSettings.HL_REC_AUTO);
 
         beginSection("RAW DEVELOPMENT", "Tune the render while preserving the original DNG.");
         addChoice("White balance", "Auto uses this frame's sensor estimate", AppSettings.WHITE_BALANCE_MODE,
@@ -353,7 +352,6 @@ public class SettingsActivity extends Activity {
         addSwitch("10-bit HLG HDR video", "Record 10-bit High Dynamic Range video when supported by the sensor", AppSettings.VIDEO_HDR, false);
         addChoice("Audio source", "Microphone processing during video recording", AppSettings.VIDEO_AUDIO,
                 AppSettings.VIDEO_AUDIO_CHOICES, "Camcorder · Stereo");
-        addSwitch("Speech enhancement & wind filter", "Reduce background wind, traffic and ambient noise while boosting voice clarity", AppSettings.SPEECH_ENHANCEMENT, true);
         addSwitch("Directional audio zoom", "Focus microphone pickup toward the subject when zooming in", AppSettings.AUDIO_ZOOM, true);
         addInfo("Mid-Take Camera Switching", "Switch between front/rear cameras or lenses while recording. Segments are stitched automatically into a single video.", ACCENT);
         addInfo("180° Shutter Rule", "In 24 fps cinematic mode, the app targets a 1/48s exposure interval for authentic motion cadence.", 0xffaab3ad);
@@ -362,7 +360,6 @@ public class SettingsActivity extends Activity {
         addChoice("Left-hand mode", "Move top-left & key controls to the opposite side; optionally swap camera & gallery",
                 AppSettings.LEFT_HAND_MODE, AppSettings.LEFT_HAND_MODE_CHOICES, AppSettings.LEFT_HAND_OFF);
         addSwitch("Live film stock viewfinder preview", "Real-time film color science simulation in the live viewfinder", AppSettings.LIVE_FILM_PREVIEW, true);
-        addSwitch("Rangefinder frame lines", "Translucent outside-the-frame context with Leica illuminated brightlines and corner brackets", AppSettings.RANGEFINDER_LINES, false);
         addSwitch("Pro optical loupe (5×)", "High-magnification focus assist loupe with gold bezel during reticle adjustment", AppSettings.OPTICAL_LOUPE, false);
         addChoice("Composition grid", "Choose a guide overlay inside the viewfinder frame", AppSettings.GRID_STYLE,
                 new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");
@@ -399,8 +396,10 @@ public class SettingsActivity extends Activity {
 
     private void populateGeneralSettings() {
         beginSection("FILE MANAGEMENT & OUTPUT", "Shareable renders, digital negatives and storage organisation.");
-        addChoice("DNG RAW policy", "How sensor digital negatives are preserved", AppSettings.DNG_POLICY,
-                new String[]{"Save DNG beside JPEG (Pictures/RAW)", "Save in app-private archive only", "Do not save RAW (JPEG only)"}, "Save DNG beside JPEG (Pictures/RAW)");
+        addChoice("Photo output format", "Choose whether to export processed JPEG only, JPEG + DNG, or DNG original only",
+                AppSettings.PHOTO_OUTPUT, AppSettings.PHOTO_OUTPUT_CHOICES, AppSettings.PHOTO_OUTPUT_JPEG_ONLY);
+        addChoice("Editable originals cache limit", "Maximum private RAW storage kept for post-capture re-editing and switching brains",
+                AppSettings.EDITABLE_ARCHIVE_LIMIT, AppSettings.EDITABLE_ARCHIVE_LIMIT_CHOICES, AppSettings.EDITABLE_ARCHIVE_512MB);
         addChoice("File naming pattern", "Format for exported files", AppSettings.FILE_NAMING,
                 new String[]{"Prefix + Timestamp", "Film Look + Timestamp", "Roll counter (e.g. ROLL_0001)"}, "Prefix + Timestamp");
         addChoice("Folder organisation", "Structure under Pictures/Lika Lens", AppSettings.FOLDER_ORG,
@@ -408,11 +407,9 @@ public class SettingsActivity extends Activity {
         addChoice("JPEG quality", "Encoder compression factor", AppSettings.JPEG_QUALITY,
                 new String[]{"Maximum · 98% (Archival)", "High · 95% (Recommended)", "Balanced · 90%", "Compact · 85%"}, "High · 95% (Recommended)");
         addSwitch("Include EXIF shooting params", "Embed shutter, ISO, aperture, and focal length", AppSettings.EXIF_PARAMS, true);
-        addSwitch("Strip GPS / geo metadata", "Remove geographical coordinates from exported media", AppSettings.STRIP_GEO, false);
         addChoice("File name prefix", "Organise Lika Lens captures in Photos", AppSettings.FILE_PREFIX,
                 new String[]{"LIKA", "STILLS", "REEL", "CUSTOM…"}, "LIKA");
-        addSwitch("Save rendered JPEG to Photos", "Add the developed still to Pictures/Lika Lens", AppSettings.AUTO_EXPORT, true);
-        addSwitch("Write location metadata", "Embed GPS coordinates in JPEG and DNG digital negatives", AppSettings.LOCATION, false);
+        addSwitch("Save location (GPS)", "Embed GPS coordinates in exported JPEG and DNG files", AppSettings.LOCATION, true);
         addInfo("Device storage & roll capacity", AppSettings.formatDetailedStorageBreakdown(this), ACCENT);
 
         beginSection("ANIMATED GIF CREATOR", "Stop-motion loops and video to animated GIF export.");
@@ -429,7 +426,7 @@ public class SettingsActivity extends Activity {
 
         beginSection("UPDATES & RELEASES", "Continuous delivery from GitHub releases with Stable and Beta channels.");
         addChoice("Update release channel", "Choose between continuous beta builds or stable releases",
-                AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_CHOICES, AppSettings.UPDATE_CHANNEL_BETA);
+                AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_CHOICES, AppSettings.UPDATE_CHANNEL_STABLE);
         addSwitch("Check for updates on launch", "Silently check for new versions when opening Lika Lens",
                 AppSettings.AUTO_CHECK_UPDATES, true);
         addInfo("Check for updates now", "Query GitHub Releases API for the latest APK", ACCENT, this::checkAppUpdate);

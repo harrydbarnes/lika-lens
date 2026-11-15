@@ -307,6 +307,7 @@ public class PhotoViewerActivity extends Activity {
         final int generation = compareGeneration;
         final android.content.Context appContext = getApplicationContext();
         worker.execute(() -> {
+            RawArchive.pin(keyForLoad);
             try {
                 if (generation != compareGeneration || !keyForLoad.equals(archiveKey) || isFinishing() || isDestroyed()) return;
                 if (!RawArchive.exists(appContext, keyForLoad)) return;
@@ -344,6 +345,8 @@ public class PhotoViewerActivity extends Activity {
                         compareBadge.setText("NO RAW DATA");
                     }
                 });
+            } finally {
+                RawArchive.unpin(keyForLoad);
             }
         });
     }
