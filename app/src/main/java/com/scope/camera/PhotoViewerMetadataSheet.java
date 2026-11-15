@@ -114,9 +114,19 @@ public final class PhotoViewerMetadataSheet {
             }
 
             final boolean hasRaw = archiveKey != null && RawArchive.exists(appContext, archiveKey);
+            String mime = null;
+            try {
+                mime = appContext.getContentResolver().getType(photoUri);
+            } catch (Throwable ignored) {
+            }
+            final boolean isGif = (mime != null && "image/gif".equalsIgnoreCase(mime))
+                    || photoUri.toString().toLowerCase(Locale.US).endsWith(".gif");
             final String text1 = shutter + "  ·  " + iso + "  ·  " + focal + (dimensions.isEmpty() ? "" : "  ·  " + dimensions);
-            final String text2 = hasRaw ? "RAW SENSOR ORIGINAL PRESERVED  ·  CHROMAGRAPH MOVIE LOOK"
-                    : "PROCESSED JPEG  ·  DIRECT CAMERA RENDER";
+            final String text2 = hasRaw
+                    ? "EDITABLE RAW ARCHIVE AVAILABLE  ·  NON-DESTRUCTIVE RE-EDIT"
+                    : (isGif
+                            ? "ANIMATED GIF  ·  EXPORTED LOOP"
+                            : "PROCESSED JPEG  ·  NO EDITABLE RAW CACHE (CLEARED OR UNAVAILABLE)");
 
             MAIN.post(() -> {
                 if (!photoUri.equals(card.getTag())) return;

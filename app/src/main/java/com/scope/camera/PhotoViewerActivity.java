@@ -713,7 +713,29 @@ public class PhotoViewerActivity extends Activity {
         startActivity(intent);
     }
 
+    private void updateEditButtonState(boolean isGif, boolean hasRaw) {
+        if (editButton == null) return;
+        if (isGif) {
+            editButton.setVisibility(View.GONE);
+            return;
+        }
+        editButton.setVisibility(View.VISIBLE);
+        if (hasRaw) {
+            editButton.setAlpha(1f);
+            editButton.setTextColor(0xff1d1d1a);
+            editButton.setBackground(round(ACCENT, 16, ACCENT, dp(1)));
+        } else {
+            editButton.setAlpha(0.55f);
+            editButton.setTextColor(0xff9ba59e);
+            editButton.setBackground(round(0xd8191e1e, 16, 0x556e7872, dp(1)));
+        }
+    }
+
     private void openEditor() {
+        if (!currentHasRaw) {
+            Toast.makeText(this, "Editable RAW original was cleared or unavailable · Processed JPEG stays intact", Toast.LENGTH_LONG).show();
+            return;
+        }
         Intent edit = new Intent(this, PhotoEditorActivity.class);
         edit.putExtra(PhotoEditorActivity.EXTRA_KEY, archiveKey);
         edit.putExtra(EXTRA_URI, photoUri == null ? null : photoUri.toString());
@@ -760,8 +782,8 @@ public class PhotoViewerActivity extends Activity {
                         mainHandler.post(() -> {
                             if (!imageJob.move(ticket, JobState.Phase.READY) || isDestroyed() || isFinishing()) return;
                             currentHasRaw = hasRaw;
-                            if (compareButton != null) compareButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
-                            if (editButton != null) editButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
+                            if (compareButton != null) compareButton.setVisibility(View.GONE);
+                            updateEditButtonState(true, hasRaw);
                             imageWidth = drawable.getIntrinsicWidth();
                             imageHeight = drawable.getIntrinsicHeight();
                             currentScale = 1f;
@@ -798,8 +820,9 @@ public class PhotoViewerActivity extends Activity {
                         return;
                     }
                     currentHasRaw = hasRaw;
-                    if (compareButton != null) compareButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
-                    if (editButton != null) editButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
+                    boolean isGif = name != null && name.toLowerCase(Locale.US).endsWith(".gif");
+                    if (compareButton != null) compareButton.setVisibility(!isGif && hasRaw ? View.VISIBLE : View.GONE);
+                    updateEditButtonState(isGif, hasRaw);
                     Bitmap old = developedBitmap;
                     developedBitmap = bitmap;
                     imageWidth = bitmap.getWidth();

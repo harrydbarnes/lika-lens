@@ -580,6 +580,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private volatile boolean video180Active = false;
     private volatile int video180Iso = 0;
     private volatile int video180EffectiveFps = 24;
+    private volatile boolean video180FallbackNotified = false;
     private volatile long lastMeteredExposureNs = 0L;
     private volatile int lastMeteredIso = 0;
     private volatile long lastVideo180StepAt = 0L;
@@ -1115,6 +1116,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     @Override protected void onResume() {
         super.onResume();
         activityResumed = true;
+        video180FallbackNotified = false;
         refreshHotPrefs();
         applyFullScreenImmersive();
         if (root != null) {
@@ -2592,6 +2594,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         videoMode = enabled;
         video180Active = false;
         video180Iso = 0;
+        video180FallbackNotified = false;
         lastVideo180StepAt = 0L;
         AppSettings.prefs(this).edit().putBoolean(AppSettings.LAST_USED_MODE, enabled).apply();
         if (quickAdjustPanel != null) quickAdjustPanel.setVisibility(View.GONE);
@@ -2631,6 +2634,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         AppSettings.prefs(this).edit().putString(AppSettings.VIDEO_FPS, next).apply();
         video180Active = false;
         video180Iso = 0;
+        video180FallbackNotified = false;
         lastVideo180StepAt = 0L;
         updateQuickButtons();
         updateReadouts();
@@ -4317,6 +4321,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     && VideoRecordingCoordinator.findSupportedHevcMain10Level() > 0;
             video180Active = false;
             video180Iso = 0;
+            video180FallbackNotified = false;
             lastMeteredExposureNs = 0L;
             lastMeteredIso = 0;
             lastVideo180StepAt = 0L;
@@ -5096,8 +5101,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                                        CaptureOutputMeta meta, RawArchive.Frame rawFrame,
                                        TotalCaptureResult exifResult, Bitmap developed,
                                        boolean dngSaved, String dngWarning, int stackedFrames) throws Exception {
-        if (developed == null) throw new IllegalStateException("Renderer returned no image");
         boolean dngOnly = raw && AppSettings.isDngOnly(recipe.photoOutput);
+        boolean skipJpegPublish = dngOnly && dngSaved;
+        if (developed == null && !skipJpegPublish) throw new IllegalStateException("Renderer returned no image");
         boolean shouldKeepArchive = raw && rawFrame != null && (meta.keepEditableSource || !dngSaved);
         boolean skippedArchiveForLowSpace = false;
         if (shouldKeepArchive) {
@@ -5121,21 +5127,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
         }
         Bitmap quickThumbnail = null;
-        if (!dngOnly || !dngSaved) {
+        if (!skipJpegPublish) {
             captureJobs.move(renderJob, CaptureJobs.Phase.PUBLISHING);
             writeJpeg(developed, meta.baseFileStem + ".jpg", exifResult, meta.orgSub, true, meta.captureLocation);
             quickThumbnail = createGalleryThumbnail(developed);
         }
-        developed.recycle();
+        if (developed != null && !developed.isRecycled()) {
+            developed.recycle();
+        }
 
         final Bitmap finalThumbnail = quickThumbnail;
         final String resultMessage;
         String suffix = skippedArchiveForLowSpace ? " · storage low (RAW edit cache skipped)" : "";
+        String dngFolder = "Pictures/Lika Lens/" + (meta.orgSub.isEmpty() ? "RAW" : meta.orgSub + "/RAW");
+        String dngOnlyMessage = "DNG saved to " + dngFolder + " · view in Photos/RAW app";
         if (stackedFrames > 1) {
             if (dngWarning != null) {
                 resultMessage = String.format(Locale.US, "✨ Night stacked (%d frames); DNG failed", stackedFrames) + suffix;
-            } else if (dngOnly) {
-                resultMessage = "DNG original saved";
+            } else if (skipJpegPublish) {
+                resultMessage = dngOnlyMessage;
             } else if (dngSaved) {
                 resultMessage = String.format(Locale.US, "✨ Night stacked (%d frames) + DNG saved", stackedFrames) + suffix;
             } else {
@@ -5144,7 +5154,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         } else {
             resultMessage = (dngWarning != null ? "Photo rendered; DNG export failed"
                     : !raw ? "JPEG fallback captured and rendered"
-                    : dngOnly ? "DNG original saved"
+                    : skipJpegPublish ? dngOnlyMessage
                     : dngSaved ? "DNG original + Lika Lens render saved" : "Lika Lens RAW render saved") + suffix;
         }
         runOnUiThread(() -> {
@@ -5214,22 +5224,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (session.raw) {
                 RawArchive.Frame frame = session.baseRawFrame;
                 if (frame == null) throw new IllegalStateException("No RAW burst frames captured");
-                if (session.rawAccumulator != null) {
-                    short[] stackedShorts = session.rawAccumulator.finishShorts();
-                    session.rawAccumulator = null;
-                    frame.captureBuffer = NightStacker.toLittleEndianBuffer(stackedShorts);
-                    frame.rowStride = frame.width * 2;
-                    frame.pixelStride = 2;
-                } else if (session.fallbackRawBuffer != null) {
-                    frame.captureBuffer = session.fallbackRawBuffer;
-                    frame.rowStride = frame.width * 2;
-                    frame.pixelStride = 2;
-                }
-                try {
-                    developed = RawDeveloper.develop(frame, session.recipe.look, 0);
-                } catch (IllegalArgumentException | OutOfMemoryError resolutionError) {
-                    Log.w(TAG, "Full-resolution stacked RAW render failed; retrying at a safe display size", resolutionError);
-                    developed = RawDeveloper.develop(frame, session.recipe.look, 3000);
+                boolean skipJpegRender = AppSettings.isDngOnly(session.recipe.photoOutput) && session.dngSaved;
+                if (!skipJpegRender) {
+                    if (session.rawAccumulator != null) {
+                        short[] stackedShorts = session.rawAccumulator.finishShorts();
+                        session.rawAccumulator = null;
+                        frame.captureBuffer = NightStacker.toLittleEndianBuffer(stackedShorts);
+                        frame.rowStride = frame.width * 2;
+                        frame.pixelStride = 2;
+                    } else if (session.fallbackRawBuffer != null) {
+                        frame.captureBuffer = session.fallbackRawBuffer;
+                        frame.rowStride = frame.width * 2;
+                        frame.pixelStride = 2;
+                    }
+                    try {
+                        developed = RawDeveloper.develop(frame, session.recipe.look, 0);
+                    } catch (IllegalArgumentException | OutOfMemoryError resolutionError) {
+                        Log.w(TAG, "Full-resolution stacked RAW render failed; retrying at a safe display size", resolutionError);
+                        developed = RawDeveloper.develop(frame, session.recipe.look, 3000);
+                    }
                 }
                 publishDevelopedPhoto(session.renderJob, true, session.recipe, session.meta, frame,
                         session.baseResult, developed, session.dngSaved, session.dngWarning, session.stackedFrames);
@@ -5296,16 +5309,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         Log.e(TAG, "DNG export failed; continuing with the Lika Lens render", dngError);
                     }
                 }
-                Bitmap developed;
+                Bitmap developed = null;
+                boolean skipJpegRender = raw && AppSettings.isDngOnly(recipe.photoOutput) && dngSaved;
                 if (raw) {
-                    rawFrame = RawArchive.createFrame(meta.archiveKey, image, capturedCharacteristics,
-                            result, capturedOrientation, capturedAspect);
-                    rawFrame.previewMidTarget = recipe.previewMidTarget;
-                    try {
-                        developed = RawDeveloper.develop(rawFrame, captureLook, 0);
-                    } catch (IllegalArgumentException | OutOfMemoryError resolutionError) {
-                        Log.w(TAG, "Full-resolution RAW render failed; retrying at a safe display size", resolutionError);
-                        developed = RawDeveloper.develop(rawFrame, captureLook, 3000);
+                    if (!skipJpegRender) {
+                        rawFrame = RawArchive.createFrame(meta.archiveKey, image, capturedCharacteristics,
+                                result, capturedOrientation, capturedAspect);
+                        rawFrame.previewMidTarget = recipe.previewMidTarget;
+                        try {
+                            developed = RawDeveloper.develop(rawFrame, captureLook, 0);
+                        } catch (IllegalArgumentException | OutOfMemoryError resolutionError) {
+                            Log.w(TAG, "Full-resolution RAW render failed; retrying at a safe display size", resolutionError);
+                            developed = RawDeveloper.develop(rawFrame, captureLook, 3000);
+                        }
                     }
                 } else {
                     ByteBuffer buffer = image.getPlanes()[0].getBuffer();
@@ -7689,7 +7705,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 expRange.getLower(), expRange.getUpper(),
                 sensRange.getLower(), sensRange.getUpper(),
                 meteredExposureNs, meteredIso, currentEvOffset);
-        if (!plan.engaged) return;
+        if (!plan.engaged) {
+            if (!video180FallbackNotified && plan.fallbackReason != null
+                    && plan.fallbackReason.startsWith("Bright scene")) {
+                video180FallbackNotified = true;
+                runOnUiThread(() -> showMessage("Bright scene · Auto shutter active for highlight safety (ND needed for 180°)"));
+            }
+            return;
+        }
         video180EffectiveFps = effFps;
         video180Iso = plan.initialIso;
         video180Active = true;
@@ -7715,14 +7738,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         Handler camH = cameraHandler;
         Runnable applyStep = () -> {
             if (!videoMode || !isVideo180Requested()) return;
+            boolean notifyFallback = false;
             if (nextIso < 0) {
                 video180Active = false;
                 video180Iso = 0;
+                if (!video180FallbackNotified) {
+                    video180FallbackNotified = true;
+                    notifyFallback = true;
+                }
             } else {
                 video180Iso = nextIso;
             }
             refreshPreviewRequest();
-            runOnUiThread(this::updateReadouts);
+            final boolean showFallbackToast = notifyFallback;
+            runOnUiThread(() -> {
+                updateReadouts();
+                if (showFallbackToast) {
+                    showMessage("Bright scene · Auto shutter active for highlight safety (ND needed for 180°)");
+                }
+            });
         };
         if (camH != null) {
             camH.post(applyStep);

@@ -458,7 +458,7 @@ public class SettingsActivity extends Activity {
     private void populateGeneralSettings() {
         String archiveLimit = AppSettings.get(this, AppSettings.EDITABLE_ARCHIVE_LIMIT, AppSettings.EDITABLE_ARCHIVE_512MB);
         beginSection("PHOTO OUTPUT & EDITABLE ORIGINALS", "Gallery exports and app-private sensor originals for re-editing.");
-        addChoice("Photo output", "Gallery receives processed JPEGs; an app-private original is retained for non-destructive re-editing",
+        addChoice("Photo output", "Gallery receives JPEGs (with private RAW edit cache); \"DNG original only\" saves to Pictures/Lika Lens/RAW (open in Photos/RAW apps)",
                 AppSettings.PHOTO_OUTPUT, AppSettings.PHOTO_OUTPUT_CHOICES, AppSettings.PHOTO_OUTPUT_JPEG_ONLY);
         addChoice("Editable originals limit", "Maximum app-private RAW cache before oldest unpinned originals are trimmed",
                 AppSettings.EDITABLE_ARCHIVE_LIMIT, AppSettings.EDITABLE_ARCHIVE_LIMIT_CHOICES, AppSettings.EDITABLE_ARCHIVE_512MB);
@@ -982,6 +982,20 @@ public class SettingsActivity extends Activity {
         dialog.show();
     }
 
+    private static String choiceOptionHint(String key, String option) {
+        if (!AppSettings.PHOTO_OUTPUT.equals(key) || option == null) return null;
+        if (AppSettings.PHOTO_OUTPUT_JPEG_ONLY.equals(option)) {
+            return "Saves graded JPEG to Gallery + private RAW cache for in-app re-editing";
+        }
+        if (AppSettings.PHOTO_OUTPUT_JPEG_DNG.equals(option)) {
+            return "Saves graded JPEG, RAW edit cache, and ungraded DNG to Pictures/Lika Lens/RAW";
+        }
+        if (AppSettings.PHOTO_OUTPUT_DNG_ONLY.equals(option)) {
+            return "Saves DNG to Pictures/Lika Lens/RAW only (not in Lika Lens grid; open in Photos/RAW apps)";
+        }
+        return null;
+    }
+
     private void showChoiceDialog(String title, String key, String[] options, String defaultValue, TextView valueView) {
         Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
         Window window = dialog.getWindow();
@@ -1026,6 +1040,7 @@ public class SettingsActivity extends Activity {
             if ("Shutter release".equals(selected)) selected = "Shutter";
             else if ("Zoom 1× / 2×".equals(selected)) selected = "Zoom";
         }
+        boolean hasOptionHints = AppSettings.PHOTO_OUTPUT.equals(key);
         for (String option : options) {
             boolean isCurrent = option.equals(selected);
             LinearLayout row = new LinearLayout(this);
@@ -1034,10 +1049,23 @@ public class SettingsActivity extends Activity {
             row.setPadding(dp(14), dp(13), dp(14), dp(13));
             row.setBackground(round(isCurrent ? 0x22d7b574 : 0x00000000, 10, isCurrent ? 0x66d7b574 : 0, isCurrent ? dp(1) : 0));
 
-            TextView label = text(option, 11, isCurrent ? ACCENT : 0xffe6eae4, isCurrent);
-            LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(0, -2, 1f);
-            labelLp.rightMargin = dp(8);
-            row.addView(label, labelLp);
+            String hint = choiceOptionHint(key, option);
+            if (hint != null) {
+                LinearLayout labelCol = new LinearLayout(this);
+                labelCol.setOrientation(LinearLayout.VERTICAL);
+                labelCol.addView(text(option, 11, isCurrent ? ACCENT : 0xffe6eae4, isCurrent));
+                TextView hintView = text(hint, 8, 0xff89948e, false);
+                hintView.setPadding(0, dp(3), 0, 0);
+                labelCol.addView(hintView);
+                LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(0, -2, 1f);
+                labelLp.rightMargin = dp(8);
+                row.addView(labelCol, labelLp);
+            } else {
+                TextView label = text(option, 11, isCurrent ? ACCENT : 0xffe6eae4, isCurrent);
+                LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(0, -2, 1f);
+                labelLp.rightMargin = dp(8);
+                row.addView(label, labelLp);
+            }
 
             if (isCurrent) {
                 TextView check = text("✓", 12, ACCENT, true);
@@ -1084,7 +1112,8 @@ public class SettingsActivity extends Activity {
             optionsList.addView(row, rowLp);
         }
         optScroll.addView(optionsList, new FrameLayout.LayoutParams(-1, -2));
-        sheet.addView(optScroll, new LinearLayout.LayoutParams(-1, dp(Math.min(380, options.length * 52 + 10))));
+        int rowEstimateDp = hasOptionHints ? 76 : 52;
+        sheet.addView(optScroll, new LinearLayout.LayoutParams(-1, dp(Math.min(380, options.length * rowEstimateDp + 12))));
 
         TextView cancel = pill("DONE", false);
         cancel.setGravity(Gravity.CENTER);
