@@ -1516,6 +1516,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         modeNote = label("INTELLIGENT AUTO", 8, 0xffc9d0c8, false);
         modeNote.setLetterSpacing(.06f);
+        modeNote.setSingleLine(true);
+        modeNote.setEllipsize(android.text.TextUtils.TruncateAt.END);
         modeNote.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         LinearLayout.LayoutParams noteTextLp = new LinearLayout.LayoutParams(0, -2, 1f);
         noteTextLp.gravity = Gravity.CENTER_VERTICAL;
@@ -1984,11 +1986,27 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             overlay.setPadding(0, 0, 0, 0);
             overlay.setBackground(null);
 
+            WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
+            int gripWidthDp = wideSideGripWidthDp(windowInfo);
+            int gripWidthPx = dp(gripWidthDp);
+            boolean compactHeight = windowInfo.heightDp < 440;
+            int leftCanvasWidthPx = Math.max(dp(200), screenWidth - safeInsets.left - safeInsets.right - gripWidthPx);
+
             if (header != null) {
                 if (header.getParent() != null) ((ViewGroup) header.getParent()).removeView(header);
                 FrameLayout.LayoutParams headerLp = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP);
                 headerLp.topMargin = topSafe;
-                header.setPadding(dp(14) + safeInsets.left, 0, dp(14) + Math.max(safeInsets.right, privacyRightInset(topSafe)), 0);
+                int leftPad = dp(14) + safeInsets.left;
+                int rightPad = dp(14) + Math.max(safeInsets.right, privacyRightInset(topSafe));
+                if (cutoutRect != null) {
+                    float cutoutCenterX = (cutoutRect.left + cutoutRect.right) / 2f;
+                    if (cutoutCenterX < screenWidth / 3f) {
+                        leftPad = Math.max(leftPad, cutoutRect.right + dp(8));
+                    } else if (cutoutCenterX > screenWidth * 2f / 3f) {
+                        rightPad = Math.max(rightPad, (screenWidth - cutoutRect.left) + dp(8));
+                    }
+                }
+                header.setPadding(leftPad, 0, rightPad, 0);
                 overlay.addView(header, headerLp);
             }
 
@@ -2015,22 +2033,35 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             if (telemetry != null) {
                 if (telemetry.getParent() != null) ((ViewGroup) telemetry.getParent()).removeView(telemetry);
-                LinearLayout.LayoutParams telLp = new LinearLayout.LayoutParams(dp(340), -2);
+                int telWidth = Math.min(dp(340), Math.max(dp(200), leftCanvasWidthPx - dp(16)));
+                LinearLayout.LayoutParams telLp = new LinearLayout.LayoutParams(telWidth, -2);
                 telLp.gravity = Gravity.CENTER_HORIZONTAL;
                 leftCanvas.addView(telemetry, telLp);
             }
             if (zoomSliderPanel != null) {
                 if (zoomSliderPanel.getParent() != null) ((ViewGroup) zoomSliderPanel.getParent()).removeView(zoomSliderPanel);
-                LinearLayout.LayoutParams zoomSliderLp = new LinearLayout.LayoutParams(dp(320), -2);
+                int sliderWidth = Math.min(dp(320), Math.max(dp(180), leftCanvasWidthPx - dp(24)));
+                LinearLayout.LayoutParams zoomSliderLp = new LinearLayout.LayoutParams(sliderWidth, -2);
                 zoomSliderLp.gravity = Gravity.CENTER_HORIZONTAL;
                 zoomSliderLp.topMargin = dp(4);
                 leftCanvas.addView(zoomSliderPanel, zoomSliderLp);
+            }
+            if (lookRow != null) {
+                if (lookRow.getParent() != null) ((ViewGroup) lookRow.getParent()).removeView(lookRow);
+                lookRow.setClipChildren(false);
+                lookRow.setClipToPadding(false);
+                int startPad = leftHand ? dp(12) : dp(68);
+                int endPad = leftHand ? dp(68) : dp(12);
+                lookRow.setPadding(startPad, dp(4), endPad, dp(10));
+                LinearLayout.LayoutParams lookRowLp = new LinearLayout.LayoutParams(-1, -2);
+                lookRowLp.topMargin = dp(4);
+                leftCanvas.addView(lookRow, lookRowLp);
             }
 
             LinearLayout sideGrip = new LinearLayout(this);
             sideGrip.setOrientation(LinearLayout.VERTICAL);
             sideGrip.setGravity(Gravity.CENTER_HORIZONTAL);
-            sideGrip.setPadding(dp(8), dp(6), dp(8), dp(8));
+            sideGrip.setPadding(dp(8), dp(8), dp(8), dp(10));
             sideGrip.setBackground(round(0xb0121617, 16, 0x55454d49, dp(1)));
 
             if (modeRow != null) {
@@ -2040,14 +2071,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (lensRow != null) {
                 if (lensRow.getParent() != null) ((ViewGroup) lensRow.getParent()).removeView(lensRow);
                 LinearLayout.LayoutParams lensRowLp = new LinearLayout.LayoutParams(-2, -2);
-                lensRowLp.topMargin = dp(6);
+                lensRowLp.topMargin = compactHeight ? dp(4) : dp(8);
                 sideGrip.addView(lensRow, lensRowLp);
-            }
-            if (lookRow != null) {
-                if (lookRow.getParent() != null) ((ViewGroup) lookRow.getParent()).removeView(lookRow);
-                LinearLayout.LayoutParams lookRowLp = new LinearLayout.LayoutParams(-2, -2);
-                lookRowLp.topMargin = dp(6);
-                sideGrip.addView(lookRow, lookRowLp);
             }
 
             View upperGripSpacer = new View(this);
@@ -2055,15 +2080,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
             if (shutterFrame != null) {
                 if (shutterFrame.getParent() != null) ((ViewGroup) shutterFrame.getParent()).removeView(shutterFrame);
+                int shutterOuter = compactHeight ? dp(76) : dp(88);
+                int shutterInner = compactHeight ? dp(62) : dp(72);
                 if (captureButton != null) {
-                    captureButton.setLayoutParams(new FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER));
+                    captureButton.setLayoutParams(new FrameLayout.LayoutParams(shutterInner, shutterInner, Gravity.CENTER));
                 }
-                sideGrip.addView(shutterFrame, new LinearLayout.LayoutParams(dp(88), dp(88)));
+                sideGrip.addView(shutterFrame, new LinearLayout.LayoutParams(shutterOuter, shutterOuter));
             }
 
             View lowerGripSpacer = new View(this);
             sideGrip.addView(lowerGripSpacer, new LinearLayout.LayoutParams(1, 0, 1f));
 
+            int bottomBtnSize = compactHeight ? dp(40) : dp(44);
+            int bottomBtnPad = compactHeight ? dp(8) : dp(9);
             LinearLayout gripBottomRow = new LinearLayout(this);
             gripBottomRow.setOrientation(LinearLayout.HORIZONTAL);
             gripBottomRow.setGravity(Gravity.CENTER);
@@ -2071,25 +2100,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (!swapShutterRow) {
                 if (gallerySlot != null) {
                     if (gallerySlot.getParent() != null) ((ViewGroup) gallerySlot.getParent()).removeView(gallerySlot);
-                    gripBottomRow.addView(gallerySlot, new LinearLayout.LayoutParams(dp(44), dp(44)));
+                    gripBottomRow.addView(gallerySlot, new LinearLayout.LayoutParams(bottomBtnSize, bottomBtnSize));
                 }
                 if (flipButton != null) {
                     if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
-                    flipButton.setPadding(dp(9), dp(9), dp(9), dp(9));
-                    LinearLayout.LayoutParams flipLp = new LinearLayout.LayoutParams(dp(44), dp(44));
-                    flipLp.leftMargin = dp(8);
+                    flipButton.setPadding(bottomBtnPad, bottomBtnPad, bottomBtnPad, bottomBtnPad);
+                    LinearLayout.LayoutParams flipLp = new LinearLayout.LayoutParams(bottomBtnSize, bottomBtnSize);
+                    flipLp.leftMargin = dp(10);
                     gripBottomRow.addView(flipButton, flipLp);
                 }
             } else {
                 if (flipButton != null) {
                     if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
-                    flipButton.setPadding(dp(9), dp(9), dp(9), dp(9));
-                    gripBottomRow.addView(flipButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+                    flipButton.setPadding(bottomBtnPad, bottomBtnPad, bottomBtnPad, bottomBtnPad);
+                    gripBottomRow.addView(flipButton, new LinearLayout.LayoutParams(bottomBtnSize, bottomBtnSize));
                 }
                 if (gallerySlot != null) {
                     if (gallerySlot.getParent() != null) ((ViewGroup) gallerySlot.getParent()).removeView(gallerySlot);
-                    LinearLayout.LayoutParams galleryLp = new LinearLayout.LayoutParams(dp(44), dp(44));
-                    galleryLp.leftMargin = dp(8);
+                    LinearLayout.LayoutParams galleryLp = new LinearLayout.LayoutParams(bottomBtnSize, bottomBtnSize);
+                    galleryLp.leftMargin = dp(10);
                     gripBottomRow.addView(gallerySlot, galleryLp);
                 }
             }
@@ -2098,19 +2127,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (outputModeText != null) {
                 if (outputModeText.getParent() != null) ((ViewGroup) outputModeText.getParent()).removeView(outputModeText);
                 LinearLayout.LayoutParams formatLp = new LinearLayout.LayoutParams(-2, -2);
-                formatLp.topMargin = dp(6);
+                formatLp.topMargin = compactHeight ? dp(4) : dp(6);
                 sideGrip.addView(outputModeText, formatLp);
             }
 
             if (leftHand) {
-                wideBody.addView(sideGrip, new LinearLayout.LayoutParams(dp(110), -1));
+                wideBody.addView(sideGrip, new LinearLayout.LayoutParams(gripWidthPx, -1));
                 wideBody.addView(leftCanvas, new LinearLayout.LayoutParams(0, -1, 1f));
             } else {
                 wideBody.addView(leftCanvas, new LinearLayout.LayoutParams(0, -1, 1f));
-                wideBody.addView(sideGrip, new LinearLayout.LayoutParams(dp(110), -1));
+                wideBody.addView(sideGrip, new LinearLayout.LayoutParams(gripWidthPx, -1));
             }
             FrameLayout.LayoutParams wideBodyLp = new FrameLayout.LayoutParams(-1, -1);
             wideBodyLp.topMargin = topSafe + dp(38);
+            wideBodyLp.leftMargin = safeInsets.left;
+            wideBodyLp.rightMargin = safeInsets.right;
+            wideBodyLp.bottomMargin = safeInsets.bottom;
             overlay.addView(wideBody, wideBodyLp);
 
             if (settingsButton != null) {
@@ -2122,10 +2154,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 } else {
                     settingsLp.leftMargin = dp(16) + safeInsets.left;
                 }
-                settingsLp.bottomMargin = dp(16) + safeInsets.bottom;
+                settingsLp.bottomMargin = dp(10) + safeInsets.bottom;
                 overlay.addView(settingsButton, settingsLp);
             }
         }
+    }
+
+    private int wideSideGripWidthDp(WindowMetricsHelper.WindowSizeInfo windowInfo) {
+        if (windowInfo != null && windowInfo.widthDp >= 840 && windowInfo.heightDp >= 520) {
+            return 220;
+        }
+        return 212;
     }
 
     private FrameLayout.LayoutParams getQuickAdjustLayoutParams() {
@@ -2133,20 +2172,30 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         boolean isWide = windowInfo.isLandscape || (windowInfo.widthDp >= windowInfo.heightDp);
         if (isWide) {
             boolean leftHand = AppSettings.isLeftHandMode(this);
+            Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
+            Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
+            int topSafe = computeTopSafe(safeInsets, cutoutRect);
+            int screenWidth = root != null && root.getWidth() > 0 ? root.getWidth() : getResources().getDisplayMetrics().widthPixels;
+            int screenHeight = root != null && root.getHeight() > 0 ? root.getHeight() : getResources().getDisplayMetrics().heightPixels;
+            int gripWidthPx = dp(wideSideGripWidthDp(windowInfo));
+            int leftCanvasWidthPx = Math.max(dp(260), screenWidth - safeInsets.left - safeInsets.right - gripWidthPx);
+            int panelW = Math.min(dp(380), Math.max(dp(260), leftCanvasWidthPx - dp(32)));
+            int panelH = Math.min(dp(320), Math.max(dp(200), screenHeight - topSafe - dp(110) - safeInsets.bottom));
             FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(
-                    dp(380), dp(320), Gravity.BOTTOM | (leftHand ? Gravity.END : Gravity.START));
+                    panelW, panelH, Gravity.BOTTOM | (leftHand ? Gravity.END : Gravity.START));
             if (leftHand) {
-                panelLp.rightMargin = dp(24);
+                panelLp.rightMargin = dp(16) + safeInsets.right;
             } else {
-                panelLp.leftMargin = dp(24);
+                panelLp.leftMargin = dp(16) + safeInsets.left;
             }
-            panelLp.bottomMargin = dp(24);
+            panelLp.bottomMargin = dp(60) + safeInsets.bottom;
             return panelLp;
         } else {
+            Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
             FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(-1, dp(340), Gravity.BOTTOM);
-            panelLp.leftMargin = dp(8);
-            panelLp.rightMargin = dp(8);
-            panelLp.bottomMargin = dp(118);
+            panelLp.leftMargin = dp(8) + safeInsets.left;
+            panelLp.rightMargin = dp(8) + safeInsets.right;
+            panelLp.bottomMargin = dp(118) + safeInsets.bottom;
             return panelLp;
         }
     }
@@ -3820,17 +3869,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             return new RectF(left, top, left + frameWidth, top + frameHeight);
         } else {
             Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
-            float gripWidth = dp(112);
-            float topOffset = Math.max(dp(44), safeInsets.top + dp(8));
-            float availableWidth = Math.max(dp(200), width - gripWidth - dp(24) - safeInsets.right - safeInsets.left);
-            float availableHeight = Math.max(dp(200), height - topOffset - dp(16) - safeInsets.bottom);
+            Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
+            int topSafe = computeTopSafe(safeInsets, cutoutRect);
+            boolean leftHand = AppSettings.isLeftHandMode(this);
+            float gripWidth = dp(wideSideGripWidthDp(windowInfo));
+            float topOffset = topSafe + dp(38);
+            float bottomHudReserve = dp(96);
+            float availableWidth = Math.max(dp(180), width - gripWidth - dp(24) - safeInsets.right - safeInsets.left);
+            float availableHeight = Math.max(dp(160), height - topOffset - bottomHudReserve - safeInsets.bottom);
             float frameWidth = availableWidth;
             float frameHeight = frameWidth / ratio;
             if (frameHeight > availableHeight) {
                 frameHeight = availableHeight;
                 frameWidth = frameHeight * ratio;
             }
-            float left = safeInsets.left + dp(12) + (availableWidth - frameWidth) * 0.5f;
+            float canvasLeft = safeInsets.left + (leftHand ? gripWidth : 0f) + dp(12);
+            float left = canvasLeft + (availableWidth - frameWidth) * 0.5f;
             float top = topOffset + (availableHeight - frameHeight) * 0.5f;
             return new RectF(left, top, left + frameWidth, top + frameHeight);
         }

@@ -242,7 +242,7 @@ public class GalleryActivity extends Activity {
         if (list != null) {
             WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
             int horizontalPad = Math.max(dp(14), windowInfo.widthDp >= 840 ? dp(48) : dp(14));
-            list.setPadding(horizontalPad, dp(3), horizontalPad, dp(25));
+            list.setPadding(horizontalPad, dp(3), horizontalPad, dp((selectionMode == SelectionMode.SELECTING) ? 110 : 25));
         }
         loadPhotos();
     }
