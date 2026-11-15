@@ -482,6 +482,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     };
     private Surface previewSurface;
+    private SurfaceTexture previewSurfaceTexture;
     private ImageReader rawReader;
     private ImageReader jpegReader;
     private MediaRecorder mediaRecorder;
@@ -492,6 +493,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private File videoTempFile;
     private HandlerThread cameraThread;
     private Handler cameraHandler;
+    private final Handler cameraUiHandler = new Handler(Looper.getMainLooper());
+    private int cameraOpenRetryCount = 0;
+    private boolean cameraRetryPromptActive = false;
+    private boolean availabilityCallbackRegistered = false;
+    private final Runnable cameraReopenRetryRunnable = this::attemptCameraReopenRetry;
+    private final CameraManager.AvailabilityCallback cameraAvailabilityCallback =
+            new CameraManager.AvailabilityCallback() {
+                @Override public void onCameraAvailable(String availableCameraId) {
+                    if (availableCameraId == null || !availableCameraId.equals(cameraId)) return;
+                    cameraUiHandler.post(() -> {
+                        if (activityResumed && !isFinishing() && !isDestroyed()
+                                && cameraLifecycleState.canOpen()
+                                && textureView != null && textureView.isAvailable()) {
+                            openCameraIfReady();
+                        }
+                    });
+                }
+            };
+    private AppUpdateManager.UpdateInfo pendingAutoUpdateInfo;
     private final ExecutorService processor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "CaptureProcessor");
         t.setDaemon(true);
@@ -873,6 +893,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        AppUpdateManager.ensureLifecycleTracking(this);
         volumeQuickTakeRunnable = () -> {
             if (!volumeKeyHolding || cameraDevice == null || !cameraLifecycleState.isStarted()) return;
             if (!videoState.tryBeginQuickTake(VideoStateMachine.Trigger.QUICK_TAKE_VOLUME)) return;
@@ -884,7 +905,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         AppSettings.migrateBranding(this);
         refreshHotPrefs();
         AppSettings.prefs(this).registerOnSharedPreferenceChangeListener(hotPrefsListener);
-        LutManager.init(this);
+        ioExecutor.execute(() -> LutManager.init(getApplicationContext()));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true);
             setTurnScreenOn(true);
@@ -1042,6 +1063,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     @Override protected void onResume() {
         super.onResume();
         activityResumed = true;
+        cameraOpenRetryCount = 0;
+        registerCameraAvailabilityCallback();
         refreshHotPrefs();
         applyFullScreenImmersive();
         if (root != null) {
@@ -1066,6 +1089,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             textureView.postDelayed(exposureAidsSampler, 200L);
             if (textureView.isAvailable()) {
                 openCameraIfReady();
+                applyLiveFilmPreview();
                 if(videoState.isPermissionReady() && cameraDevice!=null && cameraLifecycleState.isStarted())
                     beginVideoRecording(checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED);
             }
@@ -1075,36 +1099,59 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         offerVideoRecovery();
     }
 
-    private static boolean hasCheckedUpdatesThisSession = false;
-
     private void checkAutomaticUpdates() {
-        if (!AppSettings.getBoolean(this, AppSettings.AUTO_CHECK_UPDATES, true)) return;
-        long lastCheck = AppSettings.prefs(this).getLong(AppSettings.LAST_UPDATE_CHECK_TIME, 0L);
-        long now = System.currentTimeMillis();
-        // Check immediately on app cold-start, or every 4 hours if kept alive in memory
-        if (hasCheckedUpdatesThisSession && (now - lastCheck < 4 * 3600 * 1000L)) return;
-        hasCheckedUpdatesThisSession = true;
+        if (pendingAutoUpdateInfo != null) {
+            AppUpdateManager.UpdateInfo pending = pendingAutoUpdateInfo;
+            pendingAutoUpdateInfo = null;
+            if (AppUpdateManager.isNewerVersion(pending.tagName,
+                    AppUpdateManager.getAppVersionName(this),
+                    AppUpdateManager.getAppVersionCode(this))
+                    && AppUpdateManager.canShowAutoUpdateDialog(pending)) {
+                AppUpdateManager.showUpdateDialog(MainActivity.this, pending);
+                return;
+            }
+        }
+
+        final AppUpdateManager.AutoCheckAttempt attempt =
+                AppUpdateManager.beginAutoCheckIfDue(this, System.currentTimeMillis());
+        if (attempt == null) return;
 
         AppUpdateManager.checkForUpdate(this, false, new AppUpdateManager.UpdateCallback() {
             @Override
             public void onUpdateAvailable(AppUpdateManager.UpdateInfo updateInfo) {
-                if (!isFinishing() && !isDestroyed()) {
+                if (!AppUpdateManager.canShowAutoUpdateDialog(updateInfo)) return;
+                if (activityResumed && !isFinishing() && !isDestroyed()) {
+                    pendingAutoUpdateInfo = null;
                     AppUpdateManager.showUpdateDialog(MainActivity.this, updateInfo);
+                } else if (!isFinishing() && !isDestroyed()) {
+                    pendingAutoUpdateInfo = updateInfo;
                 }
             }
 
             @Override
-            public void onNoUpdateAvailable() {}
+            public void onNoUpdateAvailable() {
+                pendingAutoUpdateInfo = null;
+            }
 
             @Override
             public void onError(String message) {
+                AppUpdateManager.markAutoCheckFailed(attempt.fromBackgroundReturn);
                 Log.d(TAG, "Background update check notice: " + message);
             }
         });
     }
 
+    @Override public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_UI_HIDDEN) {
+            AppUpdateManager.markAppBackgrounded();
+        }
+    }
+
     @Override protected void onPause() {
         activityResumed = false;
+        cameraUiHandler.removeCallbacks(cameraReopenRetryRunnable);
+        unregisterCameraAvailabilityCallback();
         AppUpdateManager.onPause(this);
         if (videoRecoveryDialog != null && videoRecoveryDialog.isShowing()) {
             videoRecoveryDialog.dismiss();
@@ -1140,6 +1187,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     @Override protected void onDestroy() {
+        cameraUiHandler.removeCallbacksAndMessages(null);
+        unregisterCameraAvailabilityCallback();
         liveLookPreview.close();
         closeCamera();
         if (cameraThread != null) {
@@ -3738,10 +3787,73 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         cameraHandler = new Handler(cameraThread.getLooper());
     }
 
+    private void registerCameraAvailabilityCallback() {
+        if (availabilityCallbackRegistered) return;
+        if (cameraManager == null) cameraManager = (CameraManager) getSystemService(CAMERA_SERVICE);
+        if (cameraManager == null) return;
+        try {
+            cameraManager.registerAvailabilityCallback(cameraAvailabilityCallback,
+                    cameraHandler != null ? cameraHandler : cameraUiHandler);
+            availabilityCallbackRegistered = true;
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void unregisterCameraAvailabilityCallback() {
+        if (!availabilityCallbackRegistered || cameraManager == null) return;
+        try {
+            cameraManager.unregisterAvailabilityCallback(cameraAvailabilityCallback);
+        } catch (Throwable ignored) {
+        } finally {
+            availabilityCallbackRegistered = false;
+        }
+    }
+
+    private void scheduleCameraReopenRetry() {
+        cameraUiHandler.post(() -> {
+            if (!activityResumed || isFinishing() || isDestroyed()) return;
+            if (!cameraLifecycleState.canOpen()) return;
+            if (!CameraLifecycleState.shouldRetryOpen(cameraOpenRetryCount)) return;
+            long delayMs = CameraLifecycleState.reopenRetryDelayMs(cameraOpenRetryCount);
+            cameraOpenRetryCount++;
+            cameraUiHandler.removeCallbacks(cameraReopenRetryRunnable);
+            cameraUiHandler.postDelayed(cameraReopenRetryRunnable, delayMs);
+        });
+    }
+
+    private void attemptCameraReopenRetry() {
+        if (!activityResumed || isFinishing() || isDestroyed()) return;
+        if (cameraLifecycleState.canOpen() && textureView != null && textureView.isAvailable()) {
+            openCameraIfReady();
+        }
+    }
+
+    private void setCameraStateRetryPrompt(String text, boolean allowTapRetry) {
+        cameraRetryPromptActive = allowTapRetry;
+        if (cameraState == null) return;
+        cameraState.setText(allowTapRetry ? (text + " · TAP TO RETRY") : text);
+        if (allowTapRetry) {
+            cameraState.setClickable(true);
+            cameraState.setVisibility(View.VISIBLE);
+            cameraState.setOnClickListener(v -> {
+                hapticClick(v);
+                setCameraStateRetryPrompt("RECONNECTING CAMERA…", false);
+                updateTelemetryVisibility();
+                cameraOpenRetryCount = 0;
+                openCameraIfReady();
+            });
+        } else {
+            cameraState.setClickable(false);
+            cameraState.setOnClickListener(null);
+        }
+    }
+
     private void openCameraIfReady() {
-        if (!cameraLifecycleState.canOpen() || textureView == null || !textureView.isAvailable()) return;
+        if (!activityResumed || isFinishing() || isDestroyed()
+                || !cameraLifecycleState.canOpen() || textureView == null || !textureView.isAvailable()) return;
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return;
         if (cameraManager == null) cameraManager = (CameraManager) getSystemService(CAMERA_SERVICE);
+        setCameraStateRetryPrompt(cameraState != null ? String.valueOf(cameraState.getText()) : "", false);
         try {
             if (cameraId == null) chooseMainCamera();
             if (cameraId == null) {
@@ -3775,9 +3887,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         } catch (Throwable e) {
             Log.e("LikaLens", "Could not open camera", e);
             cameraLifecycleState = CameraLifecycleState.ERROR;
+            boolean canRetry = !(e instanceof SecurityException)
+                    && activityResumed && !isFinishing() && !isDestroyed()
+                    && CameraLifecycleState.shouldRetryOpen(cameraOpenRetryCount);
             runOnUiThread(() -> {
-                cameraState.setText("CAMERA UNAVAILABLE");
-                showMessage("Could not open this camera.");
+                if (canRetry) {
+                    setCameraStateRetryPrompt("RECONNECTING CAMERA…", false);
+                    scheduleCameraReopenRetry();
+                } else {
+                    setCameraStateRetryPrompt("CAMERA UNAVAILABLE", !(e instanceof SecurityException));
+                    showMessage("Could not open this camera.");
+                }
             });
         }
     }
@@ -4029,7 +4149,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private CameraDevice.StateCallback cameraStateCallback(long ticket) { return new CameraDevice.StateCallback() {
         @Override public void onOpened(CameraDevice camera) {
-            if (!activityResumed || !cameraEpoch.owns(ticket)) { camera.close(); return; }
+            if (!activityResumed || !cameraEpoch.owns(ticket)) {
+                camera.close();
+                if (cameraEpoch.owns(ticket)) {
+                    cameraLifecycleState = CameraLifecycleState.CLOSED;
+                }
+                return;
+            }
             cameraDevice = camera;
             cameraLifecycleState = CameraLifecycleState.OPENED;
             if (videoState.isSwitchingCamera()) {
@@ -4046,7 +4172,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             camera.close();
             if (cameraDevice == camera) cameraDevice = null;
             cameraLifecycleState = CameraLifecycleState.CLOSED;
-            runOnUiThread(MainActivity.this::updateVideoModeUi);
+            runOnUiThread(() -> {
+                updateVideoModeUi();
+                if (activityResumed && !isFinishing() && !isDestroyed()) {
+                    scheduleCameraReopenRetry();
+                }
+            });
         }
         @Override public void onError(CameraDevice camera, int error) {
             if (!cameraEpoch.owns(ticket)) { camera.close(); return; }
@@ -4055,9 +4186,27 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (cameraDevice == camera) cameraDevice = null;
             cameraLifecycleState = CameraLifecycleState.ERROR;
             runOnUiThread(() -> {
-                cameraState.setText("CAMERA ERROR · " + error);
+                boolean canRetry = activityResumed && !isFinishing() && !isDestroyed()
+                        && error != CameraDevice.StateCallback.ERROR_CAMERA_DISABLED
+                        && CameraLifecycleState.shouldRetryOpen(cameraOpenRetryCount);
+                if (canRetry) {
+                    setCameraStateRetryPrompt("RECONNECTING CAMERA…", false);
+                    scheduleCameraReopenRetry();
+                } else {
+                    boolean allowTap = error != CameraDevice.StateCallback.ERROR_CAMERA_DISABLED;
+                    setCameraStateRetryPrompt("CAMERA ERROR · " + error, allowTap);
+                }
                 updateVideoModeUi();
             });
+        }
+        @Override public void onClosed(CameraDevice camera) {
+            if (cameraDevice == camera) cameraDevice = null;
+            if (cameraEpoch.owns(ticket) && cameraLifecycleState == CameraLifecycleState.CLOSING) {
+                cameraLifecycleState = CameraLifecycleState.CLOSED;
+                if (activityResumed && !isFinishing() && !isDestroyed()) {
+                    cameraUiHandler.post(MainActivity.this::openCameraIfReady);
+                }
+            }
         }
     }; }
 
@@ -4073,10 +4222,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (cameraDevice == null || textureView == null || !textureView.isAvailable()) return;
         try {
             SurfaceTexture texture = textureView.getSurfaceTexture();
+            if (texture == null) {
+                if (cameraDevice != null) cameraLifecycleState = CameraLifecycleState.OPENED;
+                return;
+            }
             texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
-            if (previewSurface == null || !previewSurface.isValid()) {
+            if (previewSurface == null || !previewSurface.isValid() || previewSurfaceTexture != texture) {
                 if (previewSurface != null) previewSurface.release();
                 previewSurface = new Surface(texture);
+                previewSurfaceTexture = texture;
             }
             Surface sessionPreviewSurface = previewSurface;
             List<Surface> outputs = new ArrayList<>();
@@ -4104,12 +4258,30 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
                         runOnUiThread(() -> {
                             if (!activityResumed || !sessionEpoch.owns(sessionTicket)) return;
+                            cameraOpenRetryCount = 0;
+                            cameraRetryPromptActive = false;
+                            if (cameraState != null) {
+                                cameraState.setClickable(false);
+                                cameraState.setOnClickListener(null);
+                            }
+                            updateTelemetryVisibility();
+                            cameraUiHandler.removeCallbacks(cameraReopenRetryRunnable);
                             if (textureView != null) {
-                                configureTransform(textureView.getWidth(), textureView.getHeight());
+                                textureView.setVisibility(View.VISIBLE);
+                                if (textureView.getWidth() > 0 && textureView.getHeight() > 0) {
+                                    configureTransform(textureView.getWidth(), textureView.getHeight());
+                                } else {
+                                    textureView.post(() -> {
+                                        if (textureView != null && textureView.getWidth() > 0 && textureView.getHeight() > 0) {
+                                            configureTransform(textureView.getWidth(), textureView.getHeight());
+                                        }
+                                    });
+                                }
                                 if (!seamless || textureView.getAlpha() < 0.99f) {
                                     textureView.animate().cancel();
                                     textureView.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(140L).start();
                                 }
+                                applyLiveFilmPreview();
                             }
                             float postZoom = pendingPostConfigZoom;
                             pendingPostConfigZoom = -1f;
@@ -4135,7 +4307,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                             cameraState.setText("RAW STREAM COMBINATION UNSUPPORTED · USING JPEG");
                             recreateJpegSession();
                         });
-                    } else runOnUiThread(() -> showMessage("Camera preview could not be configured."));
+                    } else {
+                        runOnUiThread(() -> {
+                            closeCamera();
+                            if (activityResumed && !isFinishing() && !isDestroyed()
+                                    && CameraLifecycleState.shouldRetryOpen(cameraOpenRetryCount)) {
+                                setCameraStateRetryPrompt("RECONNECTING CAMERA…", false);
+                                scheduleCameraReopenRetry();
+                            } else {
+                                setCameraStateRetryPrompt("CAMERA PREVIEW ERROR", true);
+                                showMessage("Camera preview could not be configured.");
+                            }
+                        });
+                    }
                 }
             }, cameraHandler);
         } catch (CameraAccessException | IllegalStateException e) {
@@ -4205,6 +4389,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         lastPreviewMetadataAt = 0L;
         if (captureSession != null) { captureSession.close(); captureSession = null; }
         if (previewSurface != null) { previewSurface.release(); previewSurface = null; }
+        previewSurfaceTexture = null;
         previewRequest = null;
     }
 
@@ -5795,7 +5980,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void applyLiveFilmPreview() {
-        if (!activityResumed || textureView == null) return;
+        if (!activityResumed || textureView == null || !textureView.isAvailable()) return;
         if (!prefLiveFilmPreview) {
             liveLookPreview.clear();
             textureView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
@@ -6832,7 +7017,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             telemetry.setVisibility(showTelemetry ? View.VISIBLE : View.GONE);
         }
         if (cameraState != null) {
-            cameraState.setVisibility((showTelemetry || activeVideo) ? View.VISIBLE : View.GONE);
+            cameraState.setVisibility((showTelemetry || activeVideo || cameraRetryPromptActive) ? View.VISIBLE : View.GONE);
         }
         if (outputModeText != null) {
             outputModeText.setVisibility(View.GONE);
@@ -7820,6 +8005,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void closeCamera(boolean preserveVideoSwitch) {
         cameraEpoch.invalidate();
+        cameraUiHandler.removeCallbacks(cameraReopenRetryRunnable);
         cancelDelayedCapture();
         if(activityResumed || videoState.isQuickTake()) videoState.cancelPermissionPending();
         if (stillCaptureState.isTimerRunning()) cancelTimerCountdown();
@@ -7865,9 +8051,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (messageView != null && System.currentTimeMillis() >= toastUntil) messageView.setVisibility(View.GONE);
     };
 
-    @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) { openCameraIfReady(); }
+    @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
+        if (width > 0 && height > 0) {
+            configureTransform(width, height);
+        }
+        if (activityResumed) {
+            openCameraIfReady();
+            applyLiveFilmPreview();
+        }
+    }
     @Override public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) { configureTransform(width, height); }
-    @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) { closeCamera(); return true; }
+    @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+        closeCamera();
+        if (previewSurface != null) { previewSurface.release(); previewSurface = null; }
+        previewSurfaceTexture = null;
+        return true;
+    }
     @Override public void onSurfaceTextureUpdated(SurfaceTexture surface) { }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {

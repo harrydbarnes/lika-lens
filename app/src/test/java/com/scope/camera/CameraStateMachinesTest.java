@@ -36,6 +36,14 @@ public class CameraStateMachinesTest {
         assertTrue(CameraLifecycleState.PREVIEW_READY.isStarted());
         assertFalse(CameraLifecycleState.CLOSING.isStarted());
         assertFalse(CameraLifecycleState.ERROR.isStarted());
+
+        assertTrue(CameraLifecycleState.shouldRetryOpen(0));
+        assertTrue(CameraLifecycleState.shouldRetryOpen(CameraLifecycleState.MAX_OPEN_RETRIES - 1));
+        assertFalse(CameraLifecycleState.shouldRetryOpen(CameraLifecycleState.MAX_OPEN_RETRIES));
+        assertFalse(CameraLifecycleState.shouldRetryOpen(-1));
+        assertTrue(CameraLifecycleState.reopenRetryDelayMs(0) < CameraLifecycleState.reopenRetryDelayMs(1));
+        assertTrue(CameraLifecycleState.reopenRetryDelayMs(1) < CameraLifecycleState.reopenRetryDelayMs(2));
+        assertTrue(CameraLifecycleState.reopenRetryDelayMs(4) <= CameraLifecycleState.reopenRetryDelayMs(5));
     }
 
     @Test

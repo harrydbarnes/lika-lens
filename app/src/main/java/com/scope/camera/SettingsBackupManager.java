@@ -111,7 +111,13 @@ final class SettingsBackupManager {
         return AppSettings.RAW_SUPPORTED.equals(key)
                 || AppSettings.MANUAL_SUPPORTED.equals(key)
                 || AppSettings.LAST_CAMERA_ID.equals(key)
-                || AppSettings.LAST_UPDATE_CHECK_TIME.equals(key);
+                || AppSettings.LAST_UPDATE_CHECK_TIME.equals(key)
+                || AppSettings.UPDATE_CACHE_ETAG_BETA.equals(key)
+                || AppSettings.UPDATE_CACHE_JSON_BETA.equals(key)
+                || AppSettings.UPDATE_CACHE_ETAG_STABLE.equals(key)
+                || AppSettings.UPDATE_CACHE_JSON_STABLE.equals(key)
+                || AppSettings.UPDATE_CACHED_AVAILABLE_TAG.equals(key)
+                || AppSettings.UPDATE_CACHED_AVAILABLE_CHANNEL.equals(key);
     }
 
     static String defaultBackupName() {

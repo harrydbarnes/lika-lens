@@ -43,6 +43,12 @@ public class SettingsBackupManagerTest {
         prefs.put(AppSettings.GRAIN, 34);
         prefs.put(AppSettings.EASY_MODE, false);
         prefs.put(AppSettings.LAST_UPDATE_CHECK_TIME, 1731654321000L); // excluded transient key
+        prefs.put(AppSettings.UPDATE_CACHE_ETAG_BETA, "\"etag\""); // excluded transient key
+        prefs.put(AppSettings.UPDATE_CACHE_JSON_BETA, "[{}]"); // excluded transient key
+        prefs.put(AppSettings.UPDATE_CACHE_ETAG_STABLE, "\"etag2\""); // excluded transient key
+        prefs.put(AppSettings.UPDATE_CACHE_JSON_STABLE, "{}"); // excluded transient key
+        prefs.put(AppSettings.UPDATE_CACHED_AVAILABLE_TAG, "v0.1.109"); // excluded transient key
+        prefs.put(AppSettings.UPDATE_CACHED_AVAILABLE_CHANNEL, AppSettings.UPDATE_CHANNEL_BETA); // excluded transient key
         prefs.put(AppSettings.RAW_SUPPORTED, true); // excluded hardware flag
         prefs.put(AppSettings.MANUAL_SUPPORTED, true); // excluded hardware flag
         prefs.put(AppSettings.LAST_CAMERA_ID, "0"); // excluded hardware key
@@ -73,6 +79,12 @@ public class SettingsBackupManagerTest {
         assertFalse(parsed.preferences.containsKey(AppSettings.MANUAL_SUPPORTED));
         assertFalse(parsed.preferences.containsKey(AppSettings.LAST_CAMERA_ID));
         assertFalse(parsed.preferences.containsKey(AppSettings.LAST_UPDATE_CHECK_TIME));
+        assertFalse(parsed.preferences.containsKey(AppSettings.UPDATE_CACHE_ETAG_BETA));
+        assertFalse(parsed.preferences.containsKey(AppSettings.UPDATE_CACHE_JSON_BETA));
+        assertFalse(parsed.preferences.containsKey(AppSettings.UPDATE_CACHE_ETAG_STABLE));
+        assertFalse(parsed.preferences.containsKey(AppSettings.UPDATE_CACHE_JSON_STABLE));
+        assertFalse(parsed.preferences.containsKey(AppSettings.UPDATE_CACHED_AVAILABLE_TAG));
+        assertFalse(parsed.preferences.containsKey(AppSettings.UPDATE_CACHED_AVAILABLE_CHANNEL));
 
         // Types must round-trip faithfully for SharedPreferences
         assertEquals(AppSettings.BRAIN_KODACHROME, parsed.preferences.get(AppSettings.BRAIN));

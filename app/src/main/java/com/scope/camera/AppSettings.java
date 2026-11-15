@@ -201,6 +201,12 @@ final class AppSettings {
     };
     static final String AUTO_CHECK_UPDATES = "auto_check_updates";
     static final String LAST_UPDATE_CHECK_TIME = "last_update_check_time";
+    static final String UPDATE_CACHE_ETAG_BETA = "update_cache_etag_beta";
+    static final String UPDATE_CACHE_JSON_BETA = "update_cache_json_beta";
+    static final String UPDATE_CACHE_ETAG_STABLE = "update_cache_etag_stable";
+    static final String UPDATE_CACHE_JSON_STABLE = "update_cache_json_stable";
+    static final String UPDATE_CACHED_AVAILABLE_TAG = "update_cached_available_tag";
+    static final String UPDATE_CACHED_AVAILABLE_CHANNEL = "update_cached_available_channel";
 
     static final String[] ASPECT_RATIOS = {
             "2.39:1",

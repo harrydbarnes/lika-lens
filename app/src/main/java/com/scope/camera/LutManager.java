@@ -49,7 +49,7 @@ final class LutManager {
     );
 
     private static final Map<String, Lut3D> sCache = new ConcurrentHashMap<>();
-    private static File sLutsDir;
+    private static volatile File sLutsDir;
 
     private LutManager() { }
 
@@ -200,18 +200,21 @@ final class LutManager {
         return out;
     }
 
-    public static void init(Context context) {
+    public static synchronized void init(Context context) {
         if (sLutsDir == null && context != null) {
-            sLutsDir = new File(context.getFilesDir(), "luts");
-            if (!sLutsDir.exists()) sLutsDir.mkdirs();
+            File dir = new File(context.getApplicationContext().getFilesDir(), "luts");
+            if (!dir.exists()) dir.mkdirs();
+            sLutsDir = dir;
         }
     }
 
     public static File getLutsDir(Context context) {
-        if (sLutsDir == null && context != null) {
+        File dir = sLutsDir;
+        if (dir == null && context != null) {
             init(context);
+            dir = sLutsDir;
         }
-        return sLutsDir;
+        return dir;
     }
 
     public static List<String> getAvailableLutNames(Context context) {

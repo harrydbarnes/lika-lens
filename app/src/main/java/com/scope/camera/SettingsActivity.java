@@ -39,6 +39,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Switch;
@@ -72,6 +73,7 @@ public class SettingsActivity extends Activity {
     private Bitmap currentHeroBitmap;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final JobState heroJob = new JobState();
+    private final JobState releaseNotesJob = new JobState();
     private final java.util.concurrent.ExecutorService heroWorker = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "lika-settings-worker");
         t.setDaemon(true);
@@ -85,6 +87,8 @@ public class SettingsActivity extends Activity {
     private String pendingBackupJson;
     private volatile boolean heroLoadStarted;
     private boolean hapticsEnabled = true;
+    private TextView checkUpdatesDetailView;
+    private Dialog releaseNotesDialog;
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -177,6 +181,7 @@ public class SettingsActivity extends Activity {
         super.onResume();
         hapticsEnabled = AppSettings.getBoolean(this, AppSettings.HAPTICS, true);
         AppUpdateManager.onResume(this);
+        refreshUpdateStatusSummary();
     }
 
     @Override
@@ -217,6 +222,7 @@ public class SettingsActivity extends Activity {
     }
 
     private void populateContent() {
+        checkUpdatesDetailView = null;
         if ("GENERAL".equals(activeCategory)) {
             populateGeneralSettings();
         } else if ("CAMERA".equals(activeCategory)) {
@@ -432,7 +438,10 @@ public class SettingsActivity extends Activity {
                 AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_CHOICES, AppSettings.UPDATE_CHANNEL_BETA);
         addSwitch("Check for updates on launch", "Silently check for new versions when opening Lika Lens",
                 AppSettings.AUTO_CHECK_UPDATES, true);
-        addInfo("Check for updates now", "Query GitHub Releases API for the latest APK", ACCENT, this::checkAppUpdate);
+        checkUpdatesDetailView = addInfoWithDetail("Check for updates now",
+                AppUpdateManager.formatUpdateStatusSubtitle(this, System.currentTimeMillis()), ACCENT, this::checkAppUpdate);
+        addInfo("Recent release notes", "View changelog history for recent Beta & Stable releases",
+                0xffd8ded7, this::showRecentReleaseNotesDialog);
         String verName = AppUpdateManager.getAppVersionName(this);
         int verCode = AppUpdateManager.getAppVersionCode(this);
         addInfo("Installed version", "Lika Lens v" + verName + " (Build " + verCode + ")", 0xffaab3ad);
@@ -442,25 +451,296 @@ public class SettingsActivity extends Activity {
         finishSection();
     }
 
+    private void refreshUpdateStatusSummary() {
+        if (checkUpdatesDetailView != null) {
+            checkUpdatesDetailView.setText(AppUpdateManager.formatUpdateStatusSubtitle(this, System.currentTimeMillis()));
+        }
+    }
+
     private void checkAppUpdate() {
         if (hapticsEnabled) {
             getWindow().getDecorView().performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+        if (checkUpdatesDetailView != null) {
+            checkUpdatesDetailView.setText("Checking GitHub Releases…");
         }
         Toast.makeText(this, "Checking GitHub for updates…", Toast.LENGTH_SHORT).show();
         AppUpdateManager.checkForUpdate(this, true, new AppUpdateManager.UpdateCallback() {
             @Override
             public void onUpdateAvailable(AppUpdateManager.UpdateInfo updateInfo) {
+                if (isFinishing() || isDestroyed()) return;
+                refreshUpdateStatusSummary();
                 AppUpdateManager.showUpdateDialog(SettingsActivity.this, updateInfo);
             }
 
             @Override
             public void onNoUpdateAvailable() {
+                if (isFinishing() || isDestroyed()) return;
+                refreshUpdateStatusSummary();
                 Toast.makeText(SettingsActivity.this, "You're running the latest version of Lika Lens.", Toast.LENGTH_SHORT).show();
             }
 
             @Override
             public void onError(String message) {
+                if (isFinishing() || isDestroyed()) return;
+                if (checkUpdatesDetailView != null) {
+                    checkUpdatesDetailView.setText("Check failed: " + (message != null ? message : "Network error"));
+                }
                 Toast.makeText(SettingsActivity.this, "Update check failed: " + message, Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private static String formatReleaseDate(String isoTimestamp) {
+        if (isoTimestamp == null || isoTimestamp.length() < 10) return "";
+        return isoTimestamp.substring(0, 10);
+    }
+
+    private static String normalizeTag(String tag) {
+        if (tag == null) return "";
+        String t = tag.trim().toLowerCase(Locale.US);
+        return t.startsWith("v") ? t.substring(1) : t;
+    }
+
+    private void showRecentReleaseNotesDialog() {
+        if (hapticsEnabled) {
+            getWindow().getDecorView().performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+        if (releaseNotesDialog != null && releaseNotesDialog.isShowing()) {
+            try { releaseNotesDialog.dismiss(); } catch (Exception ignored) {}
+        }
+
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        releaseNotesDialog = dialog;
+        dialog.setOnDismissListener(d -> {
+            releaseNotesJob.cancel();
+            if (releaseNotesDialog == dialog) {
+                releaseNotesDialog = null;
+            }
+        });
+
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+        }
+
+        FrameLayout scrim = new FrameLayout(this);
+        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setBackgroundColor(0x88000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setClickable(true);
+        sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
+        sheet.setPadding(dp(20), dp(18), dp(20), dp(18));
+
+        TextView header = text("RECENT RELEASE NOTES", 12, ACCENT, true);
+        header.setLetterSpacing(.14f);
+        sheet.addView(header);
+
+        String installedVer = AppUpdateManager.getAppVersionName(this);
+        int installedCode = AppUpdateManager.getAppVersionCode(this);
+        TextView installedSubtitle = text("Installed: Lika Lens v" + installedVer + " (Build " + installedCode + ")",
+                8.5f, 0xff8d9892, false);
+        installedSubtitle.setPadding(0, dp(4), 0, dp(10));
+        sheet.addView(installedSubtitle);
+
+        // Filter bar: ALL / BETA / STABLE
+        LinearLayout filterBar = new LinearLayout(this);
+        filterBar.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams filterBarLp = new LinearLayout.LayoutParams(-1, -2);
+        filterBarLp.bottomMargin = dp(10);
+        sheet.addView(filterBar, filterBarLp);
+
+        TextView statusView = text("Loading recent releases from GitHub…", 8.5f, 0xff9aa59f, false);
+        statusView.setPadding(0, 0, 0, dp(6));
+        sheet.addView(statusView);
+
+        ProgressBar spinner = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        spinner.setIndeterminate(true);
+        spinner.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        LinearLayout.LayoutParams spinnerLp = new LinearLayout.LayoutParams(-1, dp(6));
+        spinnerLp.bottomMargin = dp(8);
+        sheet.addView(spinner, spinnerLp);
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setVerticalScrollBarEnabled(true);
+        LinearLayout listContainer = new LinearLayout(this);
+        listContainer.setOrientation(LinearLayout.VERTICAL);
+        scrollView.addView(listContainer, new FrameLayout.LayoutParams(-1, -2));
+
+        int screenH = getResources().getDisplayMetrics().heightPixels;
+        int listHeight = Math.max(dp(260), Math.min(dp(460), Math.round(screenH * 0.54f)));
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, listHeight);
+        scrollLp.bottomMargin = dp(14);
+        sheet.addView(scrollView, scrollLp);
+
+        TextView closeBtn = pill("CLOSE", false);
+        closeBtn.setGravity(Gravity.CENTER);
+        closeBtn.setOnClickListener(v -> dialog.dismiss());
+        sheet.addView(closeBtn, new LinearLayout.LayoutParams(-1, dp(38)));
+
+        int maxDialogW = dp(460);
+        int dialogW = Math.min(getResources().getDisplayMetrics().widthPixels - dp(28), maxDialogW);
+        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
+                dialogW,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+        );
+        scrim.addView(sheet, sheetLp);
+        dialog.setContentView(scrim);
+        dialog.show();
+
+        final String[] selectedFilter = {"ALL"};
+        @SuppressWarnings("unchecked")
+        final List<AppUpdateManager.UpdateInfo>[] loadedHolder = new List[]{null};
+        final boolean[] offlineHolder = {false};
+
+        Runnable renderList = new Runnable() {
+            @Override
+            public void run() {
+                filterBar.removeAllViews();
+                String[] filters = {"ALL", "BETA", "STABLE"};
+                for (int i = 0; i < filters.length; i++) {
+                    final String filter = filters[i];
+                    TextView chip = pill(filter, filter.equals(selectedFilter[0]));
+                    chip.setGravity(Gravity.CENTER);
+                    LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(0, dp(30), 1f);
+                    if (i > 0) chipLp.leftMargin = dp(6);
+                    filterBar.addView(chip, chipLp);
+                    chip.setOnClickListener(v -> {
+                        if (hapticsEnabled) {
+                            chip.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                        }
+                        selectedFilter[0] = filter;
+                        this.run();
+                    });
+                }
+
+                listContainer.removeAllViews();
+                List<AppUpdateManager.UpdateInfo> all = loadedHolder[0];
+                if (all == null) return;
+
+                String normalizedInstalled = normalizeTag(installedVer);
+                int shownCount = 0;
+                for (AppUpdateManager.UpdateInfo rel : all) {
+                    if ("BETA".equals(selectedFilter[0]) && !rel.isBeta) continue;
+                    if ("STABLE".equals(selectedFilter[0]) && rel.isBeta) continue;
+                    shownCount++;
+
+                    boolean isInstalled = normalizeTag(rel.tagName).equals(normalizedInstalled);
+                    boolean isNewer = AppUpdateManager.isNewerVersion(rel.tagName, installedVer, installedCode);
+
+                    LinearLayout card = new LinearLayout(SettingsActivity.this);
+                    card.setOrientation(LinearLayout.VERTICAL);
+                    card.setBackground(round(0xff14191a, 12, isInstalled ? ACCENT : 0xff262e30, dp(1)));
+                    card.setPadding(dp(12), dp(10), dp(12), dp(10));
+
+                    LinearLayout topRow = new LinearLayout(SettingsActivity.this);
+                    topRow.setOrientation(LinearLayout.HORIZONTAL);
+                    topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+                    TextView tagView = text(rel.tagName, 10.5f, 0xfff0f2eb, true);
+                    topRow.addView(tagView, new LinearLayout.LayoutParams(-2, -2));
+
+                    TextView channelBadge = text(rel.isBeta ? "BETA" : "STABLE", 7.5f,
+                            rel.isBeta ? 0xffdfb56f : 0xff9ec7ad, true);
+                    channelBadge.setBackground(round(rel.isBeta ? 0x26dfb56f : 0x269ec7ad, 6,
+                            rel.isBeta ? 0x55dfb56f : 0x559ec7ad, dp(1)));
+                    channelBadge.setPadding(dp(6), dp(2), dp(6), dp(2));
+                    LinearLayout.LayoutParams cbLp = new LinearLayout.LayoutParams(-2, -2);
+                    cbLp.leftMargin = dp(6);
+                    topRow.addView(channelBadge, cbLp);
+
+                    if (isInstalled || isNewer) {
+                        TextView stateBadge = text(isInstalled ? "INSTALLED" : "NEW", 7.5f,
+                                isInstalled ? 0xff0b0d0e : ACCENT, true);
+                        stateBadge.setBackground(round(isInstalled ? ACCENT : 0x26d7b574, 6,
+                                isInstalled ? ACCENT : 0x88d7b574, dp(1)));
+                        stateBadge.setPadding(dp(6), dp(2), dp(6), dp(2));
+                        LinearLayout.LayoutParams sbLp = new LinearLayout.LayoutParams(-2, -2);
+                        sbLp.leftMargin = dp(6);
+                        topRow.addView(stateBadge, sbLp);
+                    }
+
+                    View spacer = new View(SettingsActivity.this);
+                    topRow.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+
+                    String dateStr = formatReleaseDate(rel.publishedAt);
+                    if (!dateStr.isEmpty()) {
+                        TextView dateView = text(dateStr, 8, 0xff89948e, false);
+                        topRow.addView(dateView);
+                    }
+                    card.addView(topRow);
+
+                    if (rel.title != null && !rel.title.trim().isEmpty()
+                            && !normalizeTag(rel.title).equals(normalizeTag(rel.tagName))) {
+                        TextView titleView = text(rel.title.trim(), 9.5f, 0xffd7b574, true);
+                        titleView.setPadding(0, dp(5), 0, 0);
+                        card.addView(titleView);
+                    }
+
+                    TextView notesView = text(AppUpdateManager.formatReleaseNotes(rel.changelog).toString(),
+                            9.5f, 0xffd8ded7, false);
+                    notesView.setLineSpacing(dp(3), 1.2f);
+                    notesView.setPadding(0, dp(6), 0, 0);
+                    card.addView(notesView);
+
+                    if (isNewer && rel.apkDownloadUrl != null && !rel.apkDownloadUrl.isEmpty()) {
+                        TextView installChip = pill("INSTALL " + rel.tagName, true);
+                        installChip.setGravity(Gravity.CENTER);
+                        LinearLayout.LayoutParams icLp = new LinearLayout.LayoutParams(-2, dp(30));
+                        icLp.gravity = Gravity.END;
+                        icLp.topMargin = dp(8);
+                        card.addView(installChip, icLp);
+                        installChip.setOnClickListener(v -> {
+                            dialog.dismiss();
+                            AppUpdateManager.showUpdateDialog(SettingsActivity.this, rel);
+                        });
+                    }
+
+                    LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(-1, -2);
+                    cardLp.bottomMargin = dp(8);
+                    listContainer.addView(card, cardLp);
+                }
+
+                if (shownCount == 0) {
+                    TextView empty = text("No " + selectedFilter[0].toLowerCase(Locale.US)
+                                    + " releases in the recent feed.",
+                            9.5f, 0xff8d9892, false);
+                    empty.setPadding(dp(8), dp(18), dp(8), dp(18));
+                    empty.setGravity(Gravity.CENTER);
+                    listContainer.addView(empty, new LinearLayout.LayoutParams(-1, -2));
+                }
+
+                statusView.setText((offlineHolder[0] ? "Cached offline · " : "")
+                        + "Showing " + shownCount + (shownCount == 1 ? " release" : " releases"));
+            }
+        };
+        renderList.run();
+
+        final long ticket = releaseNotesJob.begin(JobState.Phase.LOADING);
+        AppUpdateManager.fetchRecentReleases(this, 15, new AppUpdateManager.RecentReleasesCallback() {
+            @Override
+            public void onLoaded(List<AppUpdateManager.UpdateInfo> releases, boolean offlineFallback) {
+                if (!releaseNotesJob.accepts(ticket) || isFinishing() || isDestroyed() || !dialog.isShowing()) return;
+                releaseNotesJob.move(ticket, JobState.Phase.READY);
+                spinner.setVisibility(View.GONE);
+                loadedHolder[0] = releases;
+                offlineHolder[0] = offlineFallback;
+                renderList.run();
+                scrollView.post(() -> scrollView.scrollTo(0, 0));
+            }
+
+            @Override
+            public void onError(String message) {
+                if (!releaseNotesJob.accepts(ticket) || isFinishing() || isDestroyed() || !dialog.isShowing()) return;
+                releaseNotesJob.move(ticket, JobState.Phase.FAILED);
+                spinner.setVisibility(View.GONE);
+                statusView.setText("Could not load release notes: " + message);
+                statusView.setTextColor(0xffe07b6b);
             }
         });
     }
@@ -990,6 +1270,8 @@ public class SettingsActivity extends Activity {
                 if (AppSettings.WHITE_BALANCE_MODE.equals(key)) {
                     int kelvin = AppSettings.parseWhiteBalanceModeKelvin(option);
                     AppSettings.setWhiteBalanceKelvin(this, kelvin);
+                } else if (AppSettings.UPDATE_CHANNEL.equals(key)) {
+                    refreshUpdateStatusSummary();
                 }
                 valueView.setText(shortValue(option));
                 triggerHeroUpdate();
@@ -1145,6 +1427,10 @@ public class SettingsActivity extends Activity {
     }
 
     private void addInfo(String title, String detailText, int color, Runnable onClick) {
+        addInfoWithDetail(title, detailText, color, onClick);
+    }
+
+    private TextView addInfoWithDetail(String title, String detailText, int color, Runnable onClick) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setPadding(dp(14), dp(10), dp(14), dp(10));
@@ -1156,6 +1442,7 @@ public class SettingsActivity extends Activity {
             row.setOnClickListener(v -> onClick.run());
         }
         addRowToCurrentCard(row);
+        return detail;
     }
 
     private static final int REQUEST_CODE_PICK_LUT = 2055;
@@ -1696,6 +1983,12 @@ public class SettingsActivity extends Activity {
     @Override
     protected void onDestroy() {
         heroJob.close();
+        releaseNotesJob.close();
+        if (releaseNotesDialog != null && releaseNotesDialog.isShowing()) {
+            try { releaseNotesDialog.dismiss(); } catch (Exception ignored) {}
+        }
+        releaseNotesDialog = null;
+        checkUpdatesDetailView = null;
         mainHandler.removeCallbacksAndMessages(null);
         heroWorker.shutdown();
         currentHeroBitmap = null;
