@@ -491,14 +491,26 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     lastLiveFocusDistance = liveDist;
                 }
             }
+            if (session != captureSession) return;
+            Long exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+            Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
+            if (exposure != null && exposure > 0L && iso != null && iso > 0) {
+                lastMeteredExposureNs = exposure;
+                lastMeteredIso = iso;
+                if (videoMode && !video180Active && isVideo180Requested()) {
+                    maybeEngageVideo180FromMetered(exposure, iso);
+                }
+            }
             long now = SystemClock.elapsedRealtime();
-            if (session != captureSession || videoState.isRecordingOrPaused() || now - lastPreviewMetadataAt < 500L) return;
+            if (now - lastPreviewMetadataAt < 500L) return;
             lastPreviewMetadataAt = now;
+            if (videoState.isRecordingOrPaused()) {
+                runOnUiThread(MainActivity.this::updateReadouts);
+                return;
+            }
             android.hardware.camera2.params.RggbChannelVector gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS);
             RawArchive.Frame metadata = new RawArchive.Frame();
             if (gains != null) metadata.wbGains = new float[]{gains.getRed(), gains.getGreenEven(), gains.getGreenOdd(), gains.getBlue()};
-            Long exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
-            Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
             metadata.exposureTimeNs = exposure == null ? 0L : exposure;
             metadata.sensitivityIso = iso == null ? 0 : iso;
             previewColourMetadata = metadata;
@@ -559,6 +571,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private boolean flashSupported;
     private boolean useRawForThisCamera;
     private boolean forceJpegForWide;
+    private volatile boolean videoHdrSupported = false;
+    private volatile boolean audioZoomSupported = false;
+    private volatile boolean unprocessedAudioSupported = false;
+    private volatile boolean activeTakeUsingHevc = false;
+    private volatile boolean activeTakeUsingHdr10 = false;
+    private volatile int activeTakeFps = 24;
+    private volatile boolean video180Active = false;
+    private volatile int video180Iso = 0;
+    private volatile int video180EffectiveFps = 24;
+    private volatile long lastMeteredExposureNs = 0L;
+    private volatile int lastMeteredIso = 0;
+    private volatile long lastVideo180StepAt = 0L;
     private float pendingZoomSettleScale = 1.0f;
     private float zoomRowStartX;
     private float zoomRowStartY;
@@ -610,7 +634,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 final boolean wantDirty = prefDirtyLensWarning && !isFrontCamera();
                 final boolean wantPalm = prefPalmTimer
                         && !videoMode && !videoState.isRecordingOrPaused() && !stillCaptureState.isBusy();
-                if (!wantHist && !wantZebra && !wantPeak && !wantDirty && !wantPalm) {
+                final boolean want180Luma = videoMode && video180Active && !aeLocked && isVideo180Requested();
+                if (!wantHist && !wantZebra && !wantPeak && !wantDirty && !wantPalm && !want180Luma) {
                     tv.postDelayed(this, 1000L);
                     return;
                 }
@@ -627,7 +652,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         final int sampleH = sampleRef.getHeight();
                         ioExecutor.execute(() -> {
                             try {
-                                computeExposureAids(sampleRef, sampleW, sampleH, wantHist, wantZebra, wantPeak, wantDirty, wantPalm);
+                                computeExposureAids(sampleRef, sampleW, sampleH, wantHist, wantZebra, wantPeak, wantDirty, wantPalm, want180Luma);
                                 if (wantHist || wantZebra || wantPeak) {
                                     grid.postInvalidate();
                                 }
@@ -642,7 +667,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         exposureAidBusy.set(false);
                     }
                 }
-                tv.postDelayed(this, (wantHist || wantZebra || wantPeak || wantPalm) ? 120L : 450L);
+                tv.postDelayed(this, (wantHist || wantZebra || wantPeak || wantPalm) ? 120L : want180Luma ? 320L : 450L);
                 return;
             }
             if (tv != null) tv.postDelayed(this, 450L);
@@ -793,7 +818,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
-    private void computeExposureAids(Bitmap bmp, int w, int h, boolean wantHist, boolean wantZebra, boolean wantPeak, boolean wantDirty, boolean wantPalm) {
+    private void computeExposureAids(Bitmap bmp, int w, int h, boolean wantHist, boolean wantZebra, boolean wantPeak, boolean wantDirty, boolean wantPalm, boolean want180Luma) {
         int total = w * h;
         if (liveSamplePixels.length < total) {
             liveSamplePixels = new int[total];
@@ -809,6 +834,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         int[] localB = wantHist ? new int[32] : null;
         int clipHigh = 0;
         int clipLow = 0;
+        long sumLuma = 0L;
         for (int i = 0; i < total; i++) {
             int c = px[i];
             int r = (c >> 16) & 0xff;
@@ -816,6 +842,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             int b = c & 0xff;
             int y = (r * 77 + g * 150 + b * 29) >> 8;
             luma[i] = y;
+            if (want180Luma) {
+                sumLuma += y;
+            }
             if (wantHist) {
                 int bin = Math.min(31, y >> 3);
                 localHist[bin]++;
@@ -862,6 +891,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         if (wantPalm) {
             checkPalmGesture(px, w, h);
+        }
+        if (want180Luma && total > 0) {
+            updateVideo180AutoIsoFromLuma(sumLuma / (double) total);
         }
     }
 
@@ -2558,6 +2590,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         videoState.cancelPermissionPending();
         cancelDelayedCapture();
         videoMode = enabled;
+        video180Active = false;
+        video180Iso = 0;
+        lastVideo180StepAt = 0L;
         AppSettings.prefs(this).edit().putBoolean(AppSettings.LAST_USED_MODE, enabled).apply();
         if (quickAdjustPanel != null) quickAdjustPanel.setVisibility(View.GONE);
         updateVideoModeUi();
@@ -2570,11 +2605,40 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void cycleVideoFps() {
         String current = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
-        String next = current.startsWith("24") ? "30 fps" : current.startsWith("30") ? "60 fps" : "24 fps (Cinematic)";
+        int currentIndex = 0;
+        for (int i = 0; i < AppSettings.VIDEO_FPS_CHOICES.length; i++) {
+            if (VideoRecordingCoordinator.computeTargetFps(AppSettings.VIDEO_FPS_CHOICES[i])
+                    == VideoRecordingCoordinator.computeTargetFps(current)) {
+                currentIndex = i;
+                break;
+            }
+        }
+        String next = null;
+        int skipped = 0;
+        for (int offset = 1; offset <= AppSettings.VIDEO_FPS_CHOICES.length; offset++) {
+            String candidate = AppSettings.VIDEO_FPS_CHOICES[(currentIndex + offset) % AppSettings.VIDEO_FPS_CHOICES.length];
+            int candidateFps = VideoRecordingCoordinator.computeTargetFps(candidate);
+            if (characteristics == null
+                    || resolveVideoFpsForCamera(characteristics, candidateFps, videoSize).exactMatch) {
+                next = candidate;
+                break;
+            }
+            skipped++;
+        }
+        if (next == null) {
+            next = AppSettings.VIDEO_FPS_CHOICES[(currentIndex + 1) % AppSettings.VIDEO_FPS_CHOICES.length];
+        }
         AppSettings.prefs(this).edit().putString(AppSettings.VIDEO_FPS, next).apply();
+        video180Active = false;
+        video180Iso = 0;
+        lastVideo180StepAt = 0L;
         updateQuickButtons();
         updateReadouts();
         updateVideoModeUi();
+        refreshPreviewRequest();
+        if (skipped > 0) {
+            showMessage("Frame rate: " + next + " (unsupported rates skipped on this lens)");
+        }
     }
 
     private void cycleVideoAspect() {
@@ -2719,8 +2783,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 cameraState.setText("STARTING VIDEO");
                 outputModeText.setText("PREPARING VIDEO RECORDING");
             } else if (videoMode) {
+                boolean hdrEnabled = AppSettings.getBoolean(this, AppSettings.VIDEO_HDR, false);
                 String codecChoice = AppSettings.get(this, AppSettings.VIDEO_CODEC, "H.264 · Universal");
-                String codecTag = codecChoice.contains("HEVC") ? "HEVC" : "H.264";
+                String codecTag;
+                if (hdrEnabled) {
+                    codecTag = videoHdrSupported ? "HEVC · HLG10 HDR" : "HEVC (HLG10 UNAVAILABLE · SDR)";
+                } else {
+                    codecTag = codecChoice.contains("HEVC") ? "HEVC" : "H.264";
+                }
                 cameraState.setText(cameraDevice == null ? "WAITING FOR CAMERA" : "VIDEO READY");
                 outputModeText.setText(codecTag + " VIDEO  ·  " + videoProfileLabel());
             } else if (useRawForThisCamera && rawSize != null) {
@@ -2958,54 +3028,95 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (videoSize == null) throw new IllegalStateException("No video size is supported");
 
             String audioPref = AppSettings.get(this, AppSettings.VIDEO_AUDIO, "Camcorder · Stereo");
-            boolean recordAudio = withAudio && !audioPref.startsWith("Muted");
+            VideoRecordingCoordinator.AudioConfig audioCfg = VideoRecordingCoordinator.resolveAudioConfig(
+                    audioPref, withAudio, unprocessedAudioSupported, audioZoomSupported);
+            if (audioCfg.unprocessedFallback && !isContinuation) {
+                runOnUiThread(() -> showMessage("Unprocessed mic unsupported · using stereo camcorder audio"));
+            }
 
             String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
             videoTempFile = File.createTempFile("LIKA_VIDEO_SEG_" + stamp + "_", ".mp4", VideoSaveJob.recoveryDirectory(getFilesDir()));
             mediaRecorder = new MediaRecorder();
-            if (recordAudio) {
-                int audioSrc = MediaRecorder.AudioSource.CAMCORDER;
-                if (audioPref.startsWith("Unprocessed") && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    audioSrc = MediaRecorder.AudioSource.UNPROCESSED;
-                } else if (audioPref.contains("Speech") || audioPref.startsWith("Voice")) {
-                    audioSrc = MediaRecorder.AudioSource.VOICE_RECOGNITION;
-                }
+            if (audioCfg.enabled) {
                 try {
-                    mediaRecorder.setAudioSource(audioSrc);
+                    mediaRecorder.setAudioSource(audioCfg.audioSource);
                 } catch (RuntimeException fallbackMic) {
                     mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
                 }
             }
             mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
             mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+
             String codecPref = AppSettings.get(this, AppSettings.VIDEO_CODEC, "H.264 · Universal");
-            boolean wantHdr10 = AppSettings.getBoolean(this, AppSettings.VIDEO_HDR, false)
-                    && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                    && !isContinuation
-                    && isHlg10Supported();
-            boolean wantHevc = (codecPref.contains("HEVC") || wantHdr10) && !isContinuation;
+            String fpsChoice = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
+            int requestedFps = VideoRecordingCoordinator.computeTargetFps(fpsChoice);
+            final VideoRecordingCoordinator.FpsRangeDecision fpsDecision = resolveVideoFpsForCamera(
+                    characteristics, isContinuation ? activeTakeFps : requestedFps, videoSize);
+            if (!isContinuation) {
+                activeTakeFps = fpsDecision.effectiveFps;
+                if (!fpsDecision.exactMatch) {
+                    final int chosenFps = activeTakeFps;
+                    runOnUiThread(() -> showMessage(requestedFps + " fps unsupported on this lens · recording at " + chosenFps + " fps"));
+                }
+            }
+
+            boolean hdrRequested = AppSettings.getBoolean(this, AppSettings.VIDEO_HDR, false);
+            int hevcMain10Level = (hdrRequested || (isContinuation && activeTakeUsingHdr10))
+                    ? VideoRecordingCoordinator.findSupportedHevcMain10Level() : -1;
+            boolean wantHdr10;
+            boolean wantHevc;
+            if (isContinuation) {
+                wantHdr10 = activeTakeUsingHdr10 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                        && isHlg10Supported(characteristics) && hevcMain10Level > 0;
+                wantHevc = activeTakeUsingHevc || wantHdr10;
+            } else {
+                wantHdr10 = hdrRequested
+                        && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                        && isHlg10Supported(characteristics)
+                        && hevcMain10Level > 0;
+                if (hdrRequested && !wantHdr10) {
+                    runOnUiThread(() -> showMessage("10-bit HLG HDR unsupported on this lens · recording SDR"));
+                }
+                wantHevc = codecPref.contains("HEVC") || wantHdr10;
+            }
+
             boolean usingHevc = false;
             try {
                 mediaRecorder.setVideoEncoder(wantHevc ? MediaRecorder.VideoEncoder.HEVC : MediaRecorder.VideoEncoder.H264);
                 usingHevc = wantHevc;
             } catch (RuntimeException fallbackH264) {
+                if (isContinuation && activeTakeUsingHevc) {
+                    throw new IllegalStateException("Target lens cannot continue HEVC segment", fallbackH264);
+                }
                 mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
                 wantHdr10 = false;
             }
-            if (wantHdr10 && usingHevc && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (wantHdr10 && usingHevc && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && hevcMain10Level > 0) {
                 try {
                     mediaRecorder.setVideoEncodingProfileLevel(
                             android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
-                            android.media.MediaCodecInfo.CodecProfileLevel.HEVCMainTierLevel41);
+                            hevcMain10Level);
                 } catch (RuntimeException hdrFallback) {
+                    if (isContinuation && activeTakeUsingHdr10) {
+                        throw hdrFallback;
+                    }
                     wantHdr10 = false;
                 }
+            } else if (!usingHevc) {
+                wantHdr10 = false;
             }
-            if (recordAudio) {
+            if (!isContinuation) {
+                activeTakeUsingHevc = usingHevc;
+                activeTakeUsingHdr10 = wantHdr10;
+            }
+
+            if (audioCfg.enabled) {
                 mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-                mediaRecorder.setAudioChannels(2);
+                mediaRecorder.setAudioChannels(audioCfg.channels);
                 mediaRecorder.setAudioSamplingRate(48000);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && AppSettings.getBoolean(this, AppSettings.AUDIO_ZOOM, true)) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                        && audioCfg.allowAudioZoom
+                        && AppSettings.getBoolean(this, AppSettings.AUDIO_ZOOM, true)) {
                     try {
                         float micZoom = Math.max(0f, Math.min(1f, (requestedZoom - 1.0f) / 4.0f));
                         mediaRecorder.setPreferredMicrophoneFieldDimension(micZoom);
@@ -3014,15 +3125,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 }
             }
             mediaRecorder.setVideoSize(videoSize.getWidth(), videoSize.getHeight());
-            String fpsChoice = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
-            int targetFps = VideoRecordingCoordinator.computeTargetFps(fpsChoice);
-            mediaRecorder.setVideoFrameRate(targetFps);
+            mediaRecorder.setVideoFrameRate(activeTakeFps);
 
             String bitrateChoice = AppSettings.get(this, AppSettings.VIDEO_BITRATE, "High · 24 Mbps");
             int bitrate = VideoRecordingCoordinator.computeBitrate(bitrateChoice);
             if (wantHdr10) bitrate = Math.round(bitrate * 1.25f);
             mediaRecorder.setVideoEncodingBitRate(bitrate);
-            if (recordAudio) mediaRecorder.setAudioEncodingBitRate(160_000);
+            if (audioCfg.enabled) mediaRecorder.setAudioEncodingBitRate(160_000);
             int orientHint = lockedVideoOrientation >= 0 ? lockedVideoOrientation : jpegOrientation();
             mediaRecorder.setOrientationHint(orientHint);
             Location loc = getCaptureLocation();
@@ -3040,7 +3149,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             int pixelRotation = VideoRecordingCoordinator.rotationCorrection(jpegOrientation(), orientHint);
             Log.i("LikaLens", "Video orientation camera=" + cameraId + " front=" + isFrontCamera()
                     + " cameraRotation=" + jpegOrientation() + " takeRotation=" + orientHint
-                    + " pixelRotation=" + pixelRotation);
+                    + " pixelRotation=" + pixelRotation + " hdr10=" + wantHdr10 + " fps=" + activeTakeFps);
             if (pixelRotation != 0) {
                 final MediaRecorder segmentRecorder = mediaRecorder;
                 videoRotationSurface = new VideoRotationSurface(recordingEncoderSurface,
@@ -3076,36 +3185,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         request.addTarget(segmentInput);
                         request.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
                         previewRequest = request;
-                        if (characteristics != null) {
-                            Range<Integer>[] fpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
-                            Range<Integer> targetRange = null;
-                            if (fpsRanges != null) {
-                                for (Range<Integer> r : fpsRanges) {
-                                    if (r.getUpper() == targetFps) {
-                                        if (targetRange == null || r.getLower() == targetFps) {
-                                            targetRange = r;
-                                            if (r.getLower() == targetFps) break;
-                                        }
-                                    }
-                                }
-                                if (targetRange == null) {
-                                    for (Range<Integer> r : fpsRanges) {
-                                        if (targetRange == null || Math.abs(r.getUpper() - targetFps) < Math.abs(targetRange.getUpper() - targetFps)) {
-                                            targetRange = r;
-                                        }
-                                    }
-                                }
-                            }
-                            if (targetRange != null) {
-                                request.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, targetRange);
-                            }
+                        if (fpsDecision.hasRange()) {
+                            request.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                    new Range<>(fpsDecision.lower, fpsDecision.upper));
                         }
                         setExposure(request);
                         setFocusMode(request);
                         setFlash(request, true);
                         applyOpticalSettings(request, true);
                         applyZoom(request);
-                        session.setRepeatingRequest(request.build(), null, cameraHandler);
+                        session.setRepeatingRequest(request.build(), previewMetadataCallback, cameraHandler);
                         mediaRecorder.start();
                         if (!isContinuation) {
                             playShutterSound(android.media.MediaActionSound.START_VIDEO_RECORDING);
@@ -3148,6 +3237,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     android.hardware.camera2.params.OutputConfiguration videoOut =
                             new android.hardware.camera2.params.OutputConfiguration(segmentInput);
                     videoOut.setDynamicRangeProfile(android.hardware.camera2.params.DynamicRangeProfiles.HLG10);
+                    android.hardware.camera2.params.DynamicRangeProfiles drProfiles =
+                            characteristics != null ? characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES) : null;
+                    if (drProfiles != null) {
+                        java.util.Set<Long> constraints = drProfiles.getProfileCaptureRequestConstraints(
+                                android.hardware.camera2.params.DynamicRangeProfiles.HLG10);
+                        if (constraints != null && !constraints.isEmpty()
+                                && !constraints.contains(android.hardware.camera2.params.DynamicRangeProfiles.STANDARD)
+                                && constraints.contains(android.hardware.camera2.params.DynamicRangeProfiles.HLG10)) {
+                            previewOut.setDynamicRangeProfile(android.hardware.camera2.params.DynamicRangeProfiles.HLG10);
+                        }
+                    }
                     List<android.hardware.camera2.params.OutputConfiguration> outConfigs = Arrays.asList(previewOut, videoOut);
                     java.util.concurrent.Executor camExec = command -> {
                         if (cameraHandler != null) cameraHandler.post(command);
@@ -3173,10 +3273,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private boolean isHlg10Supported() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || characteristics == null) return false;
+        return isHlg10Supported(characteristics);
+    }
+
+    private boolean isHlg10Supported(CameraCharacteristics targetChars) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || targetChars == null) return false;
         try {
             android.hardware.camera2.params.DynamicRangeProfiles profiles =
-                    characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES);
+                    targetChars.get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES);
             if (profiles != null) {
                 return profiles.getSupportedProfiles().contains(
                         android.hardware.camera2.params.DynamicRangeProfiles.HLG10);
@@ -3184,6 +3288,74 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         } catch (Throwable ignored) {
         }
         return false;
+    }
+
+    private VideoRecordingCoordinator.FpsRangeDecision resolveVideoFpsForCamera(
+            CameraCharacteristics targetChars, int requestedFps, Size targetSize) {
+        if (targetChars == null) {
+            return new VideoRecordingCoordinator.FpsRangeDecision(requestedFps, requestedFps, requestedFps, requestedFps, true);
+        }
+        Range<Integer>[] ranges = targetChars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+        List<int[]> rangeList = new ArrayList<>();
+        if (ranges != null) {
+            for (Range<Integer> r : ranges) {
+                if (r != null) {
+                    rangeList.add(new int[]{r.getLower(), r.getUpper()});
+                }
+            }
+        }
+        long minDurationNs = 0L;
+        if (targetSize != null) {
+            try {
+                StreamConfigurationMap map = targetChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                if (map != null) {
+                    minDurationNs = map.getOutputMinFrameDuration(MediaRecorder.class, targetSize);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return VideoRecordingCoordinator.resolveFpsRange(requestedFps, rangeList, minDurationNs);
+    }
+
+    private boolean canContinueVideoOnCamera(String targetId) {
+        if (!videoState.isRecordingOrPaused() || cameraManager == null || targetId == null) return true;
+        try {
+            CameraCharacteristics targetChars = cameraManager.getCameraCharacteristics(targetId);
+            StreamConfigurationMap targetMap = targetChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            boolean sizeSupported = false;
+            if (targetMap != null && videoSize != null) {
+                Size[] outSizes = targetMap.getOutputSizes(MediaRecorder.class);
+                if (outSizes != null) {
+                    for (Size s : outSizes) {
+                        if (s != null && s.getWidth() == videoSize.getWidth() && s.getHeight() == videoSize.getHeight()) {
+                            sizeSupported = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            boolean targetHdr10 = isHlg10Supported(targetChars);
+            int targetOrient = jpegOrientationForCharacteristics(targetChars);
+            VideoRecordingCoordinator.SwitchCompatibility compat = VideoRecordingCoordinator.checkMidTakeSwitch(
+                    sizeSupported, activeTakeUsingHdr10, targetHdr10, lockedVideoOrientation, targetOrient);
+            if (!compat.allowed) {
+                showMessage(compat.reason);
+                return false;
+            }
+            return true;
+        } catch (Throwable t) {
+            showMessage("Cannot switch to that camera during active recording.");
+            return false;
+        }
+    }
+
+    private int jpegOrientationForCharacteristics(CameraCharacteristics targetChars) {
+        if (targetChars == null) return 90;
+        Integer sensorObj = targetChars.get(CameraCharacteristics.SENSOR_ORIENTATION);
+        Integer facingObj = targetChars.get(CameraCharacteristics.LENS_FACING);
+        int sensorOrientation = sensorObj == null ? 90 : sensorObj;
+        boolean front = facingObj != null && facingObj == CameraCharacteristics.LENS_FACING_FRONT;
+        return CaptureOrientation.jpegOrientation(sensorOrientation, front, resolvedClockwiseDeviceRotation());
     }
 
     private Size chooseVideoSize(Size[] sizes) {
@@ -3216,6 +3388,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         videoState.reset();
         videoLock.set(false);
+        activeTakeUsingHevc = false;
+        activeTakeUsingHdr10 = false;
+        activeTakeFps = 24;
         hasLockedVideoAnchor = false;
         lockedVideoPitch = 0f;
         lockedVideoRoll = 0f;
@@ -3274,6 +3449,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         videoLock.set(false);
         videoLock.cancelHold();
         lockedVideoOrientation = -1;
+        activeTakeUsingHevc = false;
+        activeTakeUsingHdr10 = false;
+        activeTakeFps = 24;
         hasLockedVideoAnchor = false;
         lockedVideoPitch = 0f;
         lockedVideoRoll = 0f;
@@ -3935,6 +4113,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void setExposureCompensationEv(float targetEv) {
         currentEvOffset = targetEv;
+        if (videoMode && video180Active && !aeLocked) {
+            lastVideo180StepAt = 0L;
+        }
         if (characteristics == null || previewRequest == null || captureSession == null) return;
         Range<Integer> range = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
         android.util.Rational step = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
@@ -3958,7 +4139,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void toggleAeLock() {
         if (characteristics == null || previewRequest == null || captureSession == null) return;
         aeLocked = !aeLocked;
-        if (!aeLocked && focusMode == FocusMode.LOCKED) resetFocusToPreferredAfMode();
+        if (!aeLocked) {
+            lastVideo180StepAt = 0L;
+            if (focusMode == FocusMode.LOCKED) resetFocusToPreferredAfMode();
+        }
         if (captureButton != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
             captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
         }
@@ -3975,8 +4159,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (aeLockBadge != null) {
             aeLockBadge.setVisibility(aeLocked ? View.VISIBLE : View.GONE);
         }
-        if (shutterValueText != null) shutterValueText.setTextColor(aeLocked ? ACCENT : 0xfff0f1ea);
-        if (isoValueText != null) isoValueText.setTextColor(aeLocked ? ACCENT : 0xfff0f1ea);
+        updateReadouts();
     }
 
     private GradientDrawable round(int color, int radius, int strokeColor, int strokeWidth) {
@@ -4005,7 +4188,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (aspectButton != null) aspectButton.setText(AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3"));
         if (videoFpsButton != null) {
             String fps = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
-            videoFpsButton.setText(fps.startsWith("24") ? "24 FPS" : fps.startsWith("30") ? "30 FPS" : "60 FPS");
+            videoFpsButton.setText(fps.startsWith("24") ? "24 FPS"
+                    : fps.startsWith("25") ? "25 FPS"
+                    : fps.startsWith("30") ? "30 FPS" : "60 FPS");
         }
         if (videoAspectButton != null) {
             String vAsp = AppSettings.get(this, AppSettings.VIDEO_ASPECT, "16:9 Widescreen");
@@ -4125,10 +4310,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             focusDistanceCalibration = characteristics.get(CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION);
             hasUltraWideSupport = computeHasUltraWideSupport(characteristics);
             maxCameraZoom = computeMaxCameraZoom(characteristics);
+            audioZoomSupported = VideoRecordingCoordinator.probeAudioZoomSupported(this);
+            unprocessedAudioSupported = VideoRecordingCoordinator.probeUnprocessedAudioSupported(this);
+            videoHdrSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    && isHlg10Supported(characteristics)
+                    && VideoRecordingCoordinator.findSupportedHevcMain10Level() > 0;
+            video180Active = false;
+            video180Iso = 0;
+            lastMeteredExposureNs = 0L;
+            lastMeteredIso = 0;
+            lastVideo180StepAt = 0L;
             AppSettings.prefs(this).edit()
                     .putBoolean(AppSettings.MANUAL_SUPPORTED, manualSupported)
                     .putBoolean(AppSettings.RAW_SUPPORTED, rawSupported)
                     .putBoolean(AppSettings.MANUAL_FOCUS_SUPPORTED, manualFocusSupported)
+                    .putBoolean(AppSettings.VIDEO_HDR_SUPPORTED, videoHdrSupported)
+                    .putBoolean(AppSettings.AUDIO_ZOOM_SUPPORTED, audioZoomSupported)
                     .apply();
             updateReadouts();
             useRawForThisCamera = rawSupported && !forceJpegForWide;
@@ -4139,6 +4336,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             runOnUiThread(() -> {
                 updateManualFocusUi();
                 updateLensButtons(requestedZoom);
+                if (videoMode) {
+                    updateVideoModeUi();
+                }
                 if (!videoMode && !manualFocusSupported
                         && AppSettings.FOCUS_MANUAL.equals(AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS))) {
                     showMessage("Fixed-focus lens · manual focus not supported here");
@@ -4509,10 +4709,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         previewRequest = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
                         previewRequest.addTarget(sessionPreviewSurface);
                         previewRequest.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+                        if (videoMode) {
+                            applyVideoFpsRange(previewRequest);
+                        }
                         setExposure(previewRequest);
                         setFlash(previewRequest, true);
                         setFocusMode(previewRequest);
-                        applyOpticalSettings(previewRequest, false);
+                        applyOpticalSettings(previewRequest, videoMode);
                         applyZoom(previewRequest);
                         captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
                         runOnUiThread(() -> {
@@ -6405,7 +6608,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         final String status;
         if (videoMode) {
             String fps = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
-            String fpsTag = fps.startsWith("24") ? "24 FPS CINEMATIC" : fps.startsWith("30") ? "30 FPS" : "60 FPS";
+            String fpsTag = fps.startsWith("24") ? "24 FPS CINEMATIC"
+                    : fps.startsWith("25") ? "25 FPS PAL"
+                    : fps.startsWith("30") ? "30 FPS" : "60 FPS";
             status = videoState.isRecordingOrPaused() ? "TAP ⟳ TO SWITCH" : "CINEMATIC VIDEO · " + fpsTag;
         } else {
             boolean easy = AppSettings.getBoolean(this, AppSettings.EASY_MODE, true);
@@ -6661,8 +6866,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void selectCameraForLens(String id, float factor, boolean jpegWide) {
         if (id == null) return;
         float resolvedFactor = CameraExposureHelper.resolveZoomForSessionMode(factor, jpegWide);
-        AppSettings.prefs(this).edit().putString(AppSettings.LAST_CAMERA_ID, id).apply();
         boolean mustRestart = !id.equals(cameraId);
+        if (mustRestart && videoState.isRecordingOrPaused() && !canContinueVideoOnCamera(id)) {
+            updateLensButtons(requestedZoom);
+            return;
+        }
+        AppSettings.prefs(this).edit().putString(AppSettings.LAST_CAMERA_ID, id).apply();
         boolean prevForceJpegForWide = forceJpegForWide;
         boolean mustReconfigureSession = CameraExposureHelper.needsPreviewSessionReconfig(
                 cameraId, id, prevForceJpegForWide, jpegWide);
@@ -6987,6 +7196,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 showMessage("This device has no camera on the other side.");
                 return;
             }
+            if (videoState.isRecordingOrPaused() && !canContinueVideoOnCamera(bestId)) {
+                return;
+            }
             if (videoState.isRecordingOrPaused()) {
                 pauseCurrentSegmentForCameraSwitch();
             }
@@ -7117,9 +7329,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             applyDigitalCrop(builder, active);
         }
 
+        String audioPref = AppSettings.get(this, AppSettings.VIDEO_AUDIO, "Camcorder · Stereo");
         if ((videoState.isRecordingOrPaused() || videoState.isPreparing()) && mediaRecorder != null
                 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                && AppSettings.getBoolean(this, AppSettings.AUDIO_ZOOM, true)) {
+                && audioZoomSupported
+                && AppSettings.getBoolean(this, AppSettings.AUDIO_ZOOM, true)
+                && !audioPref.startsWith("Unprocessed")
+                && !audioPref.startsWith("Muted")
+                && !audioPref.contains("Speech")
+                && !audioPref.startsWith("Voice")) {
             try {
                 float micZoom = Math.max(0f, Math.min(1f, (requestedZoom - 1.0f) / 4.0f));
                 mediaRecorder.setPreferredMicrophoneFieldDimension(micZoom);
@@ -7427,6 +7645,90 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
+    private boolean isVideo180Requested() {
+        return videoMode
+                && AppSettings.VIDEO_SHUTTER_180.equals(
+                        AppSettings.get(this, AppSettings.VIDEO_SHUTTER_MODE, AppSettings.VIDEO_SHUTTER_180))
+                && !AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual");
+    }
+
+    private int currentEffectiveVideoFps() {
+        if ((videoState.isRecordingOrPaused() || videoState.isPreparing() || videoState.isSwitchingCamera())
+                && activeTakeFps > 0) {
+            return activeTakeFps;
+        }
+        int requestedFps = VideoRecordingCoordinator.computeTargetFps(
+                AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)"));
+        if (characteristics == null) return requestedFps;
+        return resolveVideoFpsForCamera(characteristics, requestedFps, videoSize).effectiveFps;
+    }
+
+    private void applyVideoFpsRange(CaptureRequest.Builder builder) {
+        if (builder == null || characteristics == null || !videoMode) return;
+        int targetFps = currentEffectiveVideoFps();
+        VideoRecordingCoordinator.FpsRangeDecision fpsDecision =
+                resolveVideoFpsForCamera(characteristics, targetFps, videoSize);
+        if (fpsDecision.hasRange()) {
+            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                    new Range<>(fpsDecision.lower, fpsDecision.upper));
+        }
+    }
+
+    private void maybeEngageVideo180FromMetered(long meteredExposureNs, int meteredIso) {
+        CameraCharacteristics ch = characteristics;
+        if (ch == null || !videoMode || video180Active || !isVideo180Requested() || !manualSupported) return;
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastVideo180StepAt < 350L) return;
+        lastVideo180StepAt = now;
+        Range<Long> expRange = ch.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+        Range<Integer> sensRange = ch.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+        if (expRange == null || sensRange == null) return;
+        int effFps = currentEffectiveVideoFps();
+        VideoRecordingCoordinator.Shutter180Plan plan = VideoRecordingCoordinator.evaluate180Shutter(
+                true, true, effFps,
+                expRange.getLower(), expRange.getUpper(),
+                sensRange.getLower(), sensRange.getUpper(),
+                meteredExposureNs, meteredIso, currentEvOffset);
+        if (!plan.engaged) return;
+        video180EffectiveFps = effFps;
+        video180Iso = plan.initialIso;
+        video180Active = true;
+        refreshPreviewRequest();
+        runOnUiThread(this::updateReadouts);
+    }
+
+    private void updateVideo180AutoIsoFromLuma(double meanLuma) {
+        CameraCharacteristics ch = characteristics;
+        if (ch == null || !videoMode || !video180Active || aeLocked || !isVideo180Requested()) return;
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastVideo180StepAt < 250L) return;
+        Range<Integer> sensRange = ch.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+        if (sensRange == null) return;
+        final int curIso = video180Iso;
+        final int nextIso = VideoRecordingCoordinator.step180AutoIso(
+                curIso, meanLuma, currentEvOffset, sensRange.getLower(), sensRange.getUpper());
+        if (nextIso == curIso) {
+            lastVideo180StepAt = now;
+            return;
+        }
+        lastVideo180StepAt = nextIso < 0 ? (now + 1000L) : now;
+        Handler camH = cameraHandler;
+        Runnable applyStep = () -> {
+            if (!videoMode || !isVideo180Requested()) return;
+            if (nextIso < 0) {
+                video180Active = false;
+                video180Iso = 0;
+            } else {
+                video180Iso = nextIso;
+            }
+            refreshPreviewRequest();
+            runOnUiThread(this::updateReadouts);
+        };
+        if (camH != null) {
+            camH.post(applyStep);
+        }
+    }
+
     private void setExposure(CaptureRequest.Builder builder) {
         String antiBanding = AppSettings.get(this, AppSettings.ANTI_BANDING, "Auto (50/60 Hz)");
         int abMode = CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO;
@@ -7440,33 +7742,49 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, abMode);
 
         String mode = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure");
-        if (!mode.startsWith("Manual") || !manualSupported) {
-            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-            builder.set(CaptureRequest.CONTROL_AE_LOCK, aeLocked);
-            builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentAeIndex);
-            if (currentAeRegions != null) {
-                builder.set(CaptureRequest.CONTROL_AE_REGIONS, currentAeRegions);
+        if (mode.startsWith("Manual") && manualSupported && characteristics != null) {
+            Range<Long> exposureRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+            Range<Integer> sensitivityRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+            if (exposureRange != null && sensitivityRange != null) {
+                long exposure = shutterNanoseconds(AppSettings.get(this, AppSettings.MANUAL_SHUTTER, "1/120 sec"));
+                int iso = parseIso(AppSettings.get(this, AppSettings.MANUAL_ISO, "ISO 100"));
+                exposure = Math.max(exposureRange.getLower(), Math.min(exposureRange.getUpper(), exposure));
+                iso = Math.max(sensitivityRange.getLower(), Math.min(sensitivityRange.getUpper(), iso));
+                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
+                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposure);
+                builder.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
+                return;
             }
-            return;
         }
-        Range<Long> exposureRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
-        Range<Integer> sensitivityRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
-        if (exposureRange == null || sensitivityRange == null) {
-            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-            builder.set(CaptureRequest.CONTROL_AE_LOCK, aeLocked);
-            builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentAeIndex);
-            if (currentAeRegions != null) {
-                builder.set(CaptureRequest.CONTROL_AE_REGIONS, currentAeRegions);
+        if (videoMode && video180Active && isVideo180Requested() && manualSupported
+                && video180Iso > 0 && characteristics != null) {
+            Range<Long> exposureRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+            Range<Integer> sensitivityRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+            if (exposureRange != null && sensitivityRange != null) {
+                long shutterNs = VideoRecordingCoordinator.target180ShutterNs(video180EffectiveFps);
+                long frameNs = VideoRecordingCoordinator.frameDurationNs(video180EffectiveFps);
+                shutterNs = Math.max(exposureRange.getLower(), Math.min(exposureRange.getUpper(), shutterNs));
+                Long maxFrameNs = characteristics.get(CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION);
+                if (maxFrameNs != null && maxFrameNs > 0L) {
+                    frameNs = Math.min(frameNs, maxFrameNs);
+                }
+                if (frameNs < shutterNs) frameNs = shutterNs;
+                int iso = Math.max(sensitivityRange.getLower(), Math.min(sensitivityRange.getUpper(), video180Iso));
+                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
+                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, shutterNs);
+                builder.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
+                if (maxFrameNs == null || frameNs <= maxFrameNs) {
+                    builder.set(CaptureRequest.SENSOR_FRAME_DURATION, frameNs);
+                }
+                return;
             }
-            return;
         }
-        long exposure = shutterNanoseconds(AppSettings.get(this, AppSettings.MANUAL_SHUTTER, "1/120 sec"));
-        int iso = parseIso(AppSettings.get(this, AppSettings.MANUAL_ISO, "ISO 100"));
-        exposure = Math.max(exposureRange.getLower(), Math.min(exposureRange.getUpper(), exposure));
-        iso = Math.max(sensitivityRange.getLower(), Math.min(sensitivityRange.getUpper(), iso));
-        builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
-        builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposure);
-        builder.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
+        builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+        builder.set(CaptureRequest.CONTROL_AE_LOCK, aeLocked);
+        builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentAeIndex);
+        if (currentAeRegions != null) {
+            builder.set(CaptureRequest.CONTROL_AE_REGIONS, currentAeRegions);
+        }
     }
 
     private void setFlash(CaptureRequest.Builder builder, boolean preview) {
@@ -7491,6 +7809,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void refreshPreviewRequest() {
         if (previewRequest == null || captureSession == null) return;
         try {
+            if (videoMode) {
+                applyVideoFpsRange(previewRequest);
+            }
+            if (!isVideo180Requested()) {
+                video180Active = false;
+                video180Iso = 0;
+            }
             setExposure(previewRequest);
             setFlash(previewRequest, true);
             setFocusMode(previewRequest);
@@ -7511,22 +7836,30 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void updateReadouts() {
         boolean manual = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual") && manualSupported;
+        boolean hud180 = !manual && videoMode && video180Active && isVideo180Requested() && video180Iso > 0;
         if (shutterValueText != null) {
             if (manual) {
                 shutterValueText.setText(AppSettings.get(this, AppSettings.MANUAL_SHUTTER, "1/120 sec").replace(" sec", ""));
                 shutterValueText.setTextColor(ACCENT);
-            } else if (videoMode) {
-                String fps = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
-                shutterValueText.setText(fps.startsWith("24") ? "1/48 (180°)" : fps.startsWith("30") ? "1/60 (180°)" : "1/120 (180°)");
-                shutterValueText.setTextColor(0xfff0f1ea);
+            } else if (hud180) {
+                shutterValueText.setText(VideoRecordingCoordinator.format180ShutterLabel(video180EffectiveFps));
+                shutterValueText.setTextColor(ACCENT);
             } else {
                 shutterValueText.setText("AUTO");
-                shutterValueText.setTextColor(0xfff0f1ea);
+                shutterValueText.setTextColor(aeLocked ? ACCENT : 0xfff0f1ea);
             }
         }
         if (isoValueText != null) {
-            isoValueText.setText(manual ? AppSettings.get(this, AppSettings.MANUAL_ISO, "ISO 100") : "AUTO");
-            isoValueText.setTextColor(manual ? ACCENT : 0xfff0f1ea);
+            if (manual) {
+                isoValueText.setText(AppSettings.get(this, AppSettings.MANUAL_ISO, "ISO 100"));
+                isoValueText.setTextColor(ACCENT);
+            } else if (hud180) {
+                isoValueText.setText("ISO " + video180Iso);
+                isoValueText.setTextColor(aeLocked ? ACCENT : 0xfff0f1ea);
+            } else {
+                isoValueText.setText("AUTO");
+                isoValueText.setTextColor(aeLocked ? ACCENT : 0xfff0f1ea);
+            }
         }
         int wb = AppSettings.resolveWhiteBalanceKelvin(this);
         if (whiteBalanceValueText != null) {

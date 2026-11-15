@@ -46,6 +46,8 @@ public class SettingsBackupManagerTest {
         prefs.put(AppSettings.RAW_SUPPORTED, true); // excluded hardware flag
         prefs.put(AppSettings.MANUAL_SUPPORTED, true); // excluded hardware flag
         prefs.put(AppSettings.MANUAL_FOCUS_SUPPORTED, true); // excluded hardware flag
+        prefs.put(AppSettings.VIDEO_HDR_SUPPORTED, true); // excluded hardware flag
+        prefs.put(AppSettings.AUDIO_ZOOM_SUPPORTED, true); // excluded hardware flag
         prefs.put(AppSettings.LAST_CAMERA_ID, "0"); // excluded hardware key
         prefs.put(AppSettings.RECIPE_1_NAME, "Neon Night");
         prefs.put(AppSettings.RECIPE_1_DATA, "{\"brain\":\"LIKA / FILM\"}");
@@ -73,6 +75,8 @@ public class SettingsBackupManagerTest {
         assertFalse(parsed.preferences.containsKey(AppSettings.RAW_SUPPORTED));
         assertFalse(parsed.preferences.containsKey(AppSettings.MANUAL_SUPPORTED));
         assertFalse(parsed.preferences.containsKey(AppSettings.MANUAL_FOCUS_SUPPORTED));
+        assertFalse(parsed.preferences.containsKey(AppSettings.VIDEO_HDR_SUPPORTED));
+        assertFalse(parsed.preferences.containsKey(AppSettings.AUDIO_ZOOM_SUPPORTED));
         assertFalse(parsed.preferences.containsKey(AppSettings.LAST_CAMERA_ID));
         assertFalse(parsed.preferences.containsKey(AppSettings.LAST_UPDATE_CHECK_TIME));
 

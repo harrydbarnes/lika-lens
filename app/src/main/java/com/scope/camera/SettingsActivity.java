@@ -431,16 +431,27 @@ public class SettingsActivity extends Activity {
         finishSection();
 
         addAdvancedSection("video_advanced", "Advanced audio & capability notes",
-                "Directional audio zoom and device HDR / audio support status", () -> {
-                    addSwitch("Directional audio zoom", "Adjust microphone pickup field toward zoomed subject where hardware supports it (Android 10+)", AppSettings.AUDIO_ZOOM, true);
-                    String hdrStatus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                            ? "Android 13+ HLG10 API available · camera sensor HLG10 capability checked when recording starts"
-                            : "Requires Android 13 (API 33) or newer for 10-bit HLG HDR capture";
-                    addInfo("10-bit HLG HDR capability", hdrStatus, 0xffaab3ad);
-                    String audioZoomStatus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                            ? "Android 10+ microphone field API available · directional focus depends on device hardware"
-                            : "Requires Android 10 (API 29) or newer for directional audio zoom";
-                    addInfo("Directional audio capability", audioZoomStatus, 0xffaab3ad);
+                "Directional audio zoom and hardware capability status", () -> {
+                    boolean audioZoomCapable = AppSettings.prefs(this).contains(AppSettings.AUDIO_ZOOM_SUPPORTED)
+                            ? AppSettings.getBoolean(this, AppSettings.AUDIO_ZOOM_SUPPORTED, false)
+                            : VideoRecordingCoordinator.probeAudioZoomSupported(this);
+                    if (audioZoomCapable) {
+                        addSwitch("Directional audio zoom", "Steer built-in microphone array pickup toward zoomed subject during recording", AppSettings.AUDIO_ZOOM, true);
+                    } else {
+                        String reason = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+                                ? "Unavailable · requires Android 10 (API 29) or newer"
+                                : "Unavailable · device does not expose a directional or multi-microphone array";
+                        addInfo("Directional audio zoom", reason, 0xffaab3ad);
+                    }
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                        addInfo("10-bit HLG HDR capability", "Unavailable · requires Android 13 (API 33) or newer", 0xffaab3ad);
+                    } else if (AppSettings.prefs(this).contains(AppSettings.VIDEO_HDR_SUPPORTED)) {
+                        boolean hdrCapable = AppSettings.getBoolean(this, AppSettings.VIDEO_HDR_SUPPORTED, false);
+                        addInfo("10-bit HLG HDR capability",
+                                hdrCapable ? "Supported on active camera lens with HEVC Main10"
+                                        : "Not supported on the last opened camera lens or encoder · falls back to SDR",
+                                hdrCapable ? ACCENT : 0xffdfb56f);
+                    }
                 });
     }
 

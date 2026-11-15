@@ -111,6 +111,8 @@ final class SettingsBackupManager {
         return AppSettings.RAW_SUPPORTED.equals(key)
                 || AppSettings.MANUAL_SUPPORTED.equals(key)
                 || AppSettings.MANUAL_FOCUS_SUPPORTED.equals(key)
+                || AppSettings.VIDEO_HDR_SUPPORTED.equals(key)
+                || AppSettings.AUDIO_ZOOM_SUPPORTED.equals(key)
                 || AppSettings.LAST_CAMERA_ID.equals(key)
                 || AppSettings.LAST_UPDATE_CHECK_TIME.equals(key);
     }
@@ -405,6 +407,10 @@ final class SettingsBackupManager {
         boolean manualSupported = prefs.getBoolean(AppSettings.MANUAL_SUPPORTED, false);
         boolean hadMf = prefs.contains(AppSettings.MANUAL_FOCUS_SUPPORTED);
         boolean mfSupported = prefs.getBoolean(AppSettings.MANUAL_FOCUS_SUPPORTED, false);
+        boolean hadVideoHdr = prefs.contains(AppSettings.VIDEO_HDR_SUPPORTED);
+        boolean videoHdrSupported = prefs.getBoolean(AppSettings.VIDEO_HDR_SUPPORTED, false);
+        boolean hadAudioZoom = prefs.contains(AppSettings.AUDIO_ZOOM_SUPPORTED);
+        boolean audioZoomSupported = prefs.getBoolean(AppSettings.AUDIO_ZOOM_SUPPORTED, false);
         String lastCamId = prefs.getString(AppSettings.LAST_CAMERA_ID, null);
         long lastUpdateCheck = prefs.getLong(AppSettings.LAST_UPDATE_CHECK_TIME, 0L);
 
@@ -412,6 +418,8 @@ final class SettingsBackupManager {
         if (hadRaw) editor.putBoolean(AppSettings.RAW_SUPPORTED, rawSupported);
         if (hadManual) editor.putBoolean(AppSettings.MANUAL_SUPPORTED, manualSupported);
         if (hadMf) editor.putBoolean(AppSettings.MANUAL_FOCUS_SUPPORTED, mfSupported);
+        if (hadVideoHdr) editor.putBoolean(AppSettings.VIDEO_HDR_SUPPORTED, videoHdrSupported);
+        if (hadAudioZoom) editor.putBoolean(AppSettings.AUDIO_ZOOM_SUPPORTED, audioZoomSupported);
         if (lastCamId != null) editor.putString(AppSettings.LAST_CAMERA_ID, lastCamId);
         if (lastUpdateCheck > 0L) editor.putLong(AppSettings.LAST_UPDATE_CHECK_TIME, lastUpdateCheck);
 

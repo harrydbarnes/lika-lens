@@ -122,6 +122,8 @@ final class AppSettings {
     static final String RAW_SUPPORTED = "raw_supported";
     static final String MANUAL_SUPPORTED = "manual_supported";
     static final String MANUAL_FOCUS_SUPPORTED = "manual_focus_supported";
+    static final String VIDEO_HDR_SUPPORTED = "video_hdr_supported";
+    static final String AUDIO_ZOOM_SUPPORTED = "audio_zoom_supported";
     static final String VISUAL_LEVEL = "visual_level";
     static final String DEFAULT_LENS = "default_lens";
     static final String LAST_CAMERA_ID = "last_camera_id";
