@@ -146,7 +146,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private TextView modeNote;
     private TextView messageView;
     private TextView outputModeText;
+    private FrameLayout galleryContainer;
     private ImageView galleryButton;
+    private View galleryProcessingScrim;
+    private android.widget.ProgressBar galleryProcessingSpinner;
     private TextView shutterValueText;
     private TextView isoValueText;
     private TextView whiteBalanceValueText;
@@ -197,10 +200,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 // +90° when aiming straight down at table / -90° straight up at sky
                 float tiltDegrees = (float) Math.toDegrees(Math.asin(Math.max(-1f, Math.min(1f, upZ))));
                 devicePitchAngle = tiltDegrees;
-                smoothPitchAngle = smoothPitchAngle * 0.82f + tiltDegrees * 0.18f;
-
-                smoothTiltX = smoothTiltX * 0.80f + upX * 0.20f;
-                smoothTiltY = smoothTiltY * 0.80f + upY * 0.20f;
+                if (!hasOrientationSample) {
+                    smoothPitchAngle = tiltDegrees;
+                    smoothTiltX = upX;
+                    smoothTiltY = upY;
+                } else {
+                    smoothPitchAngle = smoothPitchAngle * 0.82f + tiltDegrees * 0.18f;
+                    smoothTiltX = smoothTiltX * 0.80f + upX * 0.20f;
+                    smoothTiltY = smoothTiltY * 0.80f + upY * 0.20f;
+                }
 
                 // Roll angle around the camera optical axis (device Z)
                 float rollAngle = (float) Math.toDegrees(Math.atan2(upX, upY));
@@ -216,10 +224,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
                 float tiltDeg = (float) Math.toDegrees(Math.asin(Math.max(-1f, Math.min(1f, upZ))));
                 devicePitchAngle = tiltDeg;
-                smoothPitchAngle = smoothPitchAngle * 0.82f + tiltDeg * 0.18f;
-
-                smoothTiltX = smoothTiltX * 0.80f + upX * 0.20f;
-                smoothTiltY = smoothTiltY * 0.80f + upY * 0.20f;
+                if (!hasOrientationSample) {
+                    smoothPitchAngle = tiltDeg;
+                    smoothTiltX = upX;
+                    smoothTiltY = upY;
+                } else {
+                    smoothPitchAngle = smoothPitchAngle * 0.82f + tiltDeg * 0.18f;
+                    smoothTiltX = smoothTiltX * 0.80f + upX * 0.20f;
+                    smoothTiltY = smoothTiltY * 0.80f + upY * 0.20f;
+                }
 
                 float angle = (float) Math.toDegrees(Math.atan2(upX, upY));
                 updateHorizonRoll(angle);
@@ -231,6 +244,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     };
 
     private boolean wasHorizonLevel = false;
+    private boolean hasOrientationSample = false;
 
     private void updateHorizonRoll(float angle) {
         float normalized = ((angle % 360f) + 360f) % 360f;
@@ -240,7 +254,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (diff < -180f) diff += 360f;
 
         deviceRollAngle = diff;
-        smoothRollAngle = smoothRollAngle * 0.82f + deviceRollAngle * 0.18f;
+        if (!hasOrientationSample) {
+            smoothRollAngle = deviceRollAngle;
+        } else {
+            smoothRollAngle = smoothRollAngle * 0.82f + deviceRollAngle * 0.18f;
+        }
 
         boolean showLevel = AppSettings.getBoolean(this, AppSettings.VISUAL_LEVEL, true);
         if (showLevel && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
@@ -250,7 +268,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             boolean isLevel = isFlatLay
                     ? (Math.hypot(smoothTiltX, smoothTiltY) <= (deadband * 0.025f))
                     : (Math.abs(smoothRollAngle) <= deadband);
-            if (isLevel && !wasHorizonLevel) {
+            if (!hasOrientationSample) {
+                wasHorizonLevel = isLevel;
+            } else if (isLevel && !wasHorizonLevel) {
                 View target = gridOverlay != null ? gridOverlay : captureButton;
                 if (target != null) {
                     target.performHapticFeedback(HapticFeedbackConstants.CONFIRM, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
@@ -259,7 +279,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             } else if (!isLevel && (isFlatLay ? Math.hypot(smoothTiltX, smoothTiltY) > (deadband * 0.038f) : Math.abs(smoothRollAngle) > (deadband + 0.45f))) {
                 wasHorizonLevel = false;
             }
+        } else if (!hasOrientationSample) {
+            wasHorizonLevel = false;
         }
+        hasOrientationSample = true;
 
         float deltaMovement = Math.abs(deviceRollAngle - smoothRollAngle) + Math.abs(devicePitchAngle - smoothPitchAngle);
         deviceStabilityScore = deviceStabilityScore * 0.90f + deltaMovement * 0.10f;
@@ -943,6 +966,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         updateQuickButtons();
         updateReadouts();
         updateGalleryButton();
+        updateGalleryProcessingUi();
         String currentLeftHand = AppSettings.get(this, AppSettings.LEFT_HAND_MODE, AppSettings.LEFT_HAND_OFF);
         if (overlay != null && !currentLeftHand.equals(appliedLeftHandMode)) {
             rebuildCameraUiLayout();
@@ -1013,6 +1037,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (sensorManager != null) {
             sensorManager.unregisterListener(sensorEventListener);
         }
+        hasOrientationSample = false;
         if (textureView != null) {
             textureView.removeCallbacks(exposureAidsSampler);
         }
@@ -1540,14 +1565,33 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         shootRow = new FrameLayout(this);
         shootRow.setClipChildren(false);
         shootRow.setClipToPadding(false);
+        galleryContainer = new FrameLayout(this);
+        galleryContainer.setBackground(round(0xff202626, 14, 0x777d8580, dp(1)));
+        galleryContainer.setForeground(round(0x00000000, 14, 0x777d8580, dp(1)));
+        galleryContainer.setClipToOutline(true);
+
         galleryButton = new ImageView(this);
         galleryButton.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        galleryButton.setBackground(round(0xff202626, 14, 0x777d8580, dp(1)));
-        galleryButton.setClipToOutline(true);
         galleryButton.setContentDescription("Open the latest frame. Long press for the library.");
         galleryButton.setImageResource(R.drawable.ic_lika_lens);
         galleryButton.setOnClickListener(v -> { hapticClick(v); openLatestFrame(); });
         galleryButton.setOnLongClickListener(v -> { hapticClick(v); openLibrary(); return true; });
+        galleryContainer.addView(galleryButton, new FrameLayout.LayoutParams(-1, -1));
+
+        galleryProcessingScrim = new View(this);
+        galleryProcessingScrim.setBackgroundColor(0x880b0d0e);
+        galleryProcessingScrim.setVisibility(View.GONE);
+        galleryProcessingScrim.setClickable(false);
+        galleryProcessingScrim.setFocusable(false);
+        galleryContainer.addView(galleryProcessingScrim, new FrameLayout.LayoutParams(-1, -1));
+
+        galleryProcessingSpinner = new android.widget.ProgressBar(this);
+        galleryProcessingSpinner.setIndeterminate(true);
+        galleryProcessingSpinner.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        galleryProcessingSpinner.setVisibility(View.GONE);
+        galleryProcessingSpinner.setClickable(false);
+        galleryProcessingSpinner.setFocusable(false);
+        galleryContainer.addView(galleryProcessingSpinner, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
 
         captureButton = label("", 12, BG, false);
         captureButton.setGravity(Gravity.CENTER);
@@ -1620,13 +1664,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         });
     }
 
+    private View gallerySlotView() {
+        return galleryContainer != null ? galleryContainer : galleryButton;
+    }
+
     private void restoreShootRow() {
         if (shootRow == null) return;
         shootRow.removeAllViews();
         Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
         boolean swapShutterRow = AppSettings.isLeftHandSwapShutterRow(this);
-        if (galleryButton != null) {
-            if (galleryButton.getParent() != null) ((ViewGroup) galleryButton.getParent()).removeView(galleryButton);
+        View gallerySlot = gallerySlotView();
+        if (gallerySlot != null) {
+            if (gallerySlot.getParent() != null) ((ViewGroup) gallerySlot.getParent()).removeView(gallerySlot);
             FrameLayout.LayoutParams galleryLp = new FrameLayout.LayoutParams(
                     dp(54), dp(54), (swapShutterRow ? Gravity.END : Gravity.START) | Gravity.CENTER_VERTICAL);
             if (swapShutterRow) {
@@ -1634,7 +1683,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             } else {
                 galleryLp.leftMargin = dp(24) + safeInsets.left;
             }
-            shootRow.addView(galleryButton, galleryLp);
+            shootRow.addView(gallerySlot, galleryLp);
         }
         if (shutterFrame != null) {
             if (shutterFrame.getParent() != null) ((ViewGroup) shutterFrame.getParent()).removeView(shutterFrame);
@@ -2018,10 +2067,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             LinearLayout gripBottomRow = new LinearLayout(this);
             gripBottomRow.setOrientation(LinearLayout.HORIZONTAL);
             gripBottomRow.setGravity(Gravity.CENTER);
+            View gallerySlot = gallerySlotView();
             if (!swapShutterRow) {
-                if (galleryButton != null) {
-                    if (galleryButton.getParent() != null) ((ViewGroup) galleryButton.getParent()).removeView(galleryButton);
-                    gripBottomRow.addView(galleryButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+                if (gallerySlot != null) {
+                    if (gallerySlot.getParent() != null) ((ViewGroup) gallerySlot.getParent()).removeView(gallerySlot);
+                    gripBottomRow.addView(gallerySlot, new LinearLayout.LayoutParams(dp(44), dp(44)));
                 }
                 if (flipButton != null) {
                     if (flipButton.getParent() != null) ((ViewGroup) flipButton.getParent()).removeView(flipButton);
@@ -2036,11 +2086,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     flipButton.setPadding(dp(9), dp(9), dp(9), dp(9));
                     gripBottomRow.addView(flipButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
                 }
-                if (galleryButton != null) {
-                    if (galleryButton.getParent() != null) ((ViewGroup) galleryButton.getParent()).removeView(galleryButton);
+                if (gallerySlot != null) {
+                    if (gallerySlot.getParent() != null) ((ViewGroup) gallerySlot.getParent()).removeView(gallerySlot);
                     LinearLayout.LayoutParams galleryLp = new LinearLayout.LayoutParams(dp(44), dp(44));
                     galleryLp.leftMargin = dp(8);
-                    gripBottomRow.addView(galleryButton, galleryLp);
+                    gripBottomRow.addView(gallerySlot, galleryLp);
                 }
             }
             sideGrip.addView(gripBottomRow, new LinearLayout.LayoutParams(-2, -2));
@@ -2290,6 +2340,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (flipButton != null) flipButton.setEnabled(liveSwitchAvailable);
         if (settingsButton != null) settingsButton.setEnabled(idleControlsAvailable);
         if (galleryButton != null) galleryButton.setEnabled(idleControlsAvailable);
+        if (galleryContainer != null) galleryContainer.setAlpha(idleControlsAvailable ? 1f : 0.45f);
         if (videoFpsButton != null) videoFpsButton.setEnabled(idleControlsAvailable);
         if (videoAspectButton != null) videoAspectButton.setEnabled(idleControlsAvailable);
         if (videoStabButton != null) videoStabButton.setEnabled(idleControlsAvailable);
@@ -2408,7 +2459,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         boolean mirror = isFrontCamera() && AppSettings.getBoolean(this, AppSettings.MIRROR_FRONT, true);
         String vAspect = AppSettings.get(this, AppSettings.VIDEO_ASPECT, "16:9 Widescreen");
         String targetAspect = vAspect.contains("2.39") ? "2.39:1" : "16:9";
+        final long stillJob = captureJobs.begin();
+        updateGalleryProcessingUi();
         processor.execute(() -> {
+            boolean stillSucceeded = false;
             try {
                 ByteArrayOutputStream bos = new ByteArrayOutputStream();
                 frameBmp.compress(Bitmap.CompressFormat.JPEG, 95, bos);
@@ -2419,14 +2473,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
                     String prefix = resolvedFilePrefix();
                     writeJpeg(developed, prefix + "_STILL_" + stamp + ".jpg", null, "");
+                    Bitmap quickThumbnail = createGalleryThumbnail(developed);
                     developed.recycle();
+                    stillSucceeded = true;
                     runOnUiThread(() -> {
                         showMessage("Video still saved to Photos");
-                        updateGalleryButton();
+                        applyGalleryThumbnail(quickThumbnail);
                     });
                 }
             } catch (Exception e) {
                 runOnUiThread(() -> showMessage("Could not save video still."));
+            } finally {
+                captureJobs.finish(stillJob, stillSucceeded);
+                runOnUiThread(this::updateGalleryProcessingUi);
             }
         });
     }
@@ -3922,13 +3981,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void dispatchCompletedCapture(Image image, TotalCaptureResult result, CaptureRecipe recipe) {
+        final long renderJob = captureJobs.begin();
         stillCaptureState = StillCaptureState.IDLE;
-        runOnUiThread(() -> captureButton.setAlpha(1f));
+        runOnUiThread(() -> {
+            if (captureButton != null) captureButton.setAlpha(1f);
+            updateGalleryProcessingUi();
+        });
         CameraCharacteristics capturedCharacteristics = recipe.characteristics;
         int capturedOrientation = recipe.orientation;
         RawDeveloper.Look captureLook = recipe.look;
         String capturedAspect = captureLook.aspectRatio;
-        final long renderJob = captureJobs.begin();
         processor.execute(() -> {
             boolean renderSucceeded = false;
             boolean raw = image.getFormat() == ImageFormat.RAW_SENSOR;
@@ -4016,20 +4078,27 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     }
                 }
                 if (developed == null) throw new IllegalStateException("Renderer returned no image");
+                Bitmap quickThumbnail = null;
                 if (!raw || !"DNG only".equals(format) || !dngSaved) {
                     captureJobs.move(renderJob, CaptureJobs.Phase.PUBLISHING);
                     writeJpeg(developed, baseFileStem + ".jpg", result, orgSub);
+                    quickThumbnail = createGalleryThumbnail(developed);
                 }
                 developed.recycle();
                 renderSucceeded = true;
+                final Bitmap finalThumbnail = quickThumbnail;
                 String resultMessage = dngWarning != null ? "Photo rendered; DNG export failed"
                         : !raw ? "JPEG fallback captured and rendered"
                         : "DNG only".equals(format) ? "DNG original saved"
                         : dngSaved ? "DNG original + Lika Lens render saved" : "Lika Lens RAW render saved";
                 runOnUiThread(() -> {
-                    if (isFinishing() || isDestroyed()) return;
+                    if (isFinishing() || isDestroyed()) {
+                        if (finalThumbnail != null && !finalThumbnail.isRecycled()) finalThumbnail.recycle();
+                        return;
+                    }
                     showMessage(resultMessage);
-                    updateGalleryButton();
+                    if (finalThumbnail != null) applyGalleryThumbnail(finalThumbnail);
+                    else updateGalleryButton();
                 });
             } catch (Exception e) {
                 Log.e(TAG, "Photo development failed", e);
@@ -4045,7 +4114,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 });
             } finally {
                 try { releaseCapturedImage(image); }
-                finally { captureJobs.finish(renderJob,renderSucceeded); }
+                finally {
+                    captureJobs.finish(renderJob, renderSucceeded);
+                    runOnUiThread(this::updateGalleryProcessingUi);
+                }
             }
         });
     }
@@ -4073,6 +4145,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         } else {
             stillCaptureState = StillCaptureState.CAPTURING;
             captureButton.setAlpha(.65f);
+            updateGalleryProcessingUi();
             triggerCaptureWithScreenFlashIfNeeded();
         }
     }
@@ -4094,6 +4167,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (remaining <= 0) {
                     stillCaptureState = StillCaptureState.CAPTURING;
                     setTimerTorchPulse(false);
+                    updateGalleryProcessingUi();
                     triggerCaptureWithScreenFlashIfNeeded();
                     return;
                 }
@@ -4128,6 +4202,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         setTimerTorchPulse(false);
         if (captureButton != null) captureButton.setAlpha(1.0f);
+        updateGalleryProcessingUi();
         showMessage("Timer canceled");
     }
 
@@ -4155,6 +4230,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if(screenFlashOverlay!=null) { screenFlashOverlay.animate().cancel();screenFlashOverlay.setVisibility(View.GONE); }
             restoreScreenFlashBrightness();
             if (wasDelayed && captureButton != null) captureButton.setAlpha(1.0f);
+            updateGalleryProcessingUi();
         });
     }
 
@@ -4163,6 +4239,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         String flashMode = AppSettings.get(this, AppSettings.FLASH, "Off");
         if (isFrontCamera() && !"Off".equals(flashMode) && screenFlashOverlay != null) {
             stillCaptureState = StillCaptureState.SCREEN_FLASH;
+            updateGalleryProcessingUi();
             runOnUiThread(() -> {
                 WindowManager.LayoutParams lp = getWindow().getAttributes();
                 if(Float.isNaN(originalFlashBrightness)) originalFlashBrightness=lp.screenBrightness;
@@ -4187,6 +4264,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             });
         } else {
             stillCaptureState = StillCaptureState.CAPTURING;
+            updateGalleryProcessingUi();
             performCapture();
         }
     }
@@ -4200,7 +4278,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void performCapture() {
         if (captureSession == null || cameraDevice == null) {
             stillCaptureState = StillCaptureState.IDLE;
-            runOnUiThread(() -> { if (captureButton != null) captureButton.setAlpha(1f); });
+            runOnUiThread(() -> {
+                if (captureButton != null) captureButton.setAlpha(1f);
+                updateGalleryProcessingUi();
+            });
             return;
         }
         triggerShutterWink();
@@ -4263,6 +4344,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 activeCapture = captureToken;
             }
             final InFlightCapture<Image, TotalCaptureResult> submittedCapture = captureToken;
+            runOnUiThread(this::updateGalleryProcessingUi);
             captureSession.capture(still.build(), new CameraCaptureSession.CaptureCallback() {
                 @Override public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
                     InFlightCapture.CompletedPair<Image, TotalCaptureResult> pair = null;
@@ -4286,7 +4368,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         }
                     }
                     stillCaptureState = StillCaptureState.IDLE;
-                    runOnUiThread(() -> { captureButton.setAlpha(1f); showMessage("Capture failed. Try again."); });
+                    runOnUiThread(() -> {
+                        captureButton.setAlpha(1f);
+                        updateGalleryProcessingUi();
+                        showMessage("Capture failed. Try again.");
+                    });
                 }
             }, cameraHandler);
         } catch (CameraAccessException | IllegalStateException e) {
@@ -4300,6 +4386,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             stillCaptureState = StillCaptureState.IDLE;
             captureButton.setAlpha(1f);
+            updateGalleryProcessingUi();
             showMessage("Camera capture failed.");
         }
     }
@@ -4813,26 +4900,105 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         startActivity(new Intent(this, GalleryActivity.class));
     }
 
+    private boolean isCaptureProcessing() {
+        return stillCaptureState == StillCaptureState.CAPTURING
+                || stillCaptureState == StillCaptureState.SCREEN_FLASH
+                || captureJobs.size() > 0;
+    }
+
+    private void updateGalleryProcessingUi() {
+        if (galleryContainer == null) return;
+        boolean processing = isCaptureProcessing();
+        if (galleryProcessingScrim != null) {
+            galleryProcessingScrim.setVisibility(processing ? View.VISIBLE : View.GONE);
+        }
+        if (galleryProcessingSpinner != null) {
+            galleryProcessingSpinner.setVisibility(processing ? View.VISIBLE : View.GONE);
+        }
+        galleryContainer.setForeground(round(0x00000000, 14,
+                processing ? ACCENT : 0x777d8580, dp(processing ? 2 : 1)));
+    }
+
+    private Bitmap createGalleryThumbnail(Bitmap source) {
+        if (source == null || source.isRecycled()) return null;
+        int w = source.getWidth();
+        int h = source.getHeight();
+        if (w <= 0 || h <= 0) return null;
+        int maxDim = 192;
+        if (w <= maxDim && h <= maxDim) {
+            Bitmap copy = source.copy(Bitmap.Config.RGB_565, false);
+            return copy != null ? copy : Bitmap.createScaledBitmap(source, w, h, true);
+        }
+        float scale = Math.min(maxDim / (float) w, maxDim / (float) h);
+        int targetW = Math.max(1, Math.round(w * scale));
+        int targetH = Math.max(1, Math.round(h * scale));
+        return Bitmap.createScaledBitmap(source, targetW, targetH, true);
+    }
+
+    private void applyGalleryThumbnail(Bitmap thumbnail) {
+        if (galleryButton == null || isFinishing() || isDestroyed()) {
+            if (thumbnail != null && !thumbnail.isRecycled()) thumbnail.recycle();
+            return;
+        }
+        if (thumbnail == null) {
+            updateGalleryButton();
+            return;
+        }
+        galleryButton.setImageBitmap(thumbnail);
+        if (galleryContainer != null) {
+            galleryContainer.animate().cancel();
+            galleryContainer.setScaleX(0.86f);
+            galleryContainer.setScaleY(0.86f);
+            galleryContainer.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(180)
+                    .setInterpolator(new DecelerateInterpolator())
+                    .start();
+        }
+    }
+
     private void updateGalleryButton() {
-        if(isFinishing() || isDestroyed() || ioExecutor.isShutdown()) return;
+        if (isFinishing() || isDestroyed() || ioExecutor.isShutdown()) return;
         if (galleryButton == null) return;
         ioExecutor.execute(() -> {
             PhotoRepository.Photo latest = PhotoRepository.latest(this);
             if (latest == null) {
                 runOnUiThread(() -> {
-                    if (galleryButton != null) galleryButton.setImageResource(R.drawable.ic_lika_lens);
+                    if (galleryButton != null && !isFinishing() && !isDestroyed()) {
+                        galleryButton.setImageResource(R.drawable.ic_lika_lens);
+                    }
                 });
                 return;
+            }
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            try (InputStream stream = getContentResolver().openInputStream(latest.uri)) {
+                if (stream == null) return;
+                BitmapFactory.decodeStream(stream, null, bounds);
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to inspect latest photo bounds for gallery button", e);
+                return;
+            }
+            int sample = 1;
+            while (bounds.outWidth > 0 && bounds.outHeight > 0
+                    && bounds.outWidth / (sample * 2) >= 192
+                    && bounds.outHeight / (sample * 2) >= 192) {
+                sample *= 2;
             }
             try (InputStream stream = getContentResolver().openInputStream(latest.uri)) {
                 if (stream == null) return;
                 BitmapFactory.Options options = new BitmapFactory.Options();
-                options.inSampleSize = 16;
+                options.inSampleSize = sample;
                 options.inPreferredConfig = Bitmap.Config.RGB_565;
                 Bitmap thumbnail = BitmapFactory.decodeStream(stream, null, options);
                 if (thumbnail != null) {
                     runOnUiThread(() -> {
-                        if (galleryButton != null) galleryButton.setImageBitmap(thumbnail);
+                        if (galleryButton != null && !isFinishing() && !isDestroyed()) {
+                            galleryButton.setImageBitmap(thumbnail);
+                        } else if (!thumbnail.isRecycled()) {
+                            thumbnail.recycle();
+                        }
                     });
                 }
             } catch (Exception e) {
@@ -6763,6 +6929,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (textureView != null) textureView.animate().cancel();
         cameraLifecycleState = CameraLifecycleState.CLOSING;
         stillCaptureState = StillCaptureState.IDLE;
+        runOnUiThread(this::updateGalleryProcessingUi);
         closeSessionOnly();
         if (cameraDevice != null) { cameraDevice.close(); cameraDevice = null; }
         closeReader(rawReader); rawReader = null;

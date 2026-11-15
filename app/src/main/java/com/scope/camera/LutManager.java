@@ -206,6 +206,14 @@ final class LutManager {
 
     public static List<String> getAvailableLutNames(Context context) {
         List<String> list = new ArrayList<>(BUILT_IN_LUTS);
+        for (String name : getCustomLutNames(context)) {
+            if (!list.contains(name)) list.add(name);
+        }
+        return list;
+    }
+
+    public static List<String> getCustomLutNames(Context context) {
+        List<String> list = new ArrayList<>();
         File dir = getLutsDir(context);
         if (dir != null && dir.exists() && dir.isDirectory()) {
             File[] files = dir.listFiles((d, name) -> name.toLowerCase(Locale.US).endsWith(".cube"));
@@ -221,6 +229,58 @@ final class LutManager {
             }
         }
         return list;
+    }
+
+    static String sanitizeLutName(String rawName) {
+        if (rawName == null) return "imported_lut";
+        String baseName = rawName.trim();
+        if (baseName.toLowerCase(Locale.US).endsWith(".cube")) {
+            baseName = baseName.substring(0, baseName.length() - 5);
+        }
+        baseName = baseName.replaceAll("[^A-Za-z0-9_ -]", "_").trim();
+        return baseName.isEmpty() ? "imported_lut" : baseName;
+    }
+
+    static String readCustomLutText(Context context, String name) {
+        if (context == null || name == null || isBuiltIn(name)) return null;
+        File dir = getLutsDir(context);
+        if (dir == null || !dir.exists()) return null;
+        File file = new File(dir, name.endsWith(".cube") ? name : (name + ".cube"));
+        if (!file.exists() || !file.isFile()) return null;
+        try (InputStream in = new FileInputStream(file)) {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int len;
+            while ((len = in.read(buf)) > 0) {
+                out.write(buf, 0, len);
+            }
+            return out.toString(StandardCharsets.UTF_8.name());
+        } catch (IOException e) {
+            Log.w(TAG, "Failed to read custom LUT text: " + file, e);
+            return null;
+        }
+    }
+
+    static boolean saveCustomLut(Context context, String rawName, String cubeText) {
+        if (context == null || cubeText == null || cubeText.trim().isEmpty()) return false;
+        String baseName = sanitizeLutName(rawName);
+        if (isBuiltIn(baseName)) return false;
+        init(context);
+        byte[] bytes = cubeText.getBytes(StandardCharsets.UTF_8);
+        try (InputStream validateIn = new java.io.ByteArrayInputStream(bytes)) {
+            Lut3D parsed = parseCube(validateIn, baseName);
+            if (parsed == null) return false;
+            File dest = new File(getLutsDir(context), baseName + ".cube");
+            try (FileOutputStream out = new FileOutputStream(dest)) {
+                out.write(bytes);
+            }
+            sCache.put(baseName, parsed);
+            LiveLookPreview.clearCache();
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to save custom LUT: " + baseName, e);
+            return false;
+        }
     }
 
     public static Lut3D get(String name) {
@@ -287,12 +347,7 @@ final class LutManager {
             Log.w(TAG, "Failed to query display name for LUT URI: " + uri, e);
         }
 
-        String baseName = displayName;
-        if (baseName.toLowerCase(Locale.US).endsWith(".cube")) {
-            baseName = baseName.substring(0, baseName.length() - 5);
-        }
-        baseName = baseName.replaceAll("[^A-Za-z0-9_ -]", "_").trim();
-        if (baseName.isEmpty()) baseName = "imported_lut";
+        String baseName = sanitizeLutName(displayName);
 
         try (InputStream in = context.getContentResolver().openInputStream(uri)) {
             if (in == null) return null;
@@ -311,6 +366,7 @@ final class LutManager {
                 }
             }
             sCache.put(baseName, parsed);
+            LiveLookPreview.clearCache();
             return baseName;
         } catch (Exception e) {
             return null;
@@ -320,6 +376,7 @@ final class LutManager {
     public static boolean deleteCustomLut(Context context, String name) {
         if (name == null || isBuiltIn(name)) return false;
         sCache.remove(name);
+        LiveLookPreview.clearCache();
         File dir = getLutsDir(context);
         if (dir != null) {
             File f = new File(dir, name.endsWith(".cube") ? name : (name + ".cube"));

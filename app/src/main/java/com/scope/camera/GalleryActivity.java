@@ -1,7 +1,6 @@
 package com.scope.camera;
 
 import android.app.Activity;
-import android.app.ActivityOptions;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -256,7 +255,6 @@ public class GalleryActivity extends Activity {
 
         ImageView image = new ImageView(this);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        image.setTransitionName("scope_photo");
         Bitmap thumbnail = decodeThumbnail(photo.uri);
         if (thumbnail != null) image.setImageBitmap(thumbnail);
         tile.addView(image, new FrameLayout.LayoutParams(-1, -1));
@@ -295,7 +293,7 @@ public class GalleryActivity extends Activity {
                 updateSelectionBar();
                 loadPhotos();
             } else {
-                openPhoto(photo, image);
+                openPhoto(photo);
             }
         });
 
@@ -398,14 +396,13 @@ public class GalleryActivity extends Activity {
         }
     }
 
-    private void openPhoto(PhotoRepository.Photo photo, ImageView image) {
+    private void openPhoto(PhotoRepository.Photo photo) {
         Intent view = new Intent(this, PhotoViewerActivity.class);
         view.putExtra(PhotoViewerActivity.EXTRA_URI, photo.uri.toString());
         view.putExtra(PhotoViewerActivity.EXTRA_NAME, photo.name);
         view.putExtra(PhotoViewerActivity.EXTRA_FROM_LIBRARY, true);
         view.putExtra(PhotoEditorActivity.EXTRA_KEY, PhotoRepository.archiveKey(photo.name));
-        Bundle transition = ActivityOptions.makeSceneTransitionAnimation(this, image, "scope_photo").toBundle();
-        startActivity(view, transition);
+        startActivity(view);
     }
 
     private void chooseImport() {

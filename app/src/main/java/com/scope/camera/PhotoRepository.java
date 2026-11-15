@@ -45,7 +45,11 @@ final class PhotoRepository {
         return photos;
     }
 
+    static final String MEDIASTORE_SORT_ORDER =
+            MediaStore.Images.Media.DATE_ADDED + " DESC, " + MediaStore.Images.Media._ID + " DESC";
+
     static Photo latest(Context context) {
+        Photo newest = null;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             String[] columns = {MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME,
                     MediaStore.Images.Media.DATE_ADDED, MediaStore.Images.Media.DATE_MODIFIED};
@@ -57,14 +61,14 @@ final class PhotoRepository {
                             + MediaStore.Images.Media.MIME_TYPE + "=?)",
                     new String[]{Environment.DIRECTORY_PICTURES + "/Lika Lens/%",
                             Environment.DIRECTORY_PICTURES + "/SCOPE/%", "image/jpeg", "image/gif"},
-                    MediaStore.Images.Media.DATE_ADDED + " DESC LIMIT 1")) {
+                    MEDIASTORE_SORT_ORDER)) {
                 if (cursor != null && cursor.moveToFirst()) {
                     long id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID));
                     String name = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME));
                     long added = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED));
                     long modified = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_MODIFIED));
                     long timestamp = (added > 0 ? added : modified) * 1000L;
-                    return new Photo(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id), name, timestamp);
+                    newest = new Photo(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id), name, timestamp);
                 }
             } catch (RuntimeException e) {
                 Log.w(TAG, "Failed to query latest photo from MediaStore", e);
@@ -73,9 +77,15 @@ final class PhotoRepository {
         List<Photo> photos = queryAppFolder(context);
         if (!photos.isEmpty()) {
             Collections.sort(photos, (a, b) -> Long.compare(b.timestampMillis, a.timestampMillis));
-            return photos.get(0);
+            newest = pickNewer(newest, photos.get(0));
         }
-        return null;
+        return newest;
+    }
+
+    static Photo pickNewer(Photo first, Photo second) {
+        if (first == null) return second;
+        if (second == null) return first;
+        return second.timestampMillis > first.timestampMillis ? second : first;
     }
 
     static String archiveKey(String displayName) {
@@ -112,7 +122,7 @@ final class PhotoRepository {
                         + MediaStore.Images.Media.MIME_TYPE + "=?)",
                 new String[]{Environment.DIRECTORY_PICTURES + "/Lika Lens/%",
                         Environment.DIRECTORY_PICTURES + "/SCOPE/%", "image/jpeg", "image/gif"},
-                MediaStore.Images.Media.DATE_ADDED + " DESC")) {
+                MEDIASTORE_SORT_ORDER)) {
             if (cursor == null) return photos;
             int idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID);
             int nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME);

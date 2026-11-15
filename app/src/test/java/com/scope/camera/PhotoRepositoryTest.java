@@ -44,4 +44,23 @@ public class PhotoRepositoryTest {
         assertNotNull(nullNamePhoto);
         assertFalse(nullNamePhoto.isGif);
     }
+
+    @Test
+    public void testMediaStoreSortOrderAvoidsLimitClause() {
+        String sort = PhotoRepository.MEDIASTORE_SORT_ORDER;
+        assertFalse(sort.toUpperCase(java.util.Locale.US).contains("LIMIT"));
+        assertTrue(sort.contains("_id DESC"));
+    }
+
+    @Test
+    public void testPickNewerSelectsMostRecentPhoto() {
+        PhotoRepository.Photo older = new PhotoRepository.Photo(null, "older.jpg", 1000L);
+        PhotoRepository.Photo newer = new PhotoRepository.Photo(null, "newer.jpg", 2000L);
+
+        assertEquals(newer, PhotoRepository.pickNewer(older, newer));
+        assertEquals(newer, PhotoRepository.pickNewer(newer, older));
+        assertEquals(older, PhotoRepository.pickNewer(older, null));
+        assertEquals(newer, PhotoRepository.pickNewer(null, newer));
+        assertEquals(older, PhotoRepository.pickNewer(older, new PhotoRepository.Photo(null, "tie.jpg", 1000L)));
+    }
 }

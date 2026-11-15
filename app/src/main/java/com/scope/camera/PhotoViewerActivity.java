@@ -11,9 +11,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.transition.ChangeBounds;
-import android.transition.ChangeImageTransform;
-import android.transition.TransitionSet;
 import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
@@ -119,13 +116,8 @@ public class PhotoViewerActivity extends Activity {
                     this::finishAfterTransition
             );
         }
-        getWindow().requestFeature(Window.FEATURE_ACTIVITY_TRANSITIONS);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
-        TransitionSet enter = new TransitionSet().addTransition(new ChangeBounds()).addTransition(new ChangeImageTransform()).setDuration(240);
-        TransitionSet exit = new TransitionSet().addTransition(new ChangeBounds()).addTransition(new ChangeImageTransform()).setDuration(220);
-        getWindow().setSharedElementEnterTransition(enter);
-        getWindow().setSharedElementReturnTransition(exit);
 
         String uriValue = getIntent().getStringExtra(EXTRA_URI);
         photoUri = uriValue == null ? null : Uri.parse(uriValue);
@@ -138,7 +130,15 @@ public class PhotoViewerActivity extends Activity {
 
         photoView = new ImageView(this);
         photoView.setScaleType(ImageView.ScaleType.MATRIX);
-        photoView.setTransitionName("scope_photo");
+        photoView.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            int newW = right - left;
+            int newH = bottom - top;
+            int oldW = oldRight - oldLeft;
+            int oldH = oldBottom - oldTop;
+            if ((newW != oldW || newH != oldH) && newW > 0 && newH > 0 && currentScale <= 1.001f) {
+                fitImageToView();
+            }
+        });
         root.addView(photoView, new FrameLayout.LayoutParams(-1, -1));
 
         initTouchGestures();
@@ -738,7 +738,11 @@ public class PhotoViewerActivity extends Activity {
                                 android.graphics.ImageDecoder.createSource(getContentResolver(),uri));
                         mainHandler.post(() -> {
                             if(!imageJob.move(ticket,JobState.Phase.READY) || isDestroyed() || isFinishing()) return;
+                            imageWidth=drawable.getIntrinsicWidth();
+                            imageHeight=drawable.getIntrinsicHeight();
+                            currentScale=1f;
                             photoView.setImageDrawable(drawable);
+                            fitImageToView();
                             if(viewerActive && drawable instanceof android.graphics.drawable.AnimatedImageDrawable)
                                 ((android.graphics.drawable.AnimatedImageDrawable)drawable).start();
                             photoView.post(this::fitImageToView);
@@ -760,7 +764,9 @@ public class PhotoViewerActivity extends Activity {
                     if(!imageJob.move(ticket,JobState.Phase.READY) || isDestroyed() || isFinishing()) { bitmap.recycle();return; }
                     Bitmap old=developedBitmap;developedBitmap=bitmap;
                     imageWidth=bitmap.getWidth();imageHeight=bitmap.getHeight();currentScale=1f;
-                    photoView.setImageBitmap(bitmap);photoView.post(this::fitImageToView);
+                    photoView.setImageBitmap(bitmap);
+                    fitImageToView();
+                    photoView.post(this::fitImageToView);
                     if(old!=null && old!=bitmap && !old.isRecycled()) old.recycle();
                     if(infoVisible) populateInfoData();
                     if(hasRaw && rawOriginalBitmap==null) preloadRawOriginal(key,imageWidth,imageHeight);

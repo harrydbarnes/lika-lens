@@ -12,7 +12,9 @@ import android.graphics.Color;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
@@ -33,6 +35,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.content.Intent;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -65,6 +68,7 @@ public class SettingsActivity extends Activity {
     private TextView heroCompareBadge;
     private Bitmap baseHeroBitmap;
     private Bitmap cachedHeroSource;
+    private Bitmap currentHeroBitmap;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final JobState heroJob = new JobState();
     private final java.util.concurrent.ExecutorService heroWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
@@ -72,6 +76,8 @@ public class SettingsActivity extends Activity {
     private HeroCompare heroCompare = HeroCompare.GRADED;
     private Bitmap heroGradedBitmap;
     private Runnable heroRender;
+    private String pendingBackupName;
+    private String pendingBackupJson;
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -406,6 +412,11 @@ public class SettingsActivity extends Activity {
                 new String[]{"320px · Compact & Light", "480px · Standard (Recommended)", "640px · Pro HD"}, "480px · Standard (Recommended)");
         addSwitch("Boomerang forward/reverse loop", "Ping-pong sequence for burst animations", AppSettings.GIF_BOOMERANG, false);
 
+        beginSection("BACKUP & RESTORE", "Save, import or share your settings, custom film recipes and LUTs.");
+        addInfo("Save named backup", "Export settings, recipes and custom LUTs to a named file", ACCENT, () -> showBackupNameDialog(false));
+        addInfo("Share backup", "Name a backup file and share it with another app or user", ACCENT, () -> showBackupNameDialog(true));
+        addInfo("Import backup", "Restore settings, custom recipes and LUTs from a backup file", 0xffe6eae4, this::launchBackupImportPicker);
+
         beginSection("UPDATES & RELEASES", "Continuous delivery from GitHub releases with Stable and Beta channels.");
         addChoice("Update release channel", "Choose between continuous beta builds or stable releases",
                 AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_CHOICES, AppSettings.UPDATE_CHANNEL_BETA);
@@ -486,6 +497,54 @@ public class SettingsActivity extends Activity {
         currentSectionCard.addView(row);
     }
 
+    static int[] computeHeroScaledDimensions(int srcW, int srcH, int maxDimension) {
+        if (srcW <= 0 || srcH <= 0 || maxDimension <= 0) return new int[]{1, 1};
+        float scale = Math.min(1f, maxDimension / (float) Math.max(srcW, srcH));
+        return new int[]{
+                Math.max(1, Math.round(srcW * scale)),
+                Math.max(1, Math.round(srcH * scale))
+        };
+    }
+
+    /**
+     * Computes uniform cover scaling and translation so portrait/square hero previews frame the
+     * upper-middle region (~1/6 to 4/6 down from the top, centered around 5/12) instead of stretching.
+     */
+    static float[] computeHeroUpperMiddleTransform(int bmpW, int bmpH, int viewW, int viewH) {
+        if (bmpW <= 0 || bmpH <= 0 || viewW <= 0 || viewH <= 0) {
+            return new float[]{1f, 0f, 0f};
+        }
+        float scale = Math.max(viewW / (float) bmpW, viewH / (float) bmpH);
+        float scaledW = bmpW * scale;
+        float scaledH = bmpH * scale;
+        float dx = (viewW - scaledW) * 0.5f;
+        float anchorFraction = 5f / 12f; // Midpoint of [1/6, 4/6] from top
+        float idealDy = viewH * 0.5f - scaledH * anchorFraction;
+        float minDy = viewH - scaledH;
+        float dy = Math.max(minDy, Math.min(0f, idealDy));
+        return new float[]{scale, dx, dy};
+    }
+
+    private void setHeroBitmap(Bitmap bitmap) {
+        currentHeroBitmap = bitmap;
+        if (heroImageView == null) return;
+        heroImageView.setImageBitmap(bitmap);
+        applyHeroImageMatrix();
+    }
+
+    private void applyHeroImageMatrix() {
+        if (heroImageView == null || currentHeroBitmap == null || currentHeroBitmap.isRecycled()) return;
+        int viewW = heroImageView.getWidth();
+        int viewH = heroImageView.getHeight();
+        if (viewW <= 0 || viewH <= 0) return;
+        float[] transform = computeHeroUpperMiddleTransform(
+                currentHeroBitmap.getWidth(), currentHeroBitmap.getHeight(), viewW, viewH);
+        Matrix matrix = new Matrix();
+        matrix.setScale(transform[0], transform[0]);
+        matrix.postTranslate(transform[1], transform[2]);
+        heroImageView.setImageMatrix(matrix);
+    }
+
     private void addEditorHero() {
         LinearLayout previewCard = new LinearLayout(this);
         previewCard.setOrientation(LinearLayout.VERTICAL);
@@ -497,14 +556,34 @@ public class SettingsActivity extends Activity {
         frame.setClipToOutline(true);
 
         heroImageView = new ImageView(this);
-        heroImageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        heroImageView.setScaleType(ImageView.ScaleType.MATRIX);
+        heroImageView.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            if ((right - left) != (oldRight - oldLeft) || (bottom - top) != (oldBottom - oldTop)) {
+                applyHeroImageMatrix();
+            }
+        });
         frame.addView(heroImageView, new FrameLayout.LayoutParams(-1, dp(192)));
+
+        currentHeroBitmap = null;
+        if (cachedHeroSource != null && !cachedHeroSource.isRecycled()) {
+            cachedHeroSource.recycle();
+            cachedHeroSource = null;
+        }
+        if (heroGradedBitmap != null && !heroGradedBitmap.isRecycled()) {
+            heroGradedBitmap.recycle();
+            heroGradedBitmap = null;
+        }
+        if (baseHeroBitmap != null && !baseHeroBitmap.isRecycled()) {
+            baseHeroBitmap.recycle();
+            baseHeroBitmap = null;
+        }
 
         Uri latest = latestScopeImage();
         baseHeroBitmap = latest == null ? null : decodePreview(latest, dp(640), dp(400));
         if (baseHeroBitmap != null) {
-            cachedHeroSource = Bitmap.createScaledBitmap(baseHeroBitmap, 360, 225, true);
-            heroImageView.setImageBitmap(baseHeroBitmap);
+            int[] scaledDims = computeHeroScaledDimensions(baseHeroBitmap.getWidth(), baseHeroBitmap.getHeight(), 480);
+            cachedHeroSource = Bitmap.createScaledBitmap(baseHeroBitmap, scaledDims[0], scaledDims[1], true);
+            setHeroBitmap(baseHeroBitmap);
             triggerHeroUpdate();
         } else {
             heroImageView.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
@@ -548,13 +627,13 @@ public class SettingsActivity extends Activity {
                     frame.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
                 }
                 heroCompare = HeroCompare.ORIGINAL;
-                heroImageView.setImageBitmap(baseHeroBitmap);
+                setHeroBitmap(baseHeroBitmap);
                 heroCompareBadge.setVisibility(View.VISIBLE);
                 return true;
             } else if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
                 heroCompare = HeroCompare.GRADED;
                 heroCompareBadge.setVisibility(View.GONE);
-                if (heroGradedBitmap != null && !heroGradedBitmap.isRecycled()) heroImageView.setImageBitmap(heroGradedBitmap);
+                if (heroGradedBitmap != null && !heroGradedBitmap.isRecycled()) setHeroBitmap(heroGradedBitmap);
                 else triggerHeroUpdate();
                 return true;
             }
@@ -610,7 +689,7 @@ public class SettingsActivity extends Activity {
                         heroJob.move(ticket,developed==null?JobState.Phase.FAILED:JobState.Phase.READY);
                         if(developed==null) return;
                         Bitmap old=heroGradedBitmap;heroGradedBitmap=developed;
-                        if(developed!=null && heroCompare==HeroCompare.GRADED) heroImageView.setImageBitmap(developed);
+                        if(developed!=null && heroCompare==HeroCompare.GRADED) setHeroBitmap(developed);
                         if(old!=null && old!=developed && !old.isRecycled()) old.recycle();
                     });
                 } catch(Exception error) { heroJob.move(ticket,JobState.Phase.FAILED);Log.w(TAG,"Hero preview failed",error); }
@@ -690,7 +769,10 @@ public class SettingsActivity extends Activity {
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inSampleSize = sample;
             try (InputStream imageStream = getContentResolver().openInputStream(uri)) {
-                return imageStream == null ? null : BitmapFactory.decodeStream(imageStream, null, options);
+                Bitmap decoded = imageStream == null ? null : BitmapFactory.decodeStream(imageStream, null, options);
+                if (decoded == null) return null;
+                int exifDegrees = GifMediaHelper.getExifOrientation(this, uri);
+                return exifDegrees != 0 ? GifMediaHelper.rotateBitmap(decoded, exifDegrees) : decoded;
             }
         } catch (Exception ignored) { return null; }
     }
@@ -1046,6 +1128,8 @@ public class SettingsActivity extends Activity {
     }
 
     private static final int REQUEST_CODE_PICK_LUT = 2055;
+    private static final int REQUEST_CODE_EXPORT_BACKUP = 2056;
+    private static final int REQUEST_CODE_IMPORT_BACKUP = 2057;
 
     private void launchLutPicker() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -1064,6 +1148,280 @@ public class SettingsActivity extends Activity {
         }
     }
 
+    private void showBackupNameDialog(boolean shareImmediately) {
+        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            getWindow().getDecorView().performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+        }
+
+        FrameLayout scrim = new FrameLayout(this);
+        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setBackgroundColor(0x77000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setClickable(true);
+        box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
+        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+
+        TextView head = text(shareImmediately ? "SHARE NAMED BACKUP" : "SAVE NAMED BACKUP", 10, ACCENT, true);
+        head.setLetterSpacing(.14f);
+        box.addView(head);
+
+        int recipes = SettingsBackupManager.countLocalCustomRecipes(this);
+        int customLuts = LutManager.getCustomLutNames(this).size();
+        TextView info = text("Includes all camera & processing preferences, " + recipes
+                        + (recipes == 1 ? " custom recipe" : " custom recipes") + ", and " + customLuts
+                        + (customLuts == 1 ? " custom LUT." : " custom LUTs."),
+                8, 0xff8d9892, false);
+        info.setPadding(0, dp(6), 0, dp(10));
+        box.addView(info);
+
+        EditText input = new EditText(this);
+        String defaultName = SettingsBackupManager.defaultBackupName();
+        input.setText(defaultName);
+        input.setSelection(defaultName.length());
+        input.setTextColor(0xfff0f2eb);
+        input.setHintTextColor(0xff6b746f);
+        input.setHint("Backup name (e.g. Street Portra 400)");
+        input.setSingleLine(true);
+        input.setBackground(round(0xff161c1d, 10, 0xff323b3c, dp(1)));
+        input.setPadding(dp(12), dp(10), dp(12), dp(10));
+        LinearLayout.LayoutParams inLp = new LinearLayout.LayoutParams(-1, -2);
+        inLp.bottomMargin = dp(14);
+        box.addView(input, inLp);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        TextView cancel = pill("CANCEL", false);
+        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        cLp.rightMargin = dp(6);
+        actions.addView(cancel, cLp);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+
+        TextView confirm = pill(shareImmediately ? "SHARE" : "SAVE FILE", true);
+        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        sLp.leftMargin = dp(6);
+        actions.addView(confirm, sLp);
+        confirm.setOnClickListener(v -> {
+            String chosenName = SettingsBackupManager.sanitizeBackupName(
+                    input.getText() == null ? "" : input.getText().toString());
+            dialog.dismiss();
+            try {
+                String json = SettingsBackupManager.createBackupJson(this, chosenName);
+                if (shareImmediately) {
+                    shareBackupFile(chosenName, json);
+                } else {
+                    launchBackupExportPicker(chosenName, json);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to prepare settings backup", e);
+                Toast.makeText(this, "Could not create backup: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            }
+        });
+        box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+
+        int dialogWidth = Math.min(dp(420), Math.round(getResources().getDisplayMetrics().widthPixels * 0.90f));
+        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
+                dialogWidth,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+        );
+        scrim.addView(box, boxLp);
+        dialog.setContentView(scrim);
+        dialog.show();
+    }
+
+    private void launchBackupExportPicker(String backupName, String json) {
+        pendingBackupName = backupName;
+        pendingBackupJson = json;
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_TITLE, SettingsBackupManager.buildBackupFileName(backupName));
+        try {
+            startActivityForResult(intent, REQUEST_CODE_EXPORT_BACKUP);
+        } catch (Exception e) {
+            pendingBackupName = null;
+            pendingBackupJson = null;
+            Toast.makeText(this, "File saver unavailable. Try Share backup instead.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void launchBackupImportPicker() {
+        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            getWindow().getDecorView().performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        try {
+            startActivityForResult(intent, REQUEST_CODE_IMPORT_BACKUP);
+        } catch (Exception e) {
+            try {
+                Intent fallback = new Intent(Intent.ACTION_GET_CONTENT);
+                fallback.setType("*/*");
+                startActivityForResult(fallback, REQUEST_CODE_IMPORT_BACKUP);
+            } catch (Exception ex) {
+                Toast.makeText(this, "File picker unavailable", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    private void shareBackupFile(String backupName, String json) {
+        try {
+            Uri uri = SettingsBackupManager.writeBackupForShare(this, backupName, json);
+            Intent share = new Intent(Intent.ACTION_SEND);
+            share.setType("application/json");
+            share.putExtra(Intent.EXTRA_STREAM, uri);
+            share.putExtra(Intent.EXTRA_SUBJECT, "Lika Lens Backup: " + backupName);
+            share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(share, "Share Lika Lens Backup"));
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to share backup", e);
+            Toast.makeText(this, "Could not share backup.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void showBackupSavedDialog(String backupName, String json) {
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+        }
+
+        FrameLayout scrim = new FrameLayout(this);
+        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setBackgroundColor(0x77000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setClickable(true);
+        box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
+        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+
+        TextView head = text("BACKUP SAVED", 10, ACCENT, true);
+        head.setLetterSpacing(.14f);
+        box.addView(head);
+
+        TextView body = text("\"" + backupName + "\" has been saved.\nYou can keep it locally or share it with another device.",
+                9, 0xffd8ded7, false);
+        body.setPadding(0, dp(8), 0, dp(16));
+        box.addView(body);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        TextView shareBtn = pill("SHARE", false);
+        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        sLp.rightMargin = dp(6);
+        actions.addView(shareBtn, sLp);
+        shareBtn.setOnClickListener(v -> {
+            dialog.dismiss();
+            shareBackupFile(backupName, json);
+        });
+
+        TextView doneBtn = pill("DONE", true);
+        LinearLayout.LayoutParams dLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        dLp.leftMargin = dp(6);
+        actions.addView(doneBtn, dLp);
+        doneBtn.setOnClickListener(v -> dialog.dismiss());
+        box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+
+        int dialogWidth = Math.min(dp(400), Math.round(getResources().getDisplayMetrics().widthPixels * 0.88f));
+        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
+                dialogWidth,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+        );
+        scrim.addView(box, boxLp);
+        dialog.setContentView(scrim);
+        dialog.show();
+    }
+
+    private void showImportConfirmDialog(SettingsBackupManager.BackupData data) {
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+        }
+
+        FrameLayout scrim = new FrameLayout(this);
+        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setBackgroundColor(0x77000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setClickable(true);
+        box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
+        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+
+        TextView head = text("RESTORE BACKUP?", 10, ACCENT, true);
+        head.setLetterSpacing(.14f);
+        box.addView(head);
+
+        TextView nameView = text(data.name, 12, 0xfff0f2eb, true);
+        nameView.setPadding(0, dp(8), 0, dp(4));
+        box.addView(nameView);
+
+        StringBuilder details = new StringBuilder(data.formatSummary());
+        if (data.createdAt != null && !data.createdAt.isEmpty()) {
+            details.append("\nCreated: ").append(data.createdAt);
+        }
+        details.append("\n\nThis replaces your current camera and film look preferences.");
+        TextView body = text(details.toString(), 8, 0xff9aa59f, false);
+        body.setPadding(0, dp(2), 0, dp(16));
+        box.addView(body);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        TextView cancel = pill("CANCEL", false);
+        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        cLp.rightMargin = dp(6);
+        actions.addView(cancel, cLp);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+
+        TextView restore = pill("RESTORE", true);
+        LinearLayout.LayoutParams rLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        rLp.leftMargin = dp(6);
+        actions.addView(restore, rLp);
+        restore.setOnClickListener(v -> {
+            dialog.dismiss();
+            try {
+                SettingsBackupManager.RestoreResult res = SettingsBackupManager.restoreBackup(this, data);
+                rebuildContent();
+                String msg = "Restored \"" + res.backupName + "\"";
+                if (res.failedLuts > 0) {
+                    msg += " (" + res.failedLuts + " LUT failed)";
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to restore backup", e);
+                Toast.makeText(this, "Could not restore backup: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            }
+        });
+        box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+
+        int dialogWidth = Math.min(dp(420), Math.round(getResources().getDisplayMetrics().widthPixels * 0.90f));
+        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
+                dialogWidth,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+        );
+        scrim.addView(box, boxLp);
+        dialog.setContentView(scrim);
+        dialog.show();
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -1073,9 +1431,32 @@ public class SettingsActivity extends Activity {
             if (name != null) {
                 AppSettings.prefs(this).edit().putString(AppSettings.LUT_NAME, name).apply();
                 Toast.makeText(this, "Imported 3D LUT: " + name, Toast.LENGTH_SHORT).show();
-                populateContent();
+                rebuildContent();
             } else {
                 Toast.makeText(this, "Could not import LUT. Ensure valid .cube format.", Toast.LENGTH_LONG).show();
+            }
+        } else if (requestCode == REQUEST_CODE_EXPORT_BACKUP) {
+            String exportName = pendingBackupName;
+            String exportJson = pendingBackupJson;
+            pendingBackupName = null;
+            pendingBackupJson = null;
+            if (resultCode == RESULT_OK && data != null && data.getData() != null && exportJson != null) {
+                try {
+                    SettingsBackupManager.writeTextToUri(this, data.getData(), exportJson);
+                    showBackupSavedDialog(exportName != null ? exportName : "Lika Lens Backup", exportJson);
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to write backup file", e);
+                    Toast.makeText(this, "Could not save backup: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            }
+        } else if (requestCode == REQUEST_CODE_IMPORT_BACKUP && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            try {
+                String json = SettingsBackupManager.readTextFromUri(this, data.getData());
+                SettingsBackupManager.BackupData parsed = SettingsBackupManager.parseBackup(json);
+                showImportConfirmDialog(parsed);
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to read/parse imported backup", e);
+                Toast.makeText(this, "Invalid backup file: " + e.getMessage(), Toast.LENGTH_LONG).show();
             }
         }
     }
@@ -1107,6 +1488,9 @@ public class SettingsActivity extends Activity {
 
     private final class VerticalSlider extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path trackClip = new Path();
+        private final RectF trackRect = new RectF();
+        private final RectF thumbRect = new RectF();
         private int value;
         private OnValueChanged listener;
         private OnModeChanged modeListener;
@@ -1137,31 +1521,61 @@ public class SettingsActivity extends Activity {
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            float cx = getWidth() * .47f;
-            float top = dp(9), bottom = getHeight() - dp(9);
+            float cx = getWidth() * 0.5f;
+            float outerTop = dp(5);
+            float outerBottom = getHeight() - dp(5);
+            float trackHalfW = dp(15);
+            float thumbHalfH = dp(6);
+            float rangeTop = outerTop + thumbHalfH + dp(4);
+            float rangeBottom = outerBottom - thumbHalfH - dp(4);
+            float thumbY = rangeBottom - (rangeBottom - rangeTop) * (value / 100f);
+
+            trackRect.set(cx - trackHalfW, outerTop, cx + trackHalfW, outerBottom);
             paint.setColor(0xff202626);
             paint.setStyle(Paint.Style.FILL);
-            canvas.drawRoundRect(new RectF(cx - dp(13), top, cx + dp(13), bottom), dp(12), dp(12), paint);
+            canvas.drawRoundRect(trackRect, dp(11), dp(11), paint);
+
+            // Subtle level fill clipped cleanly inside the rounded track housing
+            canvas.save();
+            trackClip.reset();
+            trackClip.addRoundRect(trackRect, dp(11), dp(11), Path.Direction.CW);
+            canvas.clipPath(trackClip);
+            paint.setColor(0x28d7b574);
+            canvas.drawRect(trackRect.left, thumbY, trackRect.right, trackRect.bottom, paint);
+
+            // Center guide hairline + symmetrical scale markings directly on the slider track
+            paint.setColor(0x3a8d9892);
+            canvas.drawRect(cx - dp(0.5f), rangeTop, cx + dp(0.5f), rangeBottom, paint);
+            for (int i = 0; i <= 10; i++) {
+                float y = rangeBottom - (rangeBottom - rangeTop) * (i / 10f);
+                boolean major = i % 5 == 0;
+                float halfTick = major ? dp(9) : dp(5);
+                float halfThickness = major ? dp(0.75f) : dp(0.5f);
+                paint.setColor(major ? 0xff9aa49c : 0xff66706a);
+                canvas.drawRect(cx - halfTick, y - halfThickness, cx + halfTick, y + halfThickness, paint);
+            }
+            canvas.restore();
+
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(dp(1));
-            paint.setColor(0xff343b39);
-            canvas.drawRoundRect(new RectF(cx - dp(13), top, cx + dp(13), bottom), dp(12), dp(12), paint);
+            paint.setColor(fineMode ? ACCENT : 0xff343b39);
+            canvas.drawRoundRect(trackRect, dp(11), dp(11), paint);
+
+            // Compact, well-proportioned handle cap fitted cleanly over the track
+            float thumbHalfW = trackHalfW + dp(2);
+            thumbRect.set(cx - thumbHalfW, thumbY - thumbHalfH, cx + thumbHalfW, thumbY + thumbHalfH);
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xff717a73);
-            for (int i = 0; i <= 10; i++) {
-                float y = bottom - (bottom - top) * (i / 10f);
-                float tick = i % 5 == 0 ? dp(8) : dp(4);
-                canvas.drawRect(cx + dp(4), y - dp(0.5f), cx + dp(4) + tick, y + dp(0.5f), paint);
-            }
-            float thumbY = bottom - (bottom - top) * (value / 100f);
             paint.setColor(0xfff2f1eb);
-            canvas.drawRoundRect(new RectF(dp(6), thumbY - dp(8), getWidth() - dp(6), thumbY + dp(8)), dp(9), dp(9), paint);
-            paint.setColor(0x66ffffff);
-            canvas.drawRoundRect(new RectF(dp(9), thumbY - dp(6), getWidth() - dp(9), thumbY - dp(4)), dp(2), dp(2), paint);
-            if (fineMode) {
-                paint.setColor(ACCENT);
-                canvas.drawCircle(getWidth() - dp(9), top + dp(2), dp(3), paint);
-            }
+            canvas.drawRoundRect(thumbRect, dp(5), dp(5), paint);
+
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(1));
+            paint.setColor(fineMode ? ACCENT : 0x55121617);
+            canvas.drawRoundRect(thumbRect, dp(5), dp(5), paint);
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(fineMode ? ACCENT : 0xff222829);
+            canvas.drawRect(cx - dp(8), thumbY - dp(0.6f), cx + dp(8), thumbY + dp(0.6f), paint);
         }
 
         @Override public boolean onTouchEvent(MotionEvent event) {
@@ -1197,8 +1611,9 @@ public class SettingsActivity extends Activity {
         }
 
         private void updateFromPosition(float y) {
-            float top = dp(9), bottom = getHeight() - dp(9);
-            value = Math.max(0, Math.min(100, Math.round((bottom - y) * 100f / Math.max(1f, bottom - top))));
+            float rangeTop = dp(5) + dp(6) + dp(4);
+            float rangeBottom = getHeight() - dp(5) - dp(6) - dp(4);
+            value = Math.max(0, Math.min(100, Math.round((rangeBottom - y) * 100f / Math.max(1f, rangeBottom - rangeTop))));
             if (listener != null) listener.onChanged(value);
         }
 
@@ -1251,6 +1666,11 @@ public class SettingsActivity extends Activity {
         heroJob.close();
         mainHandler.removeCallbacksAndMessages(null);
         heroWorker.shutdown();
+        currentHeroBitmap = null;
+        if (heroImageView != null) {
+            heroImageView.setImageDrawable(null);
+            heroImageView = null;
+        }
         if(heroGradedBitmap!=null && !heroGradedBitmap.isRecycled()) heroGradedBitmap.recycle();
         super.onDestroy();
         if (cachedHeroSource != null && !cachedHeroSource.isRecycled()) {
