@@ -158,6 +158,8 @@ public class PhotoEditorActivity extends Activity {
     private RawDeveloper.Look presetLook(String preset) {
         RawDeveloper.Look look = this.look.copy();
         look.brain = preset;
+        look.shadowProfile = AppSettings.SHADOW_PROFILE_AUTO;
+        look.highlightRecovery = AppSettings.HL_REC_AUTO;
         if (AppSettings.BRAIN_MONO_SILVER.equals(preset) || "MONOCHROME".equals(preset)) {
             look.brain = AppSettings.BRAIN_MONO_SILVER;
             look.contrast = 1.25f;
@@ -167,7 +169,6 @@ public class PhotoEditorActivity extends Activity {
             look.halation = 0.10f;
             look.colorRollOff = 0.50f;
             look.toneCurve = "Filmic S-Curve";
-            look.shadowProfile = "Deep Cinema Blacks";
         } else if (AppSettings.BRAIN_KODACHROME.equals(preset)) {
             look.contrast = 1.25f;
             look.saturation = 1.16f;
@@ -176,7 +177,6 @@ public class PhotoEditorActivity extends Activity {
             look.halation = 0.18f;
             look.colorRollOff = 0.78f;
             look.toneCurve = "Filmic S-Curve";
-            look.shadowProfile = "Deep Cinema Blacks";
         } else if (AppSettings.BRAIN_FUJI_ETERNA.equals(preset)) {
             look.contrast = 0.95f;
             look.saturation = 0.88f;
@@ -185,7 +185,6 @@ public class PhotoEditorActivity extends Activity {
             look.halation = 0.12f;
             look.colorRollOff = 0.82f;
             look.toneCurve = "Filmic S-Curve";
-            look.shadowProfile = "Lifted Vintage Blacks";
         } else if (AppSettings.BRAIN_BLEACH_BYPASS.equals(preset)) {
             look.contrast = 1.38f;
             look.saturation = 0.35f;
@@ -194,7 +193,6 @@ public class PhotoEditorActivity extends Activity {
             look.halation = 0.08f;
             look.colorRollOff = 0.40f;
             look.toneCurve = "Filmic S-Curve";
-            look.shadowProfile = "Deep Cinema Blacks";
         } else if (AppSettings.BRAIN_NEUTRAL_RAW.equals(preset) || "NEUTRAL RAW".equals(preset)) {
             look.brain = AppSettings.BRAIN_NEUTRAL_RAW;
             look.contrast = 1.0f;
@@ -207,12 +205,11 @@ public class PhotoEditorActivity extends Activity {
             look.whiteBalanceKelvin = 0;
             look.highlights = 0.50f;
             look.shadows = 0.50f;
-            look.pivot = 0.50f;
+            look.pivot = 0.20f;
             look.sharpening = 0.0f;
             look.chromaNr = 0.0f;
             look.colorRollOff = 0.50f;
             look.toneCurve = "Linear Response";
-            look.shadowProfile = "Neutral / Open Shadows";
         } else { // "LIKA / FILM"
             look.brain = AppSettings.BRAIN_LIKA_FILM;
             look.contrast = 1.12f;
@@ -222,7 +219,6 @@ public class PhotoEditorActivity extends Activity {
             look.halation = 0.16f;
             look.colorRollOff = 0.72f;
             look.toneCurve = "Filmic S-Curve";
-            look.shadowProfile = "Deep Cinema Blacks";
         }
         return look;
     }
@@ -922,6 +918,8 @@ public class PhotoEditorActivity extends Activity {
                 neutralLook.shadowProfile = "Neutral / Open Shadows";
                 neutralLook.highlightRecovery = "Adaptive blend";
                 neutralLook.easyMode = true;
+                neutralLook.skinProtectionMode = AppSettings.OVERRIDE_OFF;
+                neutralLook.smartVibranceMode = AppSettings.OVERRIDE_OFF;
                 neutralLook.skinProtection = false;
                 neutralLook.smartVibrance = false;
                 neutralLook.contrast = 1.0f;

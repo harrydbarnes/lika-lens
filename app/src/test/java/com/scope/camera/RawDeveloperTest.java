@@ -619,4 +619,149 @@ public class RawDeveloperTest {
         org.junit.Assert.assertFalse(easyScene.matches(frame, easy, 24));
     }
 
+    @Test
+    public void testEasyModeRespectsExplicitUserOverrides() {
+        // 1. Highlights below 0.65 must change output even in Easy Mode
+        RawDeveloper.Look hlLow = new RawDeveloper.Look();
+        hlLow.easyMode = true;
+        hlLow.highlights = 0.20f;
+        hlLow.grain = 0f;
+        RawDeveloper.Look hlDefault = hlLow.copy();
+        hlDefault.highlights = 0.68f;
+        int pLow = RawDeveloper.renderLook(0.85f, 0.85f, 0.85f, hlLow, 0, 0, 1);
+        int pDef = RawDeveloper.renderLook(0.85f, 0.85f, 0.85f, hlDefault, 0, 0, 1);
+        org.junit.Assert.assertTrue("Highlights < 0.65 must remain responsive in Easy Mode",
+                ((pLow >> 8) & 0xff) > ((pDef >> 8) & 0xff));
+
+        // 2. Highlight recovery Adaptive vs Subtractive vs Hard must stay distinct in Easy Mode
+        RawDeveloper.Look hlAdapt = hlLow.copy();
+        hlAdapt.highlights = 0.70f;
+        hlAdapt.highlightRecovery = AppSettings.HL_REC_ADAPTIVE;
+        RawDeveloper.Look hlSub = hlAdapt.copy();
+        hlSub.highlightRecovery = AppSettings.HL_REC_SUBTRACTIVE;
+        RawDeveloper.Look hlHard = hlAdapt.copy();
+        hlHard.highlightRecovery = AppSettings.HL_REC_HARD;
+        int cAdapt = RawDeveloper.renderLook(0.95f, 0.45f, 0.15f, hlAdapt, 0, 0, 1);
+        int cSub = RawDeveloper.renderLook(0.95f, 0.45f, 0.15f, hlSub, 0, 0, 1);
+        int cHard = RawDeveloper.renderLook(0.95f, 0.45f, 0.15f, hlHard, 0, 0, 1);
+        org.junit.Assert.assertNotEquals("Adaptive and Subtractive must differ in Easy Mode", cAdapt, cSub);
+        org.junit.Assert.assertNotEquals("Adaptive and Hard Clip must differ in Easy Mode", cAdapt, cHard);
+
+        // 3. Explicit Shadow Profile override must work on every brain in Easy Mode
+        RawDeveloper.Look neutralDeep = new RawDeveloper.Look();
+        neutralDeep.brain = AppSettings.BRAIN_NEUTRAL_RAW;
+        neutralDeep.easyMode = true;
+        neutralDeep.grain = 0f;
+        neutralDeep.shadowProfile = AppSettings.SHADOW_PROFILE_DEEP;
+        RawDeveloper.Look neutralLifted = neutralDeep.copy();
+        neutralLifted.shadowProfile = AppSettings.SHADOW_PROFILE_LIFTED;
+        int sDeep = (RawDeveloper.renderLook(0.03f, 0.03f, 0.03f, neutralDeep, 0, 0, 1) >> 8) & 0xff;
+        int sLift = (RawDeveloper.renderLook(0.03f, 0.03f, 0.03f, neutralLifted, 0, 0, 1) >> 8) & 0xff;
+        org.junit.Assert.assertTrue("Explicit Lifted override must lift NEUTRAL shadows over Deep", sLift > sDeep + 5);
+
+        RawDeveloper.Look fujiAuto = new RawDeveloper.Look();
+        fujiAuto.brain = AppSettings.BRAIN_FUJI_ETERNA;
+        fujiAuto.easyMode = true;
+        fujiAuto.grain = 0f;
+        fujiAuto.shadowProfile = AppSettings.SHADOW_PROFILE_AUTO;
+        RawDeveloper.Look fujiDeep = fujiAuto.copy();
+        fujiDeep.shadowProfile = AppSettings.SHADOW_PROFILE_DEEP;
+        int fAuto = (RawDeveloper.renderLook(0.03f, 0.03f, 0.03f, fujiAuto, 0, 0, 1) >> 8) & 0xff;
+        int fDeep = (RawDeveloper.renderLook(0.03f, 0.03f, 0.03f, fujiDeep, 0, 0, 1) >> 8) & 0xff;
+        org.junit.Assert.assertTrue("Explicit Deep override must deepen FUJI shadows vs Auto lifted default", fAuto > fDeep + 5);
+
+        // 4. Skin protection & Smart vibrance 3-way overrides must honour Off and On
+        RawDeveloper.Look skinOff = new RawDeveloper.Look();
+        skinOff.brain = AppSettings.BRAIN_LIKA_FILM;
+        skinOff.easyMode = true;
+        skinOff.grain = 0f;
+        skinOff.saturation = 1.35f;
+        skinOff.skinProtectionMode = AppSettings.OVERRIDE_OFF;
+        skinOff.skinProtection = false;
+        RawDeveloper.Look skinOn = skinOff.copy();
+        skinOn.skinProtectionMode = AppSettings.OVERRIDE_ON;
+        skinOn.skinProtection = true;
+        int pxSkinOff = RawDeveloper.renderLook(0.36f, 0.16f, 0.09f, skinOff, 0, 0, 1);
+        int pxSkinOn = RawDeveloper.renderLook(0.36f, 0.16f, 0.09f, skinOn, 0, 0, 1);
+        org.junit.Assert.assertNotEquals("Skin Protection Off vs On must produce different output even in Easy Mode",
+                pxSkinOff, pxSkinOn);
+
+        RawDeveloper.Look vibOff = new RawDeveloper.Look();
+        vibOff.brain = AppSettings.BRAIN_NEUTRAL_RAW;
+        vibOff.easyMode = true;
+        vibOff.grain = 0f;
+        vibOff.smartVibranceMode = AppSettings.OVERRIDE_OFF;
+        vibOff.smartVibrance = false;
+        RawDeveloper.Look vibOn = vibOff.copy();
+        vibOn.smartVibranceMode = AppSettings.OVERRIDE_ON;
+        vibOn.smartVibrance = true;
+        int pxVibOff = RawDeveloper.renderLook(0.12f, 0.25f, 0.10f, vibOff, 0, 0, 1);
+        int pxVibOn = RawDeveloper.renderLook(0.12f, 0.25f, 0.10f, vibOn, 0, 0, 1);
+        org.junit.Assert.assertNotEquals("Smart Vibrance explicit On must activate even on NEUTRAL RAW",
+                pxVibOff, pxVibOn);
+    }
+
+    @Test
+    public void testPivotWorksOnBleachAndNeutral() {
+        for (String brain : new String[]{AppSettings.BRAIN_BLEACH_BYPASS, AppSettings.BRAIN_NEUTRAL_RAW}) {
+            RawDeveloper.Look lowPivot = new RawDeveloper.Look();
+            lowPivot.brain = brain;
+            lowPivot.pivot = 0.12f;
+            lowPivot.contrast = 1.30f;
+            lowPivot.grain = 0f;
+            RawDeveloper.Look highPivot = lowPivot.copy();
+            highPivot.pivot = 0.36f;
+            int pLow = RawDeveloper.renderLook(0.18f, 0.18f, 0.18f, lowPivot, 0, 0, 1);
+            int pHigh = RawDeveloper.renderLook(0.18f, 0.18f, 0.18f, highPivot, 0, 0, 1);
+            org.junit.Assert.assertNotEquals("Pivot must affect tonal rendering for " + brain, pLow, pHigh);
+        }
+    }
+
+    @Test
+    public void testGrainStructuresAreDistinctAndLegacyMonochromeMapsToFine() {
+        int[] base = new int[120 * 90];
+        int[] fine = new int[120 * 90];
+        int[] soft = new int[120 * 90];
+        int[] coarse = new int[120 * 90];
+        int[] mono = new int[120 * 90];
+        java.util.Arrays.fill(base, 0xff808080);
+        System.arraycopy(base, 0, fine, 0, base.length);
+        System.arraycopy(base, 0, soft, 0, base.length);
+        System.arraycopy(base, 0, coarse, 0, base.length);
+        System.arraycopy(base, 0, mono, 0, base.length);
+
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.grain = 0.75f;
+        look.grainStructure = AppSettings.GRAIN_STRUCTURE_CHOICES[0]; // Fine · 35 mm
+        RawDeveloper.applyFilmGrain(fine, 120, 90, RawDeveloper.prepareDisplayLook(look), 42);
+
+        look.grainStructure = AppSettings.GRAIN_STRUCTURE_CHOICES[1]; // Soft · 16 mm
+        RawDeveloper.applyFilmGrain(soft, 120, 90, RawDeveloper.prepareDisplayLook(look), 42);
+
+        look.grainStructure = AppSettings.GRAIN_STRUCTURE_CHOICES[2]; // Coarse · 8 mm
+        RawDeveloper.applyFilmGrain(coarse, 120, 90, RawDeveloper.prepareDisplayLook(look), 42);
+
+        look.grainStructure = "Monochrome";
+        RawDeveloper.applyFilmGrain(mono, 120, 90, RawDeveloper.prepareDisplayLook(look), 42);
+
+        org.junit.Assert.assertArrayEquals("Legacy Monochrome grain must map to Fine · 35 mm", fine, mono);
+        org.junit.Assert.assertFalse("Fine and Soft grain must be distinct", java.util.Arrays.equals(fine, soft));
+        org.junit.Assert.assertFalse("Fine and Coarse grain must be distinct", java.util.Arrays.equals(fine, coarse));
+        org.junit.Assert.assertFalse("Soft and Coarse grain must be distinct", java.util.Arrays.equals(soft, coarse));
+    }
+
+    @Test
+    public void testDisplayLookKeyTracksOverrideModes() {
+        RawDeveloper.Look base = new RawDeveloper.Look();
+        String kAuto = RawDeveloper.displayLookKey(base, null);
+        RawDeveloper.Look off = base.copy();
+        off.skinProtectionMode = AppSettings.OVERRIDE_OFF;
+        off.skinProtection = false;
+        org.junit.Assert.assertNotEquals(kAuto, RawDeveloper.displayLookKey(off, null));
+
+        RawDeveloper.Look vibOn = base.copy();
+        vibOn.smartVibranceMode = AppSettings.OVERRIDE_ON;
+        org.junit.Assert.assertNotEquals(kAuto, RawDeveloper.displayLookKey(vibOn, null));
+    }
+
 }

@@ -82,6 +82,17 @@ public class PreviewLookLutTest {
         assertChannelsClose("NEUTRAL mid-grey passthrough", 0xff808080, neutralMid, 3);
     }
 
+    @Test public void previewCubeRemainsSrgbWhenOutputColorSpaceIsDisplayP3() {
+        RawDeveloper.Look srgbLook = new RawDeveloper.Look();
+        srgbLook.colorSpace = AppSettings.COLOR_SPACE_SRGB;
+        RawDeveloper.Look p3Look = srgbLook.copy();
+        p3Look.colorSpace = AppSettings.COLOR_SPACE_P3;
+
+        PreviewLookLut srgbCube = PreviewLookLut.build(srgbLook);
+        PreviewLookLut p3Cube = PreviewLookLut.build(p3Look);
+        assertArrayEquals("Live viewfinder 3D cube must always stay sRGB-encoded", srgbCube.pixels, p3Cube.pixels);
+    }
+
     private static void assertChannelsClose(String label, int expected, int actual, int tolerance) {
         for (int shift : new int[]{16,8,0}) assertTrue(label + " channel " + shift,
                 Math.abs(((expected >> shift) & 255) - ((actual >> shift) & 255)) <= tolerance);

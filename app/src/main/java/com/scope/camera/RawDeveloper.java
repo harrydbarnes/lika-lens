@@ -243,9 +243,10 @@ final class RawDeveloper {
     private static final int CURVE_LINEAR = 1;
     private static final int CURVE_LOG = 2;
 
-    private static final int HL_ADAPTIVE = 0;
-    private static final int HL_SUBTRACTIVE = 1;
-    private static final int HL_HARD = 2;
+    private static final int HL_AUTO = 0;
+    private static final int HL_ADAPTIVE = 1;
+    private static final int HL_SUBTRACTIVE = 2;
+    private static final int HL_HARD = 3;
 
     private static final float INV_LOG1P_7 = 1.0f / (float) Math.log1p(7.0);
 
@@ -253,9 +254,11 @@ final class RawDeveloper {
     static final class PreparedLook {
         final Look look;
         final boolean displayReferred;
+        final boolean outputDisplayP3;
         final int brainId;
         final int curveId;
         final int hlRecId;
+        final float autoHlStrength;
         final boolean liftedShadows;
         final float safePivot;
         final float safeContrast;
@@ -278,6 +281,7 @@ final class RawDeveloper {
         final int coarseDiv;
         final float fineWeight;
         final float coarseWeight;
+        final float grainAmplitude;
         final boolean uniformGrain;
         final LutManager.Lut3D lut;
         final float lutIntensity;
@@ -285,12 +289,20 @@ final class RawDeveloper {
         final float displayWbShift;
 
         PreparedLook(Look look, RawArchive.Frame frame, LutManager.Lut3D lut) {
-            this(look, frame, lut, false);
+            this(look, frame, lut, false, false);
         }
 
         PreparedLook(Look look, RawArchive.Frame frame, LutManager.Lut3D lut, boolean displayReferred) {
+            this(look, frame, lut, displayReferred, false);
+        }
+
+        PreparedLook(Look look, RawArchive.Frame frame, LutManager.Lut3D lut, boolean displayReferred, boolean forSrgbCube) {
             this.look = look != null ? look : new Look();
             this.displayReferred = displayReferred;
+            this.outputDisplayP3 = !forSrgbCube
+                    && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O
+                    && this.look.colorSpace != null
+                    && this.look.colorSpace.contains("Display P3");
             this.exposureScale = (float) Math.pow(2.0, this.look.exposureEv);
             this.displayWbShift = this.look.whiteBalanceKelvin <= 0 ? 1f
                     : (float) Math.sqrt(clamp(this.look.whiteBalanceKelvin / 5600f, .55f, 1.45f));
@@ -324,12 +336,12 @@ final class RawDeveloper {
                 effectivePivot = this.look.pivot * 1.10f;
             } else if (this.brainId == BRAIN_ID_BLEACH) {
                 effectiveContrast = this.look.contrast * 1.38f;
-                effectivePivot = 0.22f;
+                effectivePivot = this.look.pivot * 1.10f;
             } else if (this.brainId == BRAIN_ID_MONO) {
                 effectiveContrast = this.look.contrast * 1.14f;
             } else if (this.brainId == BRAIN_ID_NEUTRAL) {
                 effectiveContrast = this.look.contrast * 0.86f;
-                effectivePivot = 0.22f;
+                effectivePivot = this.look.pivot * 1.10f;
             } else {
                 effectiveContrast = this.look.contrast * 1.06f;
             }
@@ -389,26 +401,40 @@ final class RawDeveloper {
             this.invSafeLogPivot = 1.0f / Math.max(0.01f, this.logPivot);
             this.logContrast = this.safeContrast * 0.78f;
 
-            String shadowProf = this.look.shadowProfile == null ? "Deep Cinema Blacks" : this.look.shadowProfile;
+            String shadowProf = this.look.shadowProfile == null ? AppSettings.SHADOW_PROFILE_AUTO : this.look.shadowProfile;
             float sDepth = clamp(this.look.shadows, 0f, 1f);
-            if (this.brainId == BRAIN_ID_NEUTRAL && !push1 && !push2 && !pull1) {
+            boolean isAutoShadow = shadowProf.startsWith("Auto");
+            boolean wantsLifted = shadowProf.startsWith("Lifted")
+                    || (isAutoShadow && (this.brainId == BRAIN_ID_FUJI_ETERNA || pull1));
+            boolean wantsNeutral = shadowProf.startsWith("Neutral")
+                    || (isAutoShadow && this.brainId == BRAIN_ID_NEUTRAL && !pull1);
+            if (wantsLifted) {
+                this.liftedShadows = !push1 && !push2;
+                sDepth *= pull1 ? 0.28f : 0.32f;
+                if (displayReferred) {
+                    sDepth *= 0.45f;
+                }
+            } else if (wantsNeutral) {
                 this.liftedShadows = false;
-                sDepth = Math.max(0f, sDepth - 0.36f) * 0.50f;
-            } else {
-                if (shadowProf.startsWith("Lifted") || this.brainId == BRAIN_ID_FUJI_ETERNA || pull1) {
-                    this.liftedShadows = !push1 && !push2;
-                    sDepth *= pull1 ? 0.28f : 0.32f;
+                if (this.brainId == BRAIN_ID_NEUTRAL && !push1 && !push2 && !pull1) {
+                    sDepth = Math.max(0f, sDepth - 0.36f) * 0.50f;
                 } else {
-                    this.liftedShadows = false;
-                    if (shadowProf.startsWith("Neutral")) {
+                    sDepth *= 0.45f;
+                    if (displayReferred) {
                         sDepth *= 0.45f;
-                    } else if (this.brainId == BRAIN_ID_KODACHROME) {
-                        sDepth = Math.min(1.25f, sDepth * 1.15f);
-                    } else if (this.brainId == BRAIN_ID_BLEACH) {
-                        sDepth = Math.min(1.35f, sDepth * 1.30f);
-                    } else {
-                        sDepth *= 0.68f;
                     }
+                }
+            } else {
+                // Deep Cinema Blacks (explicit override, or Auto brain default for Kodachrome / Bleach / Lika / Mono)
+                this.liftedShadows = false;
+                if (this.brainId == BRAIN_ID_KODACHROME) {
+                    sDepth = Math.min(1.25f, sDepth * 1.15f);
+                } else if (this.brainId == BRAIN_ID_BLEACH) {
+                    sDepth = Math.min(1.35f, sDepth * 1.30f);
+                } else if (this.brainId == BRAIN_ID_NEUTRAL) {
+                    sDepth *= 0.85f;
+                } else {
+                    sDepth *= 0.68f;
                 }
                 if (displayReferred) {
                     sDepth *= 0.45f;
@@ -419,21 +445,27 @@ final class RawDeveloper {
             this.shadowDepth = sDepth;
 
             float shoulder = clamp(this.look.highlights, 0f, 1f);
-            if (this.look.easyMode && shoulder < 0.65f) {
-                shoulder = 0.65f;
-            }
             if (pull1) shoulder = Math.min(1.0f, shoulder + 0.18f);
-            this.knee = this.look.easyMode ? (0.78f - 0.30f * shoulder) : (0.86f - 0.24f * shoulder);
-            float shoulderCeil = 1.15f - 0.13f * shoulder;
-            this.shoulderSpan = Math.max(0.10f, shoulderCeil - this.knee);
 
-            String hlRec = this.look.highlightRecovery == null ? "Adaptive blend" : this.look.highlightRecovery;
+            String hlRec = this.look.highlightRecovery == null ? AppSettings.HL_REC_AUTO : this.look.highlightRecovery;
             if (hlRec.startsWith("Hard")) {
                 this.hlRecId = HL_HARD;
-            } else if (hlRec.startsWith("Subtractive") || this.look.easyMode) {
+            } else if (hlRec.startsWith("Subtractive")) {
                 this.hlRecId = HL_SUBTRACTIVE;
-            } else {
+            } else if (hlRec.startsWith("Adaptive")) {
                 this.hlRecId = HL_ADAPTIVE;
+            } else {
+                this.hlRecId = HL_AUTO;
+            }
+
+            if (this.hlRecId == HL_HARD) {
+                this.knee = 0.90f - 0.10f * shoulder;
+                float shoulderCeil = 1.12f - 0.08f * shoulder;
+                this.shoulderSpan = Math.max(0.08f, shoulderCeil - this.knee);
+            } else {
+                this.knee = this.look.easyMode ? (0.78f - 0.30f * shoulder) : (0.86f - 0.24f * shoulder);
+                float shoulderCeil = 1.15f - 0.13f * shoulder;
+                this.shoulderSpan = Math.max(0.10f, shoulderCeil - this.knee);
             }
 
             float sb = this.look.saturation;
@@ -455,12 +487,48 @@ final class RawDeveloper {
 
             this.rollOff = clamp(this.look.colorRollOff, 0f, 1f);
             this.rollOffSlope = 2f + this.rollOff * 5.5f;
-            this.applySkinProtection = this.look.skinProtection || this.look.easyMode;
-            this.applySmartVibrance = (this.look.smartVibrance || this.look.easyMode)
-                    && this.brainId != BRAIN_ID_NEUTRAL && this.brainId != BRAIN_ID_MONO && this.brainId != BRAIN_ID_BLEACH;
+
+            String skinMode = this.look.skinProtectionMode != null ? this.look.skinProtectionMode
+                    : (this.look.skinProtection ? AppSettings.OVERRIDE_AUTO : AppSettings.OVERRIDE_OFF);
+            if (AppSettings.OVERRIDE_OFF.equals(skinMode)) {
+                this.applySkinProtection = false;
+            } else if (AppSettings.OVERRIDE_ON.equals(skinMode)) {
+                this.applySkinProtection = this.brainId != BRAIN_ID_MONO;
+            } else {
+                this.applySkinProtection = this.brainId == BRAIN_ID_LIKA_FILM
+                        || this.brainId == BRAIN_ID_KODACHROME
+                        || this.brainId == BRAIN_ID_FUJI_ETERNA;
+            }
+
+            String vibMode = this.look.smartVibranceMode != null ? this.look.smartVibranceMode
+                    : (this.look.smartVibrance ? AppSettings.OVERRIDE_AUTO : AppSettings.OVERRIDE_OFF);
+            if (AppSettings.OVERRIDE_OFF.equals(vibMode)) {
+                this.applySmartVibrance = false;
+            } else if (AppSettings.OVERRIDE_ON.equals(vibMode)) {
+                this.applySmartVibrance = this.brainId != BRAIN_ID_MONO;
+            } else {
+                this.applySmartVibrance = this.brainId == BRAIN_ID_LIKA_FILM
+                        || this.brainId == BRAIN_ID_KODACHROME
+                        || this.brainId == BRAIN_ID_FUJI_ETERNA;
+            }
 
             this.fluorescentSpike = isFluorescentSpike(this.look, frame);
             this.ambientWarmthFactor = computeAmbientWarmth(this.look, frame, this.fluorescentSpike);
+
+            float hlPressure = this.look.easyMode ? 0.35f : 0.25f;
+            if (this.look.exposureEv > 0f) {
+                hlPressure += 0.25f * clamp(this.look.exposureEv / 1.5f, 0f, 1f);
+            }
+            if (this.ambientWarmthFactor < 0.75f) {
+                hlPressure += 0.20f * clamp((0.75f - this.ambientWarmthFactor) / 0.40f, 0f, 1f);
+            }
+            if (this.brainId == BRAIN_ID_KODACHROME || this.brainId == BRAIN_ID_BLEACH) {
+                hlPressure += 0.20f;
+            }
+            if (frame != null && (frame.previewMidTarget > 0.22f || frame.aeCompensationEv < -0.3f)) {
+                hlPressure += 0.15f;
+            }
+            this.autoHlStrength = clamp(hlPressure, 0.15f, 1.0f);
 
             float gAmt = clamp(this.look.grain, 0f, 1f);
             if (this.look.easyMode && frame != null && frame.sensitivityIso > 0) {
@@ -474,13 +542,25 @@ final class RawDeveloper {
             else if (push2) gAmt = clamp(gAmt * 1.75f + 0.09f, 0f, 1f);
             else if (pull1) gAmt *= 0.65f;
             this.grainAmount = gAmt;
-            String gStruct = this.look.grainStructure == null ? "Fine · 35 mm" : this.look.grainStructure;
+            String gStruct = this.look.grainStructure == null ? AppSettings.GRAIN_STRUCTURE_CHOICES[0] : this.look.grainStructure;
+            if ("Monochrome".equals(gStruct)) gStruct = AppSettings.GRAIN_STRUCTURE_CHOICES[0];
             int baseScale = gStruct.startsWith("Coarse") ? 5 : gStruct.startsWith("Soft") ? 2 : 1;
             if (push2 && baseScale < 2) baseScale = 2;
             this.grainScale = baseScale;
             this.coarseDiv = this.grainScale * 3;
-            this.fineWeight = this.grainScale == 1 ? .72f : .40f;
-            this.coarseWeight = this.grainScale == 1 ? .28f : .60f;
+            if (gStruct.startsWith("Coarse")) {
+                this.fineWeight = 0.28f;
+                this.coarseWeight = 0.72f;
+                this.grainAmplitude = 16.5f;
+            } else if (gStruct.startsWith("Soft")) {
+                this.fineWeight = 0.25f;
+                this.coarseWeight = 0.75f;
+                this.grainAmplitude = 10.5f;
+            } else {
+                this.fineWeight = 0.72f;
+                this.coarseWeight = 0.28f;
+                this.grainAmplitude = 13.0f;
+            }
             String gResp = this.look.grainResponse == null ? "Luminance-weighted" : this.look.grainResponse;
             this.uniformGrain = gResp.startsWith("Uniform");
             this.lut = lut;
@@ -734,7 +814,8 @@ final class RawDeveloper {
         });
 
         float effectiveChromaNr = look.chromaNr;
-        if (look.easyMode && scene.frame.sensitivityIso >= 400 && effectiveChromaNr < 0.25f) {
+        if (look.easyMode && scene.frame.sensitivityIso >= 400
+                && Math.abs(effectiveChromaNr - AppSettings.DEFAULT_COLOR_NR / 100f) < 0.01f) {
             effectiveChromaNr = Math.max(effectiveChromaNr,
                     .25f + .15f * (1f - shadowRecoveryConfidence(scene.frame.sensitivityIso)));
         }
@@ -873,7 +954,8 @@ final class RawDeveloper {
         });
 
         float effectiveChromaNr = look.chromaNr;
-        if (look.easyMode && frame.sensitivityIso >= 400 && effectiveChromaNr < 0.25f) {
+        if (look.easyMode && frame.sensitivityIso >= 400
+                && Math.abs(effectiveChromaNr - AppSettings.DEFAULT_COLOR_NR / 100f) < 0.01f) {
             effectiveChromaNr = Math.max(effectiveChromaNr,
                     .25f + .15f * (1f - shadowRecoveryConfidence(frame.sensitivityIso)));
         }
@@ -1025,6 +1107,9 @@ final class RawDeveloper {
         }
         BitmapFactory.Options decodeOpts = new BitmapFactory.Options();
         decodeOpts.inSampleSize = sampleSize;
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            decodeOpts.inPreferredColorSpace = android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.SRGB);
+        }
         Bitmap source = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, decodeOpts);
         if (source == null) return null;
         source = CaptureOrientation.orientJpeg(source, bytes, fallbackOrientation);
@@ -1084,8 +1169,7 @@ final class RawDeveloper {
             }
         });
 
-        float effectiveJpegChromaNr = look.chromaNr;
-        if (look.easyMode && effectiveJpegChromaNr < 0.15f) effectiveJpegChromaNr = 0.15f;
+        float effectiveJpegChromaNr = Math.max(0f, look.chromaNr);
         return finishPixels(pixels, w, h, look, prep, null, 0x53434f50, effectiveJpegChromaNr);
     }
 
@@ -1097,7 +1181,14 @@ final class RawDeveloper {
         Look resolved = look != null ? look : new Look();
         LutManager.Lut3D lut = resolved.lutName != null && !"None".equalsIgnoreCase(resolved.lutName)
                 && resolved.lutIntensity > .001f ? LutManager.get(resolved.lutName) : null;
-        return new PreparedLook(resolved, frame, lut, true);
+        return new PreparedLook(resolved, frame, lut, true, false);
+    }
+
+    static PreparedLook preparePreviewCubeLook(Look look, RawArchive.Frame frame) {
+        Look resolved = look != null ? look : new Look();
+        LutManager.Lut3D lut = resolved.lutName != null && !"None".equalsIgnoreCase(resolved.lutName)
+                && resolved.lutIntensity > .001f ? LutManager.get(resolved.lutName) : null;
+        return new PreparedLook(resolved, frame, lut, true, true);
     }
 
     /** Lightweight cache key for display-referred 3D LUT generation without JSON or LUT I/O. */
@@ -1105,7 +1196,7 @@ final class RawDeveloper {
         Look l = look != null ? look : new Look();
         boolean fluo = isFluorescentSpike(l, frame);
         float ambWarmth = computeAmbientWarmth(l, frame, fluo);
-        return new StringBuilder(160)
+        return new StringBuilder(192)
                 .append(l.brain).append('|')
                 .append(l.whiteBalanceKelvin).append('|')
                 .append(l.exposureEv).append('|')
@@ -1120,6 +1211,8 @@ final class RawDeveloper {
                 .append(l.shadowProfile).append('|')
                 .append(l.toneCurve).append('|')
                 .append(l.easyMode).append('|')
+                .append(l.skinProtectionMode).append('|')
+                .append(l.smartVibranceMode).append('|')
                 .append(l.skinProtection).append('|')
                 .append(l.smartVibrance).append('|')
                 .append(l.lutName).append('|')
@@ -1182,7 +1275,7 @@ final class RawDeveloper {
         final float invFine = coordinateScale / prep.grainScale;
         final float invCoarse = coordinateScale / prep.coarseDiv;
         final int seedCoarse = seed ^ 0x51ed270b;
-        final float grainScaleAmt = prep.grainAmount * 13f;
+        final float grainScaleAmt = prep.grainAmount * prep.grainAmplitude;
         final float fineW = prep.fineWeight;
         final float coarseW = prep.coarseWeight;
         final boolean uniform = prep.uniformGrain;
@@ -1858,27 +1951,33 @@ final class RawDeveloper {
         float highlightWeight = smoothstep(.62f, 1f, lightness);
         shadowWeight = 1f - smoothstep(.12f, .50f, lightness);
 
+        float rawChromaSq = a * a + bb * bb;
+        float rawChroma = rawChromaSq > 1e-8f ? (float) Math.sqrt(rawChromaSq) : 0f;
+
         float highlightDesat;
-        if (brainId == BRAIN_ID_NEUTRAL) {
-            highlightDesat = 1f - .20f * smoothstep(.72f, 1.0f, lightness);
-        } else if (prep.hlRecId == HL_SUBTRACTIVE) {
+        if (prep.hlRecId == HL_SUBTRACTIVE) {
             highlightDesat = 1f - .46f * smoothstep(.60f, 0.98f, lightness);
         } else if (prep.hlRecId == HL_HARD) {
             highlightDesat = 1.0f;
-        } else {
+        } else if (prep.hlRecId == HL_ADAPTIVE) {
             highlightDesat = 1f - .35f * smoothstep(.70f, 1.0f, lightness);
+        } else if (brainId == BRAIN_ID_NEUTRAL) {
+            highlightDesat = 1f - .20f * smoothstep(.72f, 1.0f, lightness);
+        } else {
+            // HL_AUTO: scale roll-off with scene highlight pressure and pixel saturation
+            float chromaNeed = smoothstep(0.03f, 0.16f, rawChroma);
+            float autoDesat = 0.24f + 0.22f * prep.autoHlStrength * (0.55f + 0.45f * chromaNeed);
+            float autoStart = 0.70f - 0.10f * prep.autoHlStrength;
+            highlightDesat = 1f - autoDesat * smoothstep(autoStart, 0.99f, lightness);
         }
 
         float satBase = prep.satBase;
-        float rawChromaSq = a * a + bb * bb;
-        float rawChroma = rawChromaSq > 1e-8f ? (float) Math.sqrt(rawChromaSq) : 0f;
 
         // Detect skin tone hue angle in Oklab:
         // theta = atan2(bb, a). Skin tones cluster between ~0.45 and ~1.35 radians (~26° to 77°),
         // which lies strictly in Quadrant I (a > 0 && bb > 0) with tan(0.45)=0.483 <= bb/a <= tan(1.35)=4.455.
         float skinFactor = 0f;
-        boolean needSkinFactor = (prep.applySmartVibrance && brainId != BRAIN_ID_MONO
-                && brainId != BRAIN_ID_BLEACH && brainId != BRAIN_ID_NEUTRAL)
+        boolean needSkinFactor = (prep.applySmartVibrance && brainId != BRAIN_ID_MONO)
                 || prep.applySkinProtection;
         if (needSkinFactor && rawChroma > 0.015f && a > 0f && bb > 0f) {
             float ratioBA = bb / a;
@@ -1890,7 +1989,7 @@ final class RawDeveloper {
         }
 
         float vibranceBoost = 1.0f;
-        if (prep.applySmartVibrance && brainId != BRAIN_ID_MONO && brainId != BRAIN_ID_BLEACH && brainId != BRAIN_ID_NEUTRAL) {
+        if (prep.applySmartVibrance && brainId != BRAIN_ID_MONO) {
             // Boost moderate chroma tones without magnifying low-chroma tungsten wall tints
             float vibranceWeight = smoothstep(0.015f, 0.065f, rawChroma)
                     * (1.0f - skinFactor * 0.85f)
@@ -2002,6 +2101,25 @@ final class RawDeveloper {
         float outR = 4.07674166f*lp - 3.30771159f*mp + .23096993f*sp;
         float outG = -1.26843800f*lp + 2.60975740f*mp - .34131940f*sp;
         float outB = -.00419609f*lp - .70341861f*mp + 1.70761470f*sp;
+        if (prep.outputDisplayP3 && prep.lut == null) {
+            float p3R = 0.8224620f * outR + 0.1775380f * outG;
+            float p3G = 0.0331942f * outR + 0.9668058f * outG;
+            float p3B = 0.0170826f * outR + 0.0723974f * outG + 0.9105199f * outB;
+            for (int i = 0; i < 8 && (p3R < 0f || p3R > 1f || p3G < 0f || p3G > 1f || p3B < 0f || p3B > 1f); i++) {
+                a *= .82f; bb *= .82f;
+                lp = lightness + .39633778f*a + .21580376f*bb;
+                mp = lightness - .10556135f*a - .06385417f*bb;
+                sp = lightness - .08948418f*a - 1.29148555f*bb;
+                lp *= lp * lp; mp *= mp * mp; sp *= sp * sp;
+                outR = 4.07674166f*lp - 3.30771159f*mp + .23096993f*sp;
+                outG = -1.26843800f*lp + 2.60975740f*mp - .34131940f*sp;
+                outB = -.00419609f*lp - .70341861f*mp + 1.70761470f*sp;
+                p3R = 0.8224620f * outR + 0.1775380f * outG;
+                p3G = 0.0331942f * outR + 0.9668058f * outG;
+                p3B = 0.0170826f * outR + 0.0723974f * outG + 0.9105199f * outB;
+            }
+            return (0xFF << 24) | ((toSrgb(p3R) & 0xFF) << 16) | ((toSrgb(p3G) & 0xFF) << 8) | (toSrgb(p3B) & 0xFF);
+        }
         for (int i = 0; i < 8 && (outR < 0f || outR > 1f || outG < 0f || outG > 1f || outB < 0f || outB > 1f); i++) {
             a *= .82f; bb *= .82f;
             lp = lightness + .39633778f*a + .21580376f*bb;
@@ -2014,7 +2132,17 @@ final class RawDeveloper {
         }
 
         if (prep.lut != null) {
-            return prep.lut.applyToRgb(toSrgbFloat(outR), toSrgbFloat(outG), toSrgbFloat(outB), prep.lutIntensity);
+            int argb = prep.lut.applyToRgb(toSrgbFloat(outR), toSrgbFloat(outG), toSrgbFloat(outB), prep.lutIntensity);
+            if (prep.outputDisplayP3) {
+                float lr = srgbToLinear(((argb >> 16) & 0xFF) / 255f);
+                float lg = srgbToLinear(((argb >> 8) & 0xFF) / 255f);
+                float lb = srgbToLinear((argb & 0xFF) / 255f);
+                float p3R = 0.8224620f * lr + 0.1775380f * lg;
+                float p3G = 0.0331942f * lr + 0.9668058f * lg;
+                float p3B = 0.0170826f * lr + 0.0723974f * lg + 0.9105199f * lb;
+                return (0xFF << 24) | ((toSrgb(p3R) & 0xFF) << 16) | ((toSrgb(p3G) & 0xFF) << 8) | (toSrgb(p3B) & 0xFF);
+            }
+            return argb;
         }
         return (0xFF << 24) | ((toSrgb(outR) & 0xFF) << 16) | ((toSrgb(outG) & 0xFF) << 8) | (toSrgb(outB) & 0xFF);
     }

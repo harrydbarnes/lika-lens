@@ -12,7 +12,7 @@ final class PreviewLookLut {
     }
 
     static PreviewLookLut build(RawDeveloper.Look look, RawArchive.Frame frame) {
-        RawDeveloper.PreparedLook prepared = RawDeveloper.prepareDisplayLook(look.copy(), frame);
+        RawDeveloper.PreparedLook prepared = RawDeveloper.preparePreviewCubeLook(look.copy(), frame);
         final int[] pixels = new int[SIZE * SIZE * SIZE];
         final float inv = 1f / (SIZE - 1);
         java.util.stream.IntStream.range(0, SIZE).parallel().forEach(b -> {
