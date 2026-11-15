@@ -140,7 +140,7 @@ public class RawArchiveTest {
             assertFalse("Temporary file must be renamed/removed on success",
                     new File(dir, "ROUNDTRIP_TEST.sraw.tmp").exists());
 
-            RawArchive.Frame loaded = RawArchive.readArchive(target);
+            RawArchive.Frame loaded = RawArchive.read(target);
             assertEquals(2, loaded.width);
             assertEquals(2, loaded.height);
             assertEquals(90, loaded.orientation);
