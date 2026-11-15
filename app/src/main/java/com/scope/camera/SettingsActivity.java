@@ -61,7 +61,9 @@ public class SettingsActivity extends Activity {
     private LinearLayout content;
     private ScrollView scroll;
     private LinearLayout categoryBar;
-    private String activeCategory = "PROCESSING";
+    private TextView headerSubtitleView;
+    private String activeCategory = "LOOKS";
+    private final java.util.Set<String> expandedAdvanced = new java.util.HashSet<>();
     private LinearLayout currentSectionCard;
     private ImageView heroImageView;
     private TextView heroCompareBadge;
@@ -94,7 +96,7 @@ public class SettingsActivity extends Activity {
                     this::finish
             );
         }
-        AppSettings.migrateBranding(this);
+        AppSettings.migrateIfNeeded(this);
         hapticsEnabled = AppSettings.getBoolean(this, AppSettings.HAPTICS, true);
         LutManager.init(this);
         getWindow().setStatusBarColor(BG);
@@ -119,20 +121,21 @@ public class SettingsActivity extends Activity {
         titleBox.setOrientation(LinearLayout.VERTICAL);
         titleBox.setPadding(dp(8), 0, 0, 0);
         titleBox.addView(text("SETTINGS", 14, 0xfff1f2ec, true));
-        TextView subtitle = text("Camera and image pipeline", 9, 0xff89948e, false);
+        headerSubtitleView = text(categorySubtitle(activeCategory), 9, 0xff89948e, false);
         LinearLayout.LayoutParams subtitleLp = new LinearLayout.LayoutParams(-2, -2);
         subtitleLp.topMargin = dp(3);
-        titleBox.addView(subtitle, subtitleLp);
+        titleBox.addView(headerSubtitleView, subtitleLp);
         header.addView(titleBox, new LinearLayout.LayoutParams(0, -2, 1));
         TextView reset = pill("RESET", false);
         header.addView(reset, new LinearLayout.LayoutParams(dp(54), dp(32)));
         reset.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("Reset settings?")
-                .setMessage("Restore the Lika Lens starting look and capture defaults.")
+                .setMessage("Restore default look and capture settings. Saved photographs are not affected.")
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Reset", (dialog, which) -> {
                     AppSettings.prefs(this).edit().clear().apply();
+                    AppSettings.migrateIfNeeded(this);
                     hapticsEnabled = true;
-                    rebuildContent();
+                    rebuildContent(true);
                 }).show());
         TextView done = pill("DONE", true);
         LinearLayout.LayoutParams doneLp = new LinearLayout.LayoutParams(dp(54), dp(32));
@@ -190,252 +193,305 @@ public class SettingsActivity extends Activity {
     }
 
     private void rebuildContent() {
+        rebuildContent(true);
+    }
+
+    private void rebuildContent(boolean scrollToTop) {
+        final int prevScrollY = scroll != null ? scroll.getScrollY() : 0;
         finishSection();
         content.removeAllViews();
         populateContent();
-        scroll.post(() -> scroll.scrollTo(0, 0));
+        if (scroll != null) {
+            scroll.post(() -> {
+                if (scroll != null) {
+                    scroll.scrollTo(0, scrollToTop ? 0 : prevScrollY);
+                }
+            });
+        }
+    }
+
+    private static String categorySubtitle(String category) {
+        if ("CAMERA".equals(category)) return "Camera & viewfinder";
+        if ("VIDEO".equals(category)) return "Video & audio";
+        if ("GENERAL".equals(category)) return "Files, storage & updates";
+        return "Looks & Processing";
     }
 
     private void refreshCategoryBar() {
         if (categoryBar == null) return;
         categoryBar.removeAllViews();
-        String[] categories = {"GENERAL", "CAMERA", "PROCESSING"};
-        for (String category : categories) {
+        String[] categories = {"LOOKS", "CAMERA", "VIDEO", "GENERAL"};
+        for (int i = 0; i < categories.length; i++) {
+            final String category = categories[i];
             TextView tab = pill(category, category.equals(activeCategory));
+            tab.setSingleLine(true);
+            tab.setPadding(dp(4), 0, dp(4), 0);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1f);
-            if (!category.equals("GENERAL")) lp.leftMargin = dp(6);
+            if (i > 0) lp.leftMargin = dp(5);
             categoryBar.addView(tab, lp);
             tab.setOnClickListener(v -> {
                 if (hapticsEnabled) {
                     tab.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
                 }
                 activeCategory = category;
+                if (headerSubtitleView != null) {
+                    headerSubtitleView.setText(categorySubtitle(category));
+                }
                 refreshCategoryBar();
-                rebuildContent();
+                rebuildContent(true);
             });
         }
     }
 
     private void populateContent() {
-        if ("GENERAL".equals(activeCategory)) {
-            populateGeneralSettings();
-        } else if ("CAMERA".equals(activeCategory)) {
+        if ("CAMERA".equals(activeCategory)) {
             populateCameraSettings();
+        } else if ("VIDEO".equals(activeCategory)) {
+            populateVideoSettings();
+        } else if ("GENERAL".equals(activeCategory)) {
+            populateGeneralSettings();
         } else {
-            populateProcessingSettings();
+            populateLooksSettings();
         }
     }
 
-    private void populateProcessingSettings() {
+    private void populateLooksSettings() {
         addEditorHero();
-        beginSection("SMART POINT & SHOOT", "Automated scene-adaptive colour science for effortless shooting.");
-        addSwitch("Easy point & shoot mode", "Automatically adapts warmth, protects skin tones and balances dynamic range", AppSettings.EASY_MODE, true);
-        addChoice("Skin tone protection", "Auto follows the selected brain; On or Off overrides even in Easy Mode", AppSettings.SKIN_PROTECTION_MODE,
-                AppSettings.OVERRIDE_CHOICES, AppSettings.OVERRIDE_AUTO);
-        addChoice("Smart filmic vibrance", "Auto follows the selected brain; On or Off overrides even in Easy Mode", AppSettings.SMART_VIBRANCE_MODE,
-                AppSettings.OVERRIDE_CHOICES, AppSettings.OVERRIDE_AUTO);
-
-        beginSection("PROCESSING BRAIN", "The look is developed from sensor data after capture.");
-        addChoice("Rendering brain", "Choose the image-making approach", AppSettings.BRAIN,
+        beginSection("LOOK & FILM BRAIN", "Point-and-shoot defaults and film rendering base.");
+        addSwitch("Easy point & shoot mode", "Simple automatic defaults; explicit look adjustments still take precedence", AppSettings.EASY_MODE, true);
+        addChoice("Rendering brain", "Base film emulation for tone, colour, and contrast", AppSettings.BRAIN,
                 AppSettings.BRAIN_CHOICES, AppSettings.BRAIN_LIKA_FILM);
-        addChoice("Film push / pull rating", "Emulate chemical push/pull development latitude & grain", AppSettings.FILM_PUSH_PULL,
+        addChoice("Film push / pull", "Shift contrast, shadow density, and grain like push/pull development", AppSettings.FILM_PUSH_PULL,
                 AppSettings.FILM_PUSH_PULL_CHOICES, AppSettings.FILM_PUSH_PULL_CHOICES[0]);
+        addSwitch("Live film preview", "Preview your active film brain, adjustments, and LUT in the viewfinder", AppSettings.LIVE_FILM_PREVIEW, true);
 
-        beginSection("COLOUR PIPELINE & TONE MAPPING", "Transfer functions, contrast geometry and gamut control.");
-        addChoice("Colour space", "Target display gamut", AppSettings.COLOR_SPACE,
-                AppSettings.COLOR_SPACE_CHOICES, AppSettings.COLOR_SPACE_SRGB);
-        addSwitch("Ultra HDR gainmap", "Embed ISO 21496-1 HDR gainmap so film highlights and halation glow on OLED displays", AppSettings.ULTRA_HDR, true);
-        addChoice("Tone curve", "Transfer curve geometry", AppSettings.TONE_CURVE,
-                AppSettings.TONE_CURVE_CHOICES, "Filmic S-Curve");
-        addChoice("Shadow profile", "Auto uses each brain's default toe; choose a manual override to lock blacks", AppSettings.SHADOW_PROFILE,
-                AppSettings.SHADOW_PROFILE_CHOICES, AppSettings.SHADOW_PROFILE_AUTO);
-        addChoice("Highlight recovery", "Auto adapts to scene highlight clipping; choose a manual override to lock roll-off", AppSettings.HIGHLIGHT_RECOVERY,
-                AppSettings.HIGHLIGHT_RECOVERY_CHOICES, AppSettings.HL_REC_AUTO);
-
-        beginSection("RAW DEVELOPMENT", "Tune the render while preserving the original DNG.");
-        addChoice("White balance", "Auto uses this frame's sensor estimate", AppSettings.WHITE_BALANCE_MODE,
-                new String[]{"Auto · as shot", "2800 K · incandescent", "3200 K · tungsten", "4000 K · warm LED", "5000 K · daylight", "5600 K · daylight", "6500 K · overcast", "7500 K · shade"}, "Auto · as shot");
+        beginSection("PRIMARY TONE & ADJUST PANEL", "Core exposure, warmth, highlights, shadows, and contrast defaults.");
         addSlider("Exposure trim", "Exposure compensation in 0.1 EV steps", AppSettings.EXPOSURE, -20, 20, AppSettings.DEFAULT_EXPOSURE);
         addSlider("Warmth shift", "Shift the selected brain warmer or cooler", AppSettings.WARMTH, 0, 100, AppSettings.DEFAULT_WARMTH);
-        addSlider("Contrast", "Midtone contrast", AppSettings.CONTRAST, 50, 150, AppSettings.DEFAULT_CONTRAST);
-        addSlider("Pivot", "Mid-grey anchor for the contrast curve", AppSettings.PIVOT, 0, 100, AppSettings.DEFAULT_PIVOT);
-        addSlider("Colour intensity", "Colour intensity around neutral grey", AppSettings.SATURATION, 0, 160, AppSettings.DEFAULT_SATURATION);
-        addSlider("Saturated colour roll-off", "Softly compress vivid colours while preserving hue", AppSettings.COLOR_ROLLOFF, 0, 100, AppSettings.DEFAULT_COLOR_ROLLOFF);
-        addSlider("Highlight roll-off", "Compress bright tones smoothly", AppSettings.HIGHLIGHTS, 0, 100, AppSettings.DEFAULT_HIGHLIGHTS);
-        addSlider("Shadow depth", "Set how firmly the image holds its dark tones", AppSettings.SHADOWS, 0, 100, AppSettings.DEFAULT_SHADOWS);
-        addSlider("Colour noise reduction", "Reduce chroma noise in the developed image", AppSettings.COLOR_NR, 0, 100, AppSettings.DEFAULT_COLOR_NR);
-        addSlider("Output sharpening", "Keep fine detail soft, then add only a little edge crispness", AppSettings.SHARPEN, 0, 100, AppSettings.DEFAULT_SHARPEN);
+        addSlider("Highlights", "Smooth roll-off for bright tones", AppSettings.HIGHLIGHTS, 0, 100, AppSettings.DEFAULT_HIGHLIGHTS);
+        addSlider("Shadows", "Shadow lift or depth control", AppSettings.SHADOWS, 0, 100, AppSettings.DEFAULT_SHADOWS);
+        addSlider("Contrast", "Overall midtone contrast", AppSettings.CONTRAST, 50, 150, AppSettings.DEFAULT_CONTRAST);
+        int adjustCount = AppSettings.getAdjustControls(this).size();
+        addInfo("Customise Adjust panel…",
+                adjustCount + (adjustCount == 1 ? " control active" : " controls active")
+                        + " · Add, remove, or reorder sliders in the camera Adjust drawer",
+                ACCENT,
+                () -> AdjustControlsDialog.show(this, () -> rebuildContent(false)));
 
-        beginSection("IMAGE CHARACTER", "Texture and optical effects are applied in the render.");
-        addSlider("Film grain", "Fine luminance texture", AppSettings.GRAIN, 0, 100, AppSettings.DEFAULT_GRAIN);
-        addChoice("Grain structure", "Character of the texture", "grain_structure",
-                new String[]{"Fine · 35 mm", "Soft · 16 mm", "Coarse · 8 mm", "Monochrome"}, "Fine · 35 mm");
-        addChoice("Grain response", "Luminance-weighted or uniform distribution", AppSettings.GRAIN_RESPONSE,
-                new String[]{"Luminance-weighted", "Uniform"}, "Luminance-weighted");
-        addSlider("Halation", "Warm response around bright highlights", AppSettings.HALATION, 0, 100, AppSettings.DEFAULT_HALATION);
-        addSlider("Vignette", "Subtle edge fall-off", AppSettings.VIGNETTE, 0, 100, AppSettings.DEFAULT_VIGNETTE);
-        addChoice("Frame border", "Optional film rebate or museum matte border on export", AppSettings.FRAME_BORDER,
-                AppSettings.FRAME_BORDER_CHOICES, "None");
-        addSwitch("Optical lens correction", "Apply sensor lens shading map and geometric distortion correction", AppSettings.OPTICAL_CORRECTION, true);
-
-        beginSection("CUSTOM FILM RECIPES", "Store and manage personalized look presets.");
+        beginSection("CUSTOM RECIPES & 3D LUTS", "Saved user recipes and 3D .cube colour lookup tables.");
         for (int i = 1; i <= 3; i++) {
-            final int slot = i;
-            String name = AppSettings.getCustomRecipeName(this, slot);
-            String desc = name != null ? ("Active: " + name + " (saved)") : "Empty preset slot (save from Camera or Develop)";
-            addInfo("Recipe Slot " + slot, desc, name != null ? ACCENT : 0xff89948e);
+            addCustomRecipeRow(i);
         }
-
-        beginSection("3D LUT (COLOR LOOKUP TABLES)", "Cinematic 3D film profiles and custom .CUBE grading tables.");
         List<String> luts = LutManager.getAvailableLutNames(this);
         String currentLut = AppSettings.get(this, AppSettings.LUT_NAME, "None");
-        addChoice("Default 3D LUT", "Select primary 3D LUT applied during RAW development", AppSettings.LUT_NAME,
+        addChoice("Default 3D LUT", "Primary 3D LUT blended during RAW development", AppSettings.LUT_NAME,
                 luts.toArray(new String[0]), currentLut);
         addSlider("Default LUT intensity", "Blend strength between film brain and 3D LUT", AppSettings.LUT_INTENSITY,
                 0, 100, AppSettings.getInt(this, AppSettings.LUT_INTENSITY, AppSettings.DEFAULT_LUT_INTENSITY));
-        addInfo("Import .CUBE LUT...", "Tap to browse and import custom 3D LUT (.cube) files from storage", ACCENT, this::launchLutPicker);
-
+        addInfo("Import .cube LUT…", "Browse storage to import a 3D or 1D .cube colour table", ACCENT, this::launchLutPicker);
         for (String lutName : luts) {
             if (!LutManager.isBuiltIn(lutName)) {
-                int cubeSize = LutManager.readCubeSize(this, lutName);
-                String desc = "Custom imported .cube" + (cubeSize > 0 ? (" (" + cubeSize + "³ grid)") : "");
-                addInfo(lutName, desc, ACCENT);
+                addCustomLutRow(lutName);
             }
         }
         finishSection();
+
+        addAdvancedSection("looks_advanced", "Advanced tone, colour & grain",
+                "Pivot, tone curve, shadow profile, highlight recovery, grain & output gamut", () -> {
+                    addSlider("Contrast pivot", "Mid-grey fulcrum around which contrast expands or compresses", AppSettings.PIVOT, 0, 100, AppSettings.DEFAULT_PIVOT);
+                    addChoice("Tone curve", "Characteristic tonal response curve", AppSettings.TONE_CURVE,
+                            AppSettings.TONE_CURVE_CHOICES, "Filmic S-Curve");
+                    addChoice("Shadow profile", "Auto follows the active brain's toe; pick an option to override blacks", AppSettings.SHADOW_PROFILE,
+                            AppSettings.SHADOW_PROFILE_CHOICES, AppSettings.SHADOW_PROFILE_AUTO);
+                    addChoice("Highlight recovery", "Auto adapts to scene clipping; pick a manual override to lock behaviour", AppSettings.HIGHLIGHT_RECOVERY,
+                            AppSettings.HIGHLIGHT_RECOVERY_CHOICES, AppSettings.HL_REC_AUTO);
+                    addChoice("White balance", "Auto uses each frame's measured sensor white balance", AppSettings.WHITE_BALANCE_MODE,
+                            new String[]{"Auto · as shot", "2800 K · incandescent", "3200 K · tungsten", "4000 K · warm LED", "5000 K · daylight", "5600 K · daylight", "6500 K · overcast", "7500 K · shade"}, "Auto · as shot");
+                    addSlider("Colour intensity", "Saturation balance around neutral grey", AppSettings.SATURATION, 0, 160, AppSettings.DEFAULT_SATURATION);
+                    addSlider("Saturated colour roll-off", "Compress highly saturated colours softly without shifting hue", AppSettings.COLOR_ROLLOFF, 0, 100, AppSettings.DEFAULT_COLOR_ROLLOFF);
+                    addChoice("Skin tone protection", "Auto follows the selected brain; On or Off overrides even in Easy mode", AppSettings.SKIN_PROTECTION_MODE,
+                            AppSettings.OVERRIDE_CHOICES, AppSettings.OVERRIDE_AUTO);
+                    addChoice("Smart filmic vibrance", "Auto follows the selected brain; On or Off overrides even in Easy mode", AppSettings.SMART_VIBRANCE_MODE,
+                            AppSettings.OVERRIDE_CHOICES, AppSettings.OVERRIDE_AUTO);
+                    addSlider("Film grain", "Resolution-aware organic luminance texture", AppSettings.GRAIN, 0, 100, AppSettings.DEFAULT_GRAIN);
+                    addChoice("Grain structure", "Film gauge texture (35 mm fine, 16 mm soft, or 8 mm coarse)", AppSettings.GRAIN_STRUCTURE,
+                            AppSettings.GRAIN_STRUCTURE_CHOICES, AppSettings.GRAIN_STRUCTURE_CHOICES[0]);
+                    addChoice("Grain response", "Midtone-weighted film response or uniform across exposure", AppSettings.GRAIN_RESPONSE,
+                            new String[]{"Luminance-weighted", "Uniform"}, "Luminance-weighted");
+                    addSlider("Halation", "Warm optical glow around bright light sources", AppSettings.HALATION, 0, 100, AppSettings.DEFAULT_HALATION);
+                    addSlider("Vignette", "Subtle corner fall-off", AppSettings.VIGNETTE, 0, 100, AppSettings.DEFAULT_VIGNETTE);
+                    addSlider("Colour noise reduction", "Reduce chroma speckle in high-ISO captures", AppSettings.COLOR_NR, 0, 100, AppSettings.DEFAULT_COLOR_NR);
+                    addSlider("Output sharpening", "Subtle edge crispness applied after demosaicing", AppSettings.SHARPEN, 0, 100, AppSettings.DEFAULT_SHARPEN);
+                    addChoice("Colour space", "Output colour gamut and embedded ICC profile", AppSettings.COLOR_SPACE,
+                            AppSettings.COLOR_SPACE_CHOICES, AppSettings.COLOR_SPACE_SRGB);
+                    addSwitch("Ultra HDR gainmap", "Embed ISO 21496-1 gainmap for highlight headroom on supported HDR displays", AppSettings.ULTRA_HDR, true);
+                    addChoice("Frame border", "Optional film rebate or matte border around exported photos", AppSettings.FRAME_BORDER,
+                            AppSettings.FRAME_BORDER_CHOICES, "None");
+                    addSwitch("Optical lens correction", "Apply camera lens shading map during RAW development", AppSettings.OPTICAL_CORRECTION, true);
+                });
     }
 
     private void populateCameraSettings() {
-        beginSection("CAPTURE", "Sensor, focus behaviour and timing.");
-        addChoice("App launch mode", "Camera mode when opening Lika Lens", AppSettings.LAUNCH_MODE,
+        beginSection("STILL CAPTURE & LENS", "Launch behaviour, framing ratio, default lens, focus, and feedback.");
+        addChoice("App launch mode", "Mode selected when opening Lika Lens", AppSettings.LAUNCH_MODE,
                 AppSettings.LAUNCH_MODES, "Photo (default)");
-        addChoice("Frame shape", "Match the viewfinder guide and rendered JPEG; keep the DNG full-frame", AppSettings.ASPECT_RATIO,
+        addChoice("Frame shape", "Aspect ratio for viewfinder framing and processed JPEG; DNG stays full-sensor", AppSettings.ASPECT_RATIO,
                 AppSettings.ASPECT_RATIOS, "4:3");
-        addChoice("Default lens", "Camera lens selected on app launch", AppSettings.DEFAULT_LENS,
+        addChoice("Default lens", "Camera lens requested on app launch where hardware supports it", AppSettings.DEFAULT_LENS,
                 new String[]{"Auto / Wide 1×", "Ultra-wide .5×", "Telephoto 2×/5×", "Last used"}, "Auto / Wide 1×");
-        addChoice("Flash mode", "Rear LED flash or front warm Retina screen illumination", AppSettings.FLASH,
+        addChoice("Flash mode", "Rear LED flash or front warm screen flash", AppSettings.FLASH,
                 new String[]{"Off", "Auto", "Torch"}, "Off");
-        addSwitch("Mirror front camera", "Save front-camera selfies horizontally flipped as previewed", AppSettings.MIRROR_FRONT, true);
-        addSwitch("Show dirty lens warning", "Display a prompt if lens smudges or diffuse haze reduce contrast", AppSettings.DIRTY_LENS_WARNING, true);
-        addChoice("Stabilization", "Optical (OIS) and electronic video stabilization", AppSettings.STABILIZATION,
-                AppSettings.STABILIZATION_CHOICES, "Cinema OIS + EIS");
-        addChoice("RAW capture size", "Uses the largest RAW stream the camera supports", AppSettings.RAW_SIZE,
-                new String[]{"Maximum sensor resolution", "12 MP · faster development"}, "Maximum sensor resolution");
-        addChoice("Exposure mode", "Manual sensor controls require device support", AppSettings.EXPOSURE_MODE,
-                new String[]{"Auto exposure", "Manual exposure"}, "Auto exposure");
-        addChoice("Manual shutter", "Used when Manual exposure is selected", AppSettings.MANUAL_SHUTTER,
-                new String[]{"1/30 sec", "1/60 sec", "1/120 sec", "1/240 sec", "1/500 sec", "1/1000 sec", "1/2000 sec", "1/4000 sec"}, "1/120 sec");
-        addChoice("Manual ISO", "Used when Manual exposure is selected", AppSettings.MANUAL_ISO,
-                new String[]{"ISO 50", "ISO 100", "ISO 200", "ISO 400", "ISO 800", "ISO 1600", "ISO 3200"}, "ISO 100");
-        addChoice("Self-timer", "Delay before the shutter fires", AppSettings.TIMER,
+        addChoice("Self-timer", "Delay before shutter release", AppSettings.TIMER,
                 new String[]{"Off", "3 seconds", "10 seconds"}, "Off");
-        addSwitch("Timer countdown light", "Pulse rear LED flash rhythmically during self-timer countdown", AppSettings.TIMER_LIGHT, true);
-        addSwitch("Palm gesture timer", "Show an open palm to the camera to start a 3-second hands-free countdown", AppSettings.PALM_TIMER, false);
-        addChoice("Focus behaviour", "Camera2 autofocus mode", "focus_mode",
-                new String[]{"Continuous picture autofocus", "Single autofocus"}, "Continuous picture autofocus");
-        addChoice("Astrophotography / Night mode", "Long-exposure noise reduction when stationary or on tripod at night", AppSettings.ASTROPHOTOGRAPHY,
-                AppSettings.ASTRO_CHOICES, "Auto (when stationary at night)");
-        addChoice("Anti-banding / flicker", "Compensate for AC artificial lighting cycles", AppSettings.ANTI_BANDING,
-                new String[]{"Auto (50/60 Hz)", "50 Hz (Europe/Asia)", "60 Hz (Americas/Japan)", "Off"}, "Auto (50/60 Hz)");
-        addSwitch("Haptic shutter", "Short tactile response when a frame is taken", AppSettings.HAPTICS, true);
-        addSwitch("Shutter sound", "Mechanical leaf shutter audio click on capture", AppSettings.SHUTTER_SOUND, true);
+        addSwitch("Mirror front camera", "Flip front-camera selfies horizontally to match preview", AppSettings.MIRROR_FRONT, true);
+        addChoice("Focus mode", "Autofocus behaviour or manual focus distance", AppSettings.FOCUS_MODE,
+                AppSettings.FOCUS_MODE_CHOICES, AppSettings.FOCUS_CONTINUOUS);
+        addSwitch("Shutter sound", "Play capture sound when device ringer mode permits", AppSettings.SHUTTER_SOUND, true);
+        addSwitch("Haptic feedback", "Tactile response on shutter, dials, and landmarks", AppSettings.HAPTICS, true);
 
-        beginSection("CINEMATIC VIDEO", "High-bitrate motion recording with mid-take camera switching.");
-        addChoice("Video frame rate", "Cinematic motion blur cadence", AppSettings.VIDEO_FPS,
-                new String[]{"24 fps (Cinematic)", "30 fps", "60 fps"}, "24 fps (Cinematic)");
-        addChoice("Video framing", "Framing aspect ratio for video recording", AppSettings.VIDEO_ASPECT,
-                new String[]{"16:9 Widescreen", "2.39:1 Cinemascope"}, "16:9 Widescreen");
-        addChoice("Video bitrate", "Encoding target bitrate for motion detail", AppSettings.VIDEO_BITRATE,
-                new String[]{"High · 24 Mbps", "Ultra · 35 Mbps", "Standard · 14 Mbps"}, "High · 24 Mbps");
-        addChoice("Video codec", "Compression standard for recorded video", AppSettings.VIDEO_CODEC,
-                new String[]{"H.264 · Universal", "HEVC (H.265) · High Efficiency"}, "H.264 · Universal");
-        addSwitch("10-bit HLG HDR video", "Record 10-bit High Dynamic Range video when supported by the sensor", AppSettings.VIDEO_HDR, false);
-        addChoice("Audio source", "Microphone processing during video recording", AppSettings.VIDEO_AUDIO,
-                AppSettings.VIDEO_AUDIO_CHOICES, "Camcorder · Stereo");
-        addSwitch("Directional audio zoom", "Focus microphone pickup toward the subject when zooming in", AppSettings.AUDIO_ZOOM, true);
-        addInfo("Mid-Take Camera Switching", "Switch between front/rear cameras or lenses while recording. Segments are stitched automatically into a single video.", ACCENT);
-        addInfo("180° Shutter Rule", "In 24 fps cinematic mode, the app targets a 1/48s exposure interval for authentic motion cadence.", 0xffaab3ad);
-
-        beginSection("VIEWFINDER & SHOOTING ERGONOMICS", "Framing aids, exposure telemetry, gesture shortcuts and tactile controls.");
-        addChoice("Left-hand mode", "Move top-left & key controls to the opposite side; optionally swap camera & gallery",
-                AppSettings.LEFT_HAND_MODE, AppSettings.LEFT_HAND_MODE_CHOICES, AppSettings.LEFT_HAND_OFF);
-        addSwitch("Live film stock viewfinder preview", "Real-time film color science simulation in the live viewfinder", AppSettings.LIVE_FILM_PREVIEW, true);
-        addSwitch("Pro optical loupe (5×)", "High-magnification focus assist loupe with gold bezel during reticle adjustment", AppSettings.OPTICAL_LOUPE, false);
-        addChoice("Composition grid", "Choose a guide overlay inside the viewfinder frame", AppSettings.GRID_STYLE,
+        beginSection("COMPOSITION & METERING AIDS", "Viewfinder overlays (not baked into saved photographs).");
+        addChoice("Composition grid", "Framing guide inside the viewfinder", AppSettings.GRID_STYLE,
                 new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");
-        addSwitch("Visual level & flat-lay crosshair", "Horizon bar and top-down concentric crosshairs that illuminate gold when level", AppSettings.VISUAL_LEVEL, true);
-        addChoice("Horizon visibility", "Display horizon line only near level to keep viewfinder clean, or always show", AppSettings.HORIZON_MODE,
-                new String[]{"Smart (near level only)", "Always visible"}, "Smart (near level only)");
-        addChoice("Horizon sensitivity", "Deadband tolerance for level detection", AppSettings.HORIZON_SENSITIVITY,
-                new String[]{"Normal (±1.0°)", "Precise (±0.5°)"}, "Normal (±1.0°)");
-        addSwitch("Live tonal histogram", "Real-time tonal distribution graph in the viewfinder corner", AppSettings.HISTOGRAM, false);
-        addChoice("Histogram display style", "Tonal curve graph type (can also tap histogram in viewfinder to cycle)", AppSettings.HISTOGRAM_MODE,
-                new String[]{"Luminance", "RGB Parade", "Compact"}, "Luminance");
-        addSwitch("Highlight zebra stripes", "Diagonal warning stripes when sensor luminance approaches clipping (>95%)", AppSettings.ZEBRA, false);
-        addSwitch("Focus peaking", "Highlight sharp in-focus contrast edges in gold", AppSettings.FOCUS_PEAKING, false);
-        addChoice("Long press gesture", "Action when holding finger on viewfinder", AppSettings.VIEWFINDER_LONG_PRESS,
-                new String[]{"AE / AF lock", "Lock exposure only (AE-L)", "Reset exposure bias", "None"}, "AE / AF lock");
-        addChoice("Double tap gesture", "Action when double-tapping viewfinder", AppSettings.VIEWFINDER_DOUBLE_TAP,
-                new String[]{"Toggle 1× / 2× zoom", "Reset exposure bias", "None"}, "Toggle 1× / 2× zoom");
-        addChoice("Reticle metering", "Targeting behaviour for focus reticle tap (dual EV + Shadow sliders)", AppSettings.RETICLE_METERING,
-                new String[]{"AF + AE Metering", "AF Only (Continuous AE)", "AE Only (Continuous AF)"}, "AF + AE Metering");
-        addChoice("Volume key action", "Hardware volume key function", AppSettings.VOLUME_ROCKER,
-                new String[]{"Shutter", "Zoom", "Volume", "Off"}, "Shutter");
-        addSwitch("Shutter ocular wink", "Blackout pulse during optical leaf shutter exposure", AppSettings.SHUTTER_WINK, true);
-        addSwitch("Exposure telemetry HUD", "Display live shutter speed, ISO, and white balance metering on the viewfinder", AppSettings.SHOW_TELEMETRY, false);
-        addSwitch("Storage frame counter in HUD", "Show estimated remaining film frames in the exposure telemetry strip", AppSettings.FRAME_COUNTER, true);
-        addInfo("Grid guides", "The frame outline and grid help compose the shot. They are not saved into the photo.", 0xffaab3ad);
-        boolean hasRaw = AppSettings.getBoolean(this, AppSettings.RAW_SUPPORTED, false);
-        addInfo("RAW sensor support", hasRaw ? "Available on the last opened camera" : "Not confirmed yet · open the camera to detect support", hasRaw ? ACCENT : 0xffdfb56f);
-        boolean hasManual = AppSettings.getBoolean(this, AppSettings.MANUAL_SUPPORTED, false);
-        addInfo("Manual sensor support", hasManual ? "Shutter and ISO controls are available" : "Not confirmed yet · depends on the selected camera", hasManual ? ACCENT : 0xffdfb56f);
-        addInfo("Capture pipeline", "Camera2 RAW_SENSOR → DNG original → Lika Lens render", 0xffaab3ad);
-        addInfo("Limitations", "If a camera cannot stream RAW with the live preview, Lika Lens falls back to a rendered JPEG and labels that capture.", 0xffaab3ad);
+        addSwitch("Visual level & horizon", "Horizon indicator and top-down flat-lay crosshair", AppSettings.VISUAL_LEVEL, true);
+        addSwitch("Live tonal histogram", "Real-time tonal graph in the viewfinder corner", AppSettings.HISTOGRAM, false);
+        addSwitch("Focus peaking", "Highlight sharp high-contrast edges in gold", AppSettings.FOCUS_PEAKING, false);
+        addSwitch("Highlight zebra stripes", "Diagonal warning stripes over near-clipped bright areas", AppSettings.ZEBRA, false);
         finishSection();
+
+        addAdvancedSection("camera_advanced", "Advanced manual, loupe & hardware controls",
+                "Manual exposure, focus loupe, night mode, gestures, HUD & sensor status", () -> {
+                    addSwitch("Show loupe when adjusting MF", "Automatically open 5× focus magnifier while dragging the manual focus slider", AppSettings.LOUPE_ON_MF_ADJUST, false);
+                    addSwitch("Tap-to-focus optical loupe", "Show 5× focus magnifier while dragging the tap reticle", AppSettings.OPTICAL_LOUPE, false);
+                    addChoice("Exposure mode", "Manual shutter and ISO require camera hardware support", AppSettings.EXPOSURE_MODE,
+                            new String[]{"Auto exposure", "Manual exposure"}, "Auto exposure");
+                    addChoice("Manual shutter", "Shutter interval when Manual exposure is selected", AppSettings.MANUAL_SHUTTER,
+                            new String[]{"1/30 sec", "1/60 sec", "1/120 sec", "1/240 sec", "1/500 sec", "1/1000 sec", "1/2000 sec", "1/4000 sec"}, "1/120 sec");
+                    addChoice("Manual ISO", "Sensor sensitivity when Manual exposure is selected", AppSettings.MANUAL_ISO,
+                            new String[]{"ISO 50", "ISO 100", "ISO 200", "ISO 400", "ISO 800", "ISO 1600", "ISO 3200"}, "ISO 100");
+                    addChoice("RAW capture size", "Resolution of RAW captures and editable sensor originals", AppSettings.RAW_SIZE,
+                            new String[]{"Maximum sensor resolution", "12 MP · faster development"}, "Maximum sensor resolution");
+                    addChoice("Astrophotography / Night mode", "Extended exposure for low-light stationary captures", AppSettings.ASTROPHOTOGRAPHY,
+                            AppSettings.ASTRO_CHOICES, "Auto (when stationary at night)");
+                    addChoice("Stabilization", "Optical and electronic stabilization for preview and video", AppSettings.STABILIZATION,
+                            AppSettings.STABILIZATION_CHOICES, "Cinema OIS + EIS");
+                    addChoice("Anti-banding / flicker", "Match mains frequency to prevent artificial lighting flicker", AppSettings.ANTI_BANDING,
+                            new String[]{"Auto (50/60 Hz)", "50 Hz (Europe/Asia)", "60 Hz (Americas/Japan)", "Off"}, "Auto (50/60 Hz)");
+                    addChoice("Reticle metering", "What a viewfinder tap sets (autofocus, exposure, or both)", AppSettings.RETICLE_METERING,
+                            new String[]{"AF + AE Metering", "AF Only (Continuous AE)", "AE Only (Continuous AF)"}, "AF + AE Metering");
+                    addChoice("Histogram display style", "Luminance curve, RGB parade, or compact bar", AppSettings.HISTOGRAM_MODE,
+                            new String[]{"Luminance", "RGB Parade", "Compact"}, "Luminance");
+                    addChoice("Horizon visibility", "Show horizon line only near level or at all times", AppSettings.HORIZON_MODE,
+                            new String[]{"Smart (near level only)", "Always visible"}, "Smart (near level only)");
+                    addChoice("Horizon sensitivity", "Tolerance for snapping the level indicator to gold", AppSettings.HORIZON_SENSITIVITY,
+                            new String[]{"Normal (±1.0°)", "Precise (±0.5°)"}, "Normal (±1.0°)");
+                    addSwitch("Show dirty lens warning", "Alert if haze or low scene contrast suggests smudged glass", AppSettings.DIRTY_LENS_WARNING, true);
+                    addSwitch("Timer countdown light", "Pulse rear flash LED during self-timer countdown", AppSettings.TIMER_LIGHT, true);
+                    addSwitch("Palm gesture timer", "Start a 3-second countdown when an open palm is detected", AppSettings.PALM_TIMER, false);
+                    addChoice("Long press gesture", "Action when pressing and holding on the viewfinder", AppSettings.VIEWFINDER_LONG_PRESS,
+                            new String[]{"AE / AF lock", "Lock exposure only (AE-L)", "Reset exposure bias", "None"}, "AE / AF lock");
+                    addChoice("Double tap gesture", "Action when double-tapping the viewfinder", AppSettings.VIEWFINDER_DOUBLE_TAP,
+                            new String[]{"Toggle 1× / 2× zoom", "Reset exposure bias", "None"}, "Toggle 1× / 2× zoom");
+                    addChoice("Volume key action", "Hardware volume button behaviour inside camera", AppSettings.VOLUME_ROCKER,
+                            new String[]{"Shutter", "Zoom", "Volume", "Off"}, "Shutter");
+                    addSwitch("Shutter ocular wink", "Brief blackout pulse on shutter release", AppSettings.SHUTTER_WINK, true);
+                    addSwitch("Exposure telemetry HUD", "Display live shutter, ISO, and white balance readout in viewfinder", AppSettings.SHOW_TELEMETRY, false);
+                    addSwitch("Remaining shots counter", "Show estimated remaining shots inside the telemetry HUD", AppSettings.FRAME_COUNTER, true);
+                    boolean hasRaw = AppSettings.getBoolean(this, AppSettings.RAW_SUPPORTED, false);
+                    addInfo("RAW sensor support", hasRaw ? "Supported on the last opened camera" : "Not confirmed yet · open camera to check sensor capability", hasRaw ? ACCENT : 0xffdfb56f);
+                    boolean hasManual = AppSettings.getBoolean(this, AppSettings.MANUAL_SUPPORTED, false);
+                    addInfo("Manual sensor support", hasManual ? "Manual shutter, ISO, and exposure available on last opened camera" : "Not confirmed yet · depends on active camera sensor", hasManual ? ACCENT : 0xffdfb56f);
+                });
+    }
+
+    private void populateVideoSettings() {
+        boolean hdrEnabled = AppSettings.getBoolean(this, AppSettings.VIDEO_HDR, false);
+        beginSection("VIDEO RECORDING & SHUTTER", "Frame cadence, codec, HDR, shutter angle, and stabilization.");
+        addChoice("Video frame rate", "Recording cadence (validated against active camera FPS ranges)", AppSettings.VIDEO_FPS,
+                AppSettings.VIDEO_FPS_CHOICES, "24 fps (Cinematic)");
+        addChoice("Video framing", "Recording aspect ratio", AppSettings.VIDEO_ASPECT,
+                new String[]{"16:9 Widescreen", "2.39:1 Cinemascope"}, "16:9 Widescreen");
+        addChoice("Video bitrate", "Target encoder bitrate (scaled automatically when HDR is active)", AppSettings.VIDEO_BITRATE,
+                new String[]{"High · 24 Mbps", "Ultra · 35 Mbps", "Standard · 14 Mbps"}, "High · 24 Mbps");
+        addChoice("Video codec",
+                hdrEnabled ? "HEVC (H.265) is required while 10-bit HLG HDR is active"
+                        : "H.264 for broad compatibility or HEVC for smaller files and 10-bit HDR",
+                AppSettings.VIDEO_CODEC,
+                new String[]{"H.264 · Universal", "HEVC (H.265) · High Efficiency"}, "H.264 · Universal");
+        addSwitch("10-bit HLG HDR video", "Record 10-bit HLG HDR where the sensor supports HLG10; selects HEVC automatically", AppSettings.VIDEO_HDR, false);
+        addChoice("Video shutter", "180° shutter targets half the frame interval (e.g. 1/48 s at 24 fps, 1/50 s at 25 fps) with Auto ISO",
+                AppSettings.VIDEO_SHUTTER_MODE, AppSettings.VIDEO_SHUTTER_MODES, AppSettings.VIDEO_SHUTTER_180);
+        addChoice("Stabilization", "Optical and electronic stabilization during recording", AppSettings.STABILIZATION,
+                AppSettings.STABILIZATION_CHOICES, "Cinema OIS + EIS");
+
+        beginSection("VIDEO AUDIO", "Microphone tuning for video recording.");
+        addChoice("Audio source", "Natural stereo camcorder capture, voice focus, raw mic, or muted", AppSettings.VIDEO_AUDIO,
+                AppSettings.VIDEO_AUDIO_CHOICES, "Camcorder · Stereo");
+        finishSection();
+
+        addAdvancedSection("video_advanced", "Advanced audio & capability notes",
+                "Directional audio zoom and device HDR / audio support status", () -> {
+                    addSwitch("Directional audio zoom", "Adjust microphone pickup field toward zoomed subject where hardware supports it (Android 10+)", AppSettings.AUDIO_ZOOM, true);
+                    String hdrStatus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                            ? "Android 13+ HLG10 API available · camera sensor HLG10 capability checked when recording starts"
+                            : "Requires Android 13 (API 33) or newer for 10-bit HLG HDR capture";
+                    addInfo("10-bit HLG HDR capability", hdrStatus, 0xffaab3ad);
+                    String audioZoomStatus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                            ? "Android 10+ microphone field API available · directional focus depends on device hardware"
+                            : "Requires Android 10 (API 29) or newer for directional audio zoom";
+                    addInfo("Directional audio capability", audioZoomStatus, 0xffaab3ad);
+                });
     }
 
     private void populateGeneralSettings() {
-        beginSection("FILE MANAGEMENT & OUTPUT", "Shareable renders, digital negatives and storage organisation.");
-        addChoice("Photo output format", "Choose whether to export processed JPEG only, JPEG + DNG, or DNG original only",
+        String archiveLimit = AppSettings.get(this, AppSettings.EDITABLE_ARCHIVE_LIMIT, AppSettings.EDITABLE_ARCHIVE_512MB);
+        beginSection("PHOTO OUTPUT & EDITABLE ORIGINALS", "Gallery exports and app-private sensor originals for re-editing.");
+        addChoice("Photo output", "Gallery receives processed JPEGs; an app-private original is retained for non-destructive re-editing",
                 AppSettings.PHOTO_OUTPUT, AppSettings.PHOTO_OUTPUT_CHOICES, AppSettings.PHOTO_OUTPUT_JPEG_ONLY);
-        addChoice("Editable originals cache limit", "Maximum private RAW storage kept for post-capture re-editing and switching brains",
+        addChoice("Editable originals limit", "Maximum app-private RAW cache before oldest unpinned originals are trimmed",
                 AppSettings.EDITABLE_ARCHIVE_LIMIT, AppSettings.EDITABLE_ARCHIVE_LIMIT_CHOICES, AppSettings.EDITABLE_ARCHIVE_512MB);
-        addChoice("File naming pattern", "Format for exported files", AppSettings.FILE_NAMING,
+        addInfo("Editable originals cache",
+                RawArchive.formatArchiveSummary(this, archiveLimit) + "\nTap to clear cache (Gallery JPEGs & DNGs stay untouched)",
+                ACCENT, this::showClearArchiveDialog);
+
+        beginSection("FILES, METADATA & ERGONOMICS", "Naming, folder layout, JPEG encoding, GPS, and handedness.");
+        addSwitch("Save location (GPS)", "Embed GPS coordinates in exported JPEG, DNG, and video files when permitted", AppSettings.LOCATION, true);
+        addChoice("Left-hand mode", "Shift header controls or swap camera flip and gallery placement",
+                AppSettings.LEFT_HAND_MODE, AppSettings.LEFT_HAND_MODE_CHOICES, AppSettings.LEFT_HAND_OFF);
+        addChoice("File naming pattern", "Format for exported file names", AppSettings.FILE_NAMING,
                 new String[]{"Prefix + Timestamp", "Film Look + Timestamp", "Roll counter (e.g. ROLL_0001)"}, "Prefix + Timestamp");
-        addChoice("Folder organisation", "Structure under Pictures/Lika Lens", AppSettings.FOLDER_ORG,
-                new String[]{"Single folder (Pictures/Lika Lens)", "Organise by month (YYYY-MM)", "Organise by film look"}, "Single folder (Pictures/Lika Lens)");
-        addChoice("JPEG quality", "Encoder compression factor", AppSettings.JPEG_QUALITY,
-                new String[]{"Maximum · 98% (Archival)", "High · 95% (Recommended)", "Balanced · 90%", "Compact · 85%"}, "High · 95% (Recommended)");
-        addSwitch("Include EXIF shooting params", "Embed shutter, ISO, aperture, and focal length", AppSettings.EXIF_PARAMS, true);
-        addChoice("File name prefix", "Organise Lika Lens captures in Photos", AppSettings.FILE_PREFIX,
+        addChoice("File name prefix", "Prefix used for captured file names", AppSettings.FILE_PREFIX,
                 new String[]{"LIKA", "STILLS", "REEL", "CUSTOM…"}, "LIKA");
-        addSwitch("Save location (GPS)", "Embed GPS coordinates in exported JPEG and DNG files", AppSettings.LOCATION, true);
-        addInfo("Device storage & roll capacity", AppSettings.formatDetailedStorageBreakdown(this), ACCENT);
+        addChoice("Folder organisation", "Subfolder structure under Pictures/Lika Lens", AppSettings.FOLDER_ORG,
+                new String[]{"Single folder (Pictures/Lika Lens)", "Organise by month (YYYY-MM)", "Organise by film look"}, "Single folder (Pictures/Lika Lens)");
+        addChoice("JPEG quality", "Output compression quality for Gallery JPEGs", AppSettings.JPEG_QUALITY,
+                new String[]{"Maximum · 98% (Archival)", "High · 95% (Recommended)", "Balanced · 90%", "Compact · 85%"}, "High · 95% (Recommended)");
+        finishSection();
 
-        beginSection("ANIMATED GIF CREATOR", "Stop-motion loops and video to animated GIF export.");
-        addChoice("Default GIF frame rate", "Playback speed for exported animated GIFs", AppSettings.GIF_FPS,
-                new String[]{"2 fps · Stop Motion", "5 fps · Retro Cinematic", "10 fps · Smooth (Recommended)", "15 fps · High Fluidity"}, "10 fps · Smooth (Recommended)");
-        addChoice("Default GIF resolution", "Output dimension for GIF generation", AppSettings.GIF_RESOLUTION,
-                new String[]{"320px · Compact & Light", "480px · Standard (Recommended)", "640px · Pro HD"}, "480px · Standard (Recommended)");
-        addSwitch("Boomerang forward/reverse loop", "Ping-pong sequence for burst animations", AppSettings.GIF_BOOMERANG, false);
+        addAdvancedSection("general_advanced", "Advanced metadata, storage & GIF defaults",
+                "EXIF camera metadata, detailed capacity estimate, and GIF export defaults", () -> {
+                    addSwitch("Include EXIF shooting params", "Write shutter speed, ISO, aperture, and focal length into JPEG EXIF", AppSettings.EXIF_PARAMS, true);
+                    addInfo("Device storage & roll capacity", AppSettings.formatDetailedStorageBreakdown(this), ACCENT);
+                    addChoice("Default GIF frame rate", "Playback cadence for animated GIF exports", AppSettings.GIF_FPS,
+                            new String[]{"2 fps · Stop Motion", "5 fps · Retro Cinematic", "10 fps · Smooth (Recommended)", "15 fps · High Fluidity"}, "10 fps · Smooth (Recommended)");
+                    addChoice("Default GIF resolution", "Output pixel size for GIF generation", AppSettings.GIF_RESOLUTION,
+                            new String[]{"320px · Compact & Light", "480px · Standard (Recommended)", "640px · Pro HD"}, "480px · Standard (Recommended)");
+                    addSwitch("Boomerang forward/reverse loop", "Ping-pong frames for seamless loops", AppSettings.GIF_BOOMERANG, false);
+                });
 
-        beginSection("BACKUP & RESTORE", "Save, import or share your settings, custom film recipes and LUTs.");
-        addInfo("Save named backup", "Export settings, recipes and custom LUTs to a named file", ACCENT, () -> showBackupNameDialog(false));
-        addInfo("Share backup", "Name a backup file and share it with another app or user", ACCENT, () -> showBackupNameDialog(true));
-        addInfo("Import backup", "Restore settings, custom recipes and LUTs from a backup file", 0xffe6eae4, this::launchBackupImportPicker);
+        beginSection("BACKUP & RESTORE", "Save, share, or import settings, custom recipes, and custom LUTs.");
+        addInfo("Save named backup", "Export settings, recipes, and custom LUTs to a file", ACCENT, () -> showBackupNameDialog(false));
+        addInfo("Share backup", "Export and share a backup bundle with another app or device", ACCENT, () -> showBackupNameDialog(true));
+        addInfo("Import backup", "Restore preferences, custom recipes, and LUTs from a backup file", 0xffe6eae4, this::launchBackupImportPicker);
 
-        beginSection("UPDATES & RELEASES", "Continuous delivery from GitHub releases with Stable and Beta channels.");
-        addChoice("Update release channel", "Choose between continuous beta builds or stable releases",
+        beginSection("UPDATES & ABOUT", "Application version and GitHub release channel.");
+        addChoice("Update release channel", "Stable releases are recommended; Beta delivers pre-release builds",
                 AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_CHOICES, AppSettings.UPDATE_CHANNEL_STABLE);
-        addSwitch("Check for updates on launch", "Silently check for new versions when opening Lika Lens",
+        addSwitch("Check for updates on launch", "Check for newer releases in the background on startup",
                 AppSettings.AUTO_CHECK_UPDATES, true);
-        addInfo("Check for updates now", "Query GitHub Releases API for the latest APK", ACCENT, this::checkAppUpdate);
+        addInfo("Check for updates now", "Query GitHub Releases for a newer APK", ACCENT, this::checkAppUpdate);
         String verName = AppUpdateManager.getAppVersionName(this);
         int verCode = AppUpdateManager.getAppVersionCode(this);
         addInfo("Installed version", "Lika Lens v" + verName + " (Build " + verCode + ")", 0xffaab3ad);
-
-        beginSection("APP", "About the current image pipeline.");
-        addInfo("Viewfinder", "The device's live feed is only for framing. Lika Lens develops the final look from RAW after capture.", 0xffaab3ad);
         finishSection();
     }
 
@@ -691,9 +747,9 @@ public class SettingsActivity extends Activity {
 
         LinearLayout sliders = new LinearLayout(this);
         sliders.setGravity(Gravity.CENTER);
-        addVerticalControl(sliders, "PIVOT", AppSettings.PIVOT, AppSettings.DEFAULT_PIVOT);
-        addVerticalControl(sliders, "HIGHLIGHTS", AppSettings.HIGHLIGHTS, AppSettings.DEFAULT_HIGHLIGHTS);
-        addVerticalControl(sliders, "SHADOW DEPTH", AppSettings.SHADOWS, AppSettings.DEFAULT_SHADOWS);
+        addVerticalControl(sliders, "HIGHLIGHTS", AppSettings.HIGHLIGHTS, 0, 100, AppSettings.DEFAULT_HIGHLIGHTS);
+        addVerticalControl(sliders, "SHADOWS", AppSettings.SHADOWS, 0, 100, AppSettings.DEFAULT_SHADOWS);
+        addVerticalControl(sliders, "CONTRAST", AppSettings.CONTRAST, 50, 150, AppSettings.DEFAULT_CONTRAST);
         toneCard.addView(sliders, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout.LayoutParams toneLp = new LinearLayout.LayoutParams(-1, -2);
@@ -728,7 +784,7 @@ public class SettingsActivity extends Activity {
         mainHandler.postDelayed(heroRender, 60);
     }
 
-    private void addVerticalControl(LinearLayout row, String label, String key, int fallback) {
+    private void addVerticalControl(LinearLayout row, String label, String key, int min, int max, int fallback) {
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
         column.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -736,12 +792,13 @@ public class SettingsActivity extends Activity {
         name.setGravity(Gravity.CENTER);
         name.setMaxLines(1);
         column.addView(name, new LinearLayout.LayoutParams(-1, dp(21)));
-        int valueNow = AppSettings.getInt(this, key, fallback);
+        int valueNow = Math.max(min, Math.min(max, AppSettings.getInt(this, key, fallback)));
         TextView value = text(String.valueOf(valueNow), 8, ACCENT, true);
         final boolean[] fineMode = {false};
         value.setGravity(Gravity.CENTER);
         column.addView(value, new LinearLayout.LayoutParams(-1, dp(18)));
         VerticalSlider slider = new VerticalSlider();
+        slider.setRange(min, max);
         slider.setValue(valueNow);
         slider.setOnModeChanged(fine -> {
             fineMode[0] = fine;
@@ -988,7 +1045,23 @@ public class SettingsActivity extends Activity {
                     int kelvin = AppSettings.parseWhiteBalanceModeKelvin(option);
                     AppSettings.setWhiteBalanceKelvin(this, kelvin);
                 }
-                valueView.setText(shortValue(option));
+                if (AppSettings.VIDEO_CODEC.equals(key) && !option.contains("HEVC")
+                        && AppSettings.getBoolean(this, AppSettings.VIDEO_HDR, false)) {
+                    AppSettings.prefs(this).edit().putBoolean(AppSettings.VIDEO_HDR, false).apply();
+                    Toast.makeText(this, "Turned off 10-bit HLG HDR because HDR requires HEVC.", Toast.LENGTH_LONG).show();
+                    rebuildContent(false);
+                } else if (AppSettings.EDITABLE_ARCHIVE_LIMIT.equals(key)) {
+                    final android.content.Context appContext = getApplicationContext();
+                    final String chosenLimit = option;
+                    heroWorker.execute(() -> {
+                        RawArchive.enforceStorageLimit(appContext, chosenLimit, null);
+                        mainHandler.post(() -> {
+                            if (!isFinishing() && !isDestroyed()) rebuildContent(false);
+                        });
+                    });
+                } else {
+                    valueView.setText(shortValue(option));
+                }
                 triggerHeroUpdate();
                 dialog.dismiss();
             });
@@ -1121,6 +1194,16 @@ public class SettingsActivity extends Activity {
                 }
             }
             AppSettings.prefs(this).edit().putBoolean(key, checked).apply();
+            if (AppSettings.VIDEO_HDR.equals(key)) {
+                if (checked) {
+                    String curCodec = AppSettings.get(this, AppSettings.VIDEO_CODEC, "H.264 · Universal");
+                    if (!curCodec.contains("HEVC")) {
+                        AppSettings.prefs(this).edit().putString(AppSettings.VIDEO_CODEC, "HEVC (H.265) · High Efficiency").apply();
+                        Toast.makeText(this, "10-bit HLG HDR requires HEVC — switched codec to HEVC (H.265).", Toast.LENGTH_LONG).show();
+                    }
+                }
+                rebuildContent(false);
+            }
             triggerHeroUpdate();
         });
         row.addView(toggle);
@@ -1153,6 +1236,329 @@ public class SettingsActivity extends Activity {
             row.setOnClickListener(v -> onClick.run());
         }
         addRowToCurrentCard(row);
+    }
+
+    private void addAdvancedSection(String advKey, String title, String subtitle, Runnable buildRows) {
+        finishSection();
+        boolean expanded = expandedAdvanced.contains(advKey);
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(round(CARD, 16, LINE, dp(1)));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(14), dp(12), dp(14), dp(12));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.addView(text(title, 11, 0xffe6eae4, true));
+        if (subtitle != null && !subtitle.isEmpty()) {
+            TextView detail = text(subtitle, 8, 0xff89948e, false);
+            detail.setPadding(0, dp(3), 0, 0);
+            copy.addView(detail);
+        }
+        header.addView(copy, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView togglePill = pill(expanded ? "HIDE ▴" : "SHOW ▾", expanded);
+        LinearLayout.LayoutParams pillLp = new LinearLayout.LayoutParams(-2, dp(30));
+        pillLp.leftMargin = dp(8);
+        header.addView(togglePill, pillLp);
+        card.addView(header);
+
+        View topDivider = new View(this);
+        topDivider.setBackgroundColor(0xff1f2628);
+        LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(-1, dp(1));
+        divLp.setMargins(dp(14), 0, dp(14), 0);
+        topDivider.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        card.addView(topDivider, divLp);
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        if (buildRows != null) {
+            LinearLayout previousCard = currentSectionCard;
+            currentSectionCard = body;
+            buildRows.run();
+            currentSectionCard = previousCard;
+        }
+        card.addView(body, new LinearLayout.LayoutParams(-1, -2));
+
+        header.setOnClickListener(v -> {
+            if (hapticsEnabled) {
+                header.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            }
+            boolean nextExpanded;
+            if (expandedAdvanced.contains(advKey)) {
+                expandedAdvanced.remove(advKey);
+                nextExpanded = false;
+            } else {
+                expandedAdvanced.add(advKey);
+                nextExpanded = true;
+            }
+            topDivider.setVisibility(nextExpanded ? View.VISIBLE : View.GONE);
+            body.setVisibility(nextExpanded ? View.VISIBLE : View.GONE);
+            togglePill.setText(nextExpanded ? "HIDE ▴" : "SHOW ▾");
+            togglePill.setTextColor(nextExpanded ? ACCENT : 0xffd8ded7);
+            togglePill.setBackground(UiKit.round(this,
+                    nextExpanded ? 0xff1d1d1a : 0xff202626, 20f,
+                    nextExpanded ? ACCENT : 0xff39413e, dp(1)));
+        });
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = dp(14);
+        content.addView(card, lp);
+    }
+
+    private void addCustomRecipeRow(int slot) {
+        String recipeName = AppSettings.getCustomRecipeName(this, slot);
+        String recipeData = AppSettings.getCustomRecipeData(this, slot);
+        boolean hasRecipe = recipeName != null && !recipeName.trim().isEmpty() && recipeData != null && !recipeData.trim().isEmpty();
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(14), dp(12), dp(14), dp(12));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        if (hasRecipe) {
+            RawDeveloper.Look parsed = RawDeveloper.Look.fromJson(recipeData);
+            String baseBrain = (parsed != null && parsed.brain != null && !parsed.brain.isEmpty())
+                    ? parsed.brain : AppSettings.BRAIN_LIKA_FILM;
+            copy.addView(text("Recipe " + slot + " · " + recipeName, 11, 0xffe6eae4, true));
+            TextView detail = text("Base: " + baseBrain, 8, 0xff89948e, false);
+            detail.setPadding(0, dp(3), 0, 0);
+            copy.addView(detail);
+            row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1f));
+
+            TextView renameBtn = pill("RENAME", false);
+            LinearLayout.LayoutParams renLp = new LinearLayout.LayoutParams(-2, dp(30));
+            renLp.leftMargin = dp(6);
+            row.addView(renameBtn, renLp);
+            renameBtn.setOnClickListener(v -> showRenameRecipeDialog(slot, recipeName, recipeData));
+
+            TextView deleteBtn = pill("DELETE", false);
+            LinearLayout.LayoutParams delLp = new LinearLayout.LayoutParams(-2, dp(30));
+            delLp.leftMargin = dp(6);
+            row.addView(deleteBtn, delLp);
+            deleteBtn.setOnClickListener(v -> new AlertDialog.Builder(this)
+                    .setTitle("Delete recipe \"" + recipeName + "\"?")
+                    .setMessage("This clears custom recipe slot " + slot + ". Saved photos remain untouched.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Delete", (d, w) -> {
+                        AppSettings.deleteCustomRecipe(this, slot);
+                        String activeBrain = AppSettings.get(this, AppSettings.BRAIN, AppSettings.BRAIN_LIKA_FILM);
+                        if (activeBrain != null && activeBrain.startsWith("[RECIPE " + slot)) {
+                            AppSettings.prefs(this).edit().putString(AppSettings.BRAIN, AppSettings.BRAIN_LIKA_FILM).apply();
+                        }
+                        Toast.makeText(this, "Deleted recipe slot " + slot, Toast.LENGTH_SHORT).show();
+                        rebuildContent(false);
+                    })
+                    .show());
+        } else {
+            copy.addView(text("Custom recipe slot " + slot, 11, 0xff9ea7a1, true));
+            TextView detail = text("Empty · Save from camera Look menu or Photo Editor", 8, 0xff707a74, false);
+            detail.setPadding(0, dp(3), 0, 0);
+            copy.addView(detail);
+            row.addView(copy, new LinearLayout.LayoutParams(-1, -2));
+        }
+        addRowToCurrentCard(row);
+    }
+
+    private void showRenameRecipeDialog(int slot, String currentName, String recipeData) {
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+        }
+
+        FrameLayout scrim = new FrameLayout(this);
+        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setBackgroundColor(0x77000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setClickable(true);
+        box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
+        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+
+        TextView head = text("RENAME RECIPE " + slot, 10, ACCENT, true);
+        head.setLetterSpacing(.14f);
+        box.addView(head);
+
+        EditText input = new EditText(this);
+        input.setText(currentName);
+        input.setSelection(currentName.length());
+        input.setTextColor(0xfff0f2eb);
+        input.setHintTextColor(0xff6b746f);
+        input.setHint("Recipe name");
+        input.setSingleLine(true);
+        input.setBackground(round(0xff161c1d, 10, 0xff323b3c, dp(1)));
+        input.setPadding(dp(12), dp(10), dp(12), dp(10));
+        LinearLayout.LayoutParams inLp = new LinearLayout.LayoutParams(-1, -2);
+        inLp.topMargin = dp(12);
+        inLp.bottomMargin = dp(14);
+        box.addView(input, inLp);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        TextView cancel = pill("CANCEL", false);
+        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        cLp.rightMargin = dp(6);
+        actions.addView(cancel, cLp);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+
+        TextView save = pill("SAVE NAME", true);
+        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        sLp.leftMargin = dp(6);
+        actions.addView(save, sLp);
+        save.setOnClickListener(v -> {
+            String nextName = input.getText() == null ? "" : input.getText().toString().trim();
+            if (nextName.isEmpty()) nextName = "Recipe " + slot;
+            AppSettings.saveCustomRecipe(this, slot, nextName, recipeData);
+            dialog.dismiss();
+            rebuildContent(false);
+        });
+        box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+
+        int dialogWidth = Math.min(dp(400), Math.round(getResources().getDisplayMetrics().widthPixels * 0.88f));
+        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
+                dialogWidth,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+        );
+        scrim.addView(box, boxLp);
+        dialog.setContentView(scrim);
+        dialog.show();
+    }
+
+    private void addCustomLutRow(String lutName) {
+        int cubeSize = LutManager.readCubeSize(this, lutName);
+        String sizeLabel = cubeSize > 0 ? (cubeSize + "×" + cubeSize + "×" + cubeSize + " .cube") : "Custom .cube LUT";
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(14), dp(11), dp(14), dp(11));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.addView(text(lutName, 11, 0xffe6eae4, true));
+        TextView detail = text("Custom LUT · " + sizeLabel, 8, 0xff89948e, false);
+        detail.setPadding(0, dp(3), 0, 0);
+        copy.addView(detail);
+        row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView deleteBtn = pill("DELETE", false);
+        LinearLayout.LayoutParams delLp = new LinearLayout.LayoutParams(-2, dp(30));
+        delLp.leftMargin = dp(8);
+        row.addView(deleteBtn, delLp);
+        deleteBtn.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("Delete imported LUT \"" + lutName + "\"?")
+                .setMessage("Removes this .cube file from Lika Lens. Photos already exported are unaffected.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Delete", (d, w) -> {
+                    LutManager.deleteCustomLut(this, lutName);
+                    String activeLut = AppSettings.get(this, AppSettings.LUT_NAME, "None");
+                    if (lutName.equalsIgnoreCase(activeLut)) {
+                        AppSettings.prefs(this).edit().putString(AppSettings.LUT_NAME, "None").apply();
+                    }
+                    Toast.makeText(this, "Deleted LUT: " + lutName, Toast.LENGTH_SHORT).show();
+                    triggerHeroUpdate();
+                    rebuildContent(false);
+                })
+                .show());
+        addRowToCurrentCard(row);
+    }
+
+    private void showClearArchiveDialog() {
+        if (hapticsEnabled) {
+            getWindow().getDecorView().performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+        String limitChoice = AppSettings.get(this, AppSettings.EDITABLE_ARCHIVE_LIMIT, AppSettings.EDITABLE_ARCHIVE_512MB);
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+        }
+
+        FrameLayout scrim = new FrameLayout(this);
+        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setBackgroundColor(0x77000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setClickable(true);
+        box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
+        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+
+        TextView head = text("CLEAR EDITABLE ORIGINALS?", 10, ACCENT, true);
+        head.setLetterSpacing(.14f);
+        box.addView(head);
+
+        TextView stats = text(RawArchive.formatArchiveSummary(this, limitChoice), 10, 0xfff0f2eb, true);
+        stats.setPadding(0, dp(8), 0, dp(6));
+        box.addView(stats);
+
+        TextView body = text(
+                "Clearing editable originals removes cached app-private .sraw files used for RAW-based re-editing and switching film brains after capture.\n\n"
+                        + "All processed JPEG photographs and explicitly saved DNG files in your Gallery stay completely untouched.",
+                8.5f, 0xff9aa59f, false);
+        body.setPadding(0, 0, 0, dp(16));
+        box.addView(body);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        TextView cancel = pill("CANCEL", false);
+        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        cLp.rightMargin = dp(6);
+        actions.addView(cancel, cLp);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+
+        TextView clearBtn = pill("CLEAR CACHE", true);
+        LinearLayout.LayoutParams clLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        clLp.leftMargin = dp(6);
+        actions.addView(clearBtn, clLp);
+        clearBtn.setOnClickListener(v -> {
+            dialog.dismiss();
+            final android.content.Context appContext = getApplicationContext();
+            heroWorker.execute(() -> {
+                RawArchive.CleanupResult res = RawArchive.clearEditableOriginals(appContext);
+                mainHandler.post(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    String msg;
+                    if (res.deletedCount == 0 && res.skippedActiveCount == 0) {
+                        msg = "Editable originals cache is already empty.";
+                    } else {
+                        msg = "Cleared " + res.deletedCount + " editable "
+                                + (res.deletedCount == 1 ? "original" : "originals")
+                                + " (" + RawArchive.formatBytes(res.freedBytes) + " freed)";
+                        if (res.skippedActiveCount > 0) {
+                            msg += " · " + res.skippedActiveCount + " in use kept";
+                        }
+                    }
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+                    rebuildContent(false);
+                });
+            });
+        });
+        box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+
+        int dialogWidth = Math.min(dp(420), Math.round(getResources().getDisplayMetrics().widthPixels * 0.90f));
+        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
+                dialogWidth,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+        );
+        scrim.addView(box, boxLp);
+        dialog.setContentView(scrim);
+        dialog.show();
     }
 
     private static final int REQUEST_CODE_PICK_LUT = 2055;
@@ -1514,6 +1920,8 @@ public class SettingsActivity extends Activity {
         private final Path trackClip = new Path();
         private final RectF trackRect = new RectF();
         private final RectF thumbRect = new RectF();
+        private int min = 0;
+        private int max = 100;
         private int value;
         private OnValueChanged listener;
         private OnModeChanged modeListener;
@@ -1538,7 +1946,14 @@ public class SettingsActivity extends Activity {
             setContentDescription("Vertical tone control");
         }
 
-        void setValue(int value) { this.value = Math.max(0, Math.min(100, value)); invalidate(); }
+        void setRange(int min, int max) {
+            this.min = min;
+            this.max = Math.max(min + 1, max);
+            this.value = Math.max(this.min, Math.min(this.max, this.value));
+            invalidate();
+        }
+
+        void setValue(int value) { this.value = Math.max(min, Math.min(max, value)); invalidate(); }
         void setOnValueChanged(OnValueChanged listener) { this.listener = listener; }
         void setOnModeChanged(OnModeChanged listener) { this.modeListener = listener; }
 
@@ -1551,7 +1966,8 @@ public class SettingsActivity extends Activity {
             float thumbHalfH = dp(6);
             float rangeTop = outerTop + thumbHalfH + dp(4);
             float rangeBottom = outerBottom - thumbHalfH - dp(4);
-            float thumbY = rangeBottom - (rangeBottom - rangeTop) * (value / 100f);
+            float fraction = (value - min) / (float) Math.max(1, max - min);
+            float thumbY = rangeBottom - (rangeBottom - rangeTop) * fraction;
 
             trackRect.set(cx - trackHalfW, outerTop, cx + trackHalfW, outerBottom);
             paint.setColor(0xff202626);
@@ -1613,7 +2029,7 @@ public class SettingsActivity extends Activity {
             }
             if (event.getAction() == MotionEvent.ACTION_MOVE && tracking) {
                 lastY = event.getY();
-                if (fineMode) value = Math.max(0, Math.min(100,
+                if (fineMode) value = Math.max(min, Math.min(max,
                         fineStartValue + Math.round((fineStartY - lastY) / Math.max(1f, dp(3)))));
                 else updateFromPosition(lastY);
                 if (listener != null) listener.onChanged(value);
@@ -1636,7 +2052,8 @@ public class SettingsActivity extends Activity {
         private void updateFromPosition(float y) {
             float rangeTop = dp(5) + dp(6) + dp(4);
             float rangeBottom = getHeight() - dp(5) - dp(6) - dp(4);
-            value = Math.max(0, Math.min(100, Math.round((rangeBottom - y) * 100f / Math.max(1f, rangeBottom - rangeTop))));
+            float fraction = (rangeBottom - y) / Math.max(1f, rangeBottom - rangeTop);
+            value = Math.max(min, Math.min(max, min + Math.round(fraction * (max - min))));
             if (listener != null) listener.onChanged(value);
         }
 

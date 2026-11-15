@@ -87,6 +87,7 @@ public class PhotoEditorActivity extends Activity {
     private final LookEditHistory history = new LookEditHistory();
     private TextView undoButton, redoButton;
     private boolean advancedLooks;
+    private boolean advancedTone;
     private RawDeveloper.Look initialLook;
     private volatile int thumbnailGeneration;
     private boolean archivePinned;
@@ -442,7 +443,34 @@ public class PhotoEditorActivity extends Activity {
             addControl("Contrast", "", 2, 50, 150, Math.round(look.contrast * 100));
             addControl("Highlights", "", 4, 0, 100, Math.round(look.highlights * 100));
             addControl("Shadows", "", 5, 0, 100, Math.round(look.shadows * 100));
-            addControl("Pivot", "", 8, 0, 100, Math.round(look.pivot * 100));
+            TextView advBtn = pill(advancedTone ? "Hide advanced tone ▴" : "Advanced tone ▾", advancedTone);
+            LinearLayout.LayoutParams advLp = new LinearLayout.LayoutParams(-1, dp(38));
+            advLp.topMargin = dp(4);
+            advLp.bottomMargin = dp(6);
+            controlsList.addView(advBtn, advLp);
+            advBtn.setOnClickListener(v -> {
+                hapticClick(v);
+                advancedTone = !advancedTone;
+                populateControls();
+            });
+            if (advancedTone) {
+                addControl("Contrast pivot", "", 8, 0, 100, Math.round(look.pivot * 100));
+                addChoicePillCard("Tone curve",
+                        AppSettings.TONE_CURVE_CHOICES,
+                        new String[]{"Filmic", "Linear", "Log / Flat"},
+                        look.toneCurve == null ? "Filmic S-Curve" : look.toneCurve,
+                        picked -> look.toneCurve = picked);
+                addChoicePillCard("Shadow profile",
+                        AppSettings.SHADOW_PROFILE_CHOICES,
+                        new String[]{"Auto", "Deep", "Neutral", "Lifted"},
+                        look.shadowProfile == null ? AppSettings.SHADOW_PROFILE_AUTO : look.shadowProfile,
+                        picked -> look.shadowProfile = picked);
+                addChoicePillCard("Highlight recovery",
+                        AppSettings.HIGHLIGHT_RECOVERY_CHOICES,
+                        new String[]{"Auto", "Adaptive", "Subtract", "Hard"},
+                        look.highlightRecovery == null ? AppSettings.HL_REC_AUTO : look.highlightRecovery,
+                        picked -> look.highlightRecovery = picked);
+            }
         } else if ("Colour".equals(activeTab)) {
             addControl("White balance", "K", 1, 0, 44, look.whiteBalanceKelvin <= 0 ? 0 : 1 + (look.whiteBalanceKelvin - 3200) / 100);
             addControl("Warmth shift", "", 12, 0, 100, Math.round(look.warmth * 50f + 50f));
@@ -460,6 +488,45 @@ public class PhotoEditorActivity extends Activity {
             addCropControls();
         }
         updateInputAvailability();
+    }
+
+    private interface ChoicePickedListener { void onPicked(String value); }
+
+    private void addChoicePillCard(String title, String[] values, String[] labels, String current, ChoicePickedListener onPicked) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(8), dp(12), dp(8));
+        card.setBackground(round(0xff121617, 12, 0xff293031, dp(1)));
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(-1, -2);
+        cardLp.bottomMargin = dp(6);
+        controlsList.addView(card, cardLp);
+
+        card.addView(text(title, 10, 0xffe6eae4, true));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, dp(32));
+        rowLp.topMargin = dp(6);
+        card.addView(row, rowLp);
+
+        for (int i = 0; i < values.length; i++) {
+            final String val = values[i];
+            final String shortLbl = (labels != null && i < labels.length) ? labels[i] : val;
+            boolean active = val.equalsIgnoreCase(current);
+            TextView pill = pill(shortLbl, active);
+            pill.setTextSize(8f);
+            pill.setPadding(dp(4), 0, dp(4), 0);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
+            if (i > 0) lp.leftMargin = dp(4);
+            row.addView(pill, lp);
+            pill.setOnClickListener(v -> {
+                hapticClick(v);
+                recordEdit();
+                onPicked.onPicked(val);
+                populateControls();
+                queuePreview();
+            });
+        }
     }
 
     private void addGrainStructureChoice() {

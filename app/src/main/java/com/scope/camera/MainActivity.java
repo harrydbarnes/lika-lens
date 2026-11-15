@@ -1052,6 +1052,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         updateBrainButton();
         updateEasyButton();
         updateQuickButtons();
+        if (quickAdjustPanel != null && quickAdjustPanel.getVisibility() == View.VISIBLE) {
+            populateQuickControls();
+        }
         updateReadouts();
         updateGalleryButton();
         updateGalleryProcessingUi();
@@ -1747,6 +1750,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             WindowMetricsHelper.WindowSizeInfo wInfo = WindowMetricsHelper.computeWindowSizeInfo(MainActivity.this);
             boolean isWideWin = wInfo.isLandscape || (wInfo.widthDp >= wInfo.heightDp);
             assembleCameraLayout(isWideWin);
+            if (quickAdjustPanel != null) {
+                quickAdjustPanel.setLayoutParams(getQuickAdjustLayoutParams());
+            }
             if (textureView != null && textureView.isAvailable()) {
                 configureTransform(textureView.getWidth(), textureView.getHeight());
             }
@@ -2281,10 +2287,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             return panelLp;
         } else {
             Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
-            FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(-1, dp(340), Gravity.BOTTOM);
+            Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
+            int topSafe = computeTopSafe(safeInsets, cutoutRect);
+            int screenHeight = root != null && root.getHeight() > 0 ? root.getHeight() : getResources().getDisplayMetrics().heightPixels;
+            int bottomClearance = dp(236) + safeInsets.bottom;
+            int topClearance = topSafe + dp(56);
+            int maxHeight = Math.max(dp(170), screenHeight - bottomClearance - topClearance);
+            int panelH = Math.min(dp(340), maxHeight);
+            FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(-1, panelH, Gravity.BOTTOM);
             panelLp.leftMargin = dp(8) + safeInsets.left;
             panelLp.rightMargin = dp(8) + safeInsets.right;
-            panelLp.bottomMargin = dp(118) + safeInsets.bottom;
+            panelLp.bottomMargin = bottomClearance;
             return panelLp;
         }
     }
@@ -3199,18 +3212,32 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         LinearLayout heading = row();
         TextView title = label("LOOK CONTROLS", 9, 0xfff1f2ec, true);
-        title.setLetterSpacing(.13f);
+        title.setLetterSpacing(.11f);
+        title.setSingleLine(true);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
         heading.addView(title, new LinearLayout.LayoutParams(0, dp(34), 1f));
+        TextView customise = pill("CUSTOMISE", false);
+        customise.setContentDescription("Customise Adjust panel controls");
+        LinearLayout.LayoutParams custLp = new LinearLayout.LayoutParams(-2, dp(30));
+        custLp.rightMargin = dp(5);
+        heading.addView(customise, custLp);
+        customise.setOnClickListener(v -> {
+            hapticClick(v);
+            AdjustControlsDialog.show(this, () -> {
+                populateQuickControls();
+                updateContextualStatus();
+            });
+        });
         TextView reset = pill("RESET", false);
-        heading.addView(reset, new LinearLayout.LayoutParams(dp(52), dp(30)));
+        heading.addView(reset, new LinearLayout.LayoutParams(dp(50), dp(30)));
         reset.setOnClickListener(v -> resetQuickLook());
         TextView done = pill("DONE", true);
-        LinearLayout.LayoutParams doneLp = new LinearLayout.LayoutParams(dp(52), dp(30));
-        doneLp.leftMargin = dp(6);
+        LinearLayout.LayoutParams doneLp = new LinearLayout.LayoutParams(dp(50), dp(30));
+        doneLp.leftMargin = dp(5);
         heading.addView(done, doneLp);
         done.setOnClickListener(v -> closeQuickAdjustPanel());
         sheet.addView(heading);
-        TextView note = label("FOR THE NEXT PHOTO  ·  RAW DEVELOPED AFTER CAPTURE", 7, 0xff9aa49e, false);
+        TextView note = label("FOR THE NEXT PHOTO  ·  NON-DESTRUCTIVE OVERRIDES", 7, 0xff9aa49e, false);
         note.setLetterSpacing(.04f);
         LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
         noteLp.bottomMargin = dp(5);
@@ -3231,16 +3258,107 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void populateQuickControls() {
         if (quickControlsList == null) return;
         quickControlsList.removeAllViews();
-        addQuickSlider("Exposure", AppSettings.EXPOSURE, -20, 20, AppSettings.DEFAULT_EXPOSURE);
-        addQuickSlider("Warmth shift", AppSettings.WARMTH, 0, 100, AppSettings.DEFAULT_WARMTH);
-        addQuickSlider("Shadow depth", AppSettings.SHADOWS, 0, 100, AppSettings.DEFAULT_SHADOWS);
-        addQuickSlider("Contrast", AppSettings.CONTRAST, 50, 150, AppSettings.DEFAULT_CONTRAST);
-        addQuickSlider("Colour", AppSettings.SATURATION, 0, 160, AppSettings.DEFAULT_SATURATION);
-        addQuickSlider("Saturated colour roll-off", AppSettings.COLOR_ROLLOFF, 0, 100, AppSettings.DEFAULT_COLOR_ROLLOFF);
-        addQuickSlider("Highlight roll-off", AppSettings.HIGHLIGHTS, 0, 100, AppSettings.DEFAULT_HIGHLIGHTS);
-        addQuickSlider("Grain", AppSettings.GRAIN, 0, 100, AppSettings.DEFAULT_GRAIN);
-        addQuickSlider("Halation", AppSettings.HALATION, 0, 100, AppSettings.DEFAULT_HALATION);
-        addQuickSlider("Sharpening", AppSettings.SHARPEN, 0, 100, AppSettings.DEFAULT_SHARPEN);
+        for (String key : AppSettings.getAdjustControls(this)) {
+            if (AppSettings.EXPOSURE.equals(key)) {
+                addQuickSlider("Exposure trim", AppSettings.EXPOSURE, -20, 20, AppSettings.DEFAULT_EXPOSURE);
+            } else if (AppSettings.WARMTH.equals(key)) {
+                addQuickSlider("Warmth shift", AppSettings.WARMTH, 0, 100, AppSettings.DEFAULT_WARMTH);
+            } else if (AppSettings.HIGHLIGHTS.equals(key)) {
+                addQuickSlider("Highlights", AppSettings.HIGHLIGHTS, 0, 100, AppSettings.DEFAULT_HIGHLIGHTS);
+            } else if (AppSettings.SHADOWS.equals(key)) {
+                addQuickSlider("Shadows", AppSettings.SHADOWS, 0, 100, AppSettings.DEFAULT_SHADOWS);
+            } else if (AppSettings.CONTRAST.equals(key)) {
+                addQuickSlider("Contrast", AppSettings.CONTRAST, 50, 150, AppSettings.DEFAULT_CONTRAST);
+            } else if (AppSettings.SATURATION.equals(key)) {
+                addQuickSlider("Colour intensity", AppSettings.SATURATION, 0, 160, AppSettings.DEFAULT_SATURATION);
+            } else if (AppSettings.COLOR_ROLLOFF.equals(key)) {
+                addQuickSlider("Colour roll-off", AppSettings.COLOR_ROLLOFF, 0, 100, AppSettings.DEFAULT_COLOR_ROLLOFF);
+            } else if (AppSettings.GRAIN.equals(key)) {
+                addQuickSlider("Film grain", AppSettings.GRAIN, 0, 100, AppSettings.DEFAULT_GRAIN);
+            } else if (AppSettings.GRAIN_STRUCTURE.equals(key)) {
+                addQuickPills("Grain structure", AppSettings.GRAIN_STRUCTURE,
+                        AppSettings.GRAIN_STRUCTURE_CHOICES,
+                        new String[]{"35 mm", "16 mm", "8 mm"},
+                        AppSettings.GRAIN_STRUCTURE_CHOICES[0]);
+            } else if (AppSettings.HALATION.equals(key)) {
+                addQuickSlider("Halation", AppSettings.HALATION, 0, 100, AppSettings.DEFAULT_HALATION);
+            } else if (AppSettings.SHARPEN.equals(key)) {
+                addQuickSlider("Sharpening", AppSettings.SHARPEN, 0, 100, AppSettings.DEFAULT_SHARPEN);
+            } else if (AppSettings.PIVOT.equals(key)) {
+                addQuickSlider("Contrast pivot", AppSettings.PIVOT, 0, 100, AppSettings.DEFAULT_PIVOT);
+            } else if (AppSettings.TONE_CURVE.equals(key)) {
+                addQuickPills("Tone curve", AppSettings.TONE_CURVE,
+                        AppSettings.TONE_CURVE_CHOICES,
+                        new String[]{"Filmic", "Linear", "Log"},
+                        "Filmic S-Curve");
+            } else if (AppSettings.SHADOW_PROFILE.equals(key)) {
+                addQuickPills("Shadow profile", AppSettings.SHADOW_PROFILE,
+                        AppSettings.SHADOW_PROFILE_CHOICES,
+                        new String[]{"Auto", "Deep", "Neutral", "Lifted"},
+                        AppSettings.SHADOW_PROFILE_AUTO);
+            } else if (AppSettings.HIGHLIGHT_RECOVERY.equals(key)) {
+                addQuickPills("Highlight recovery", AppSettings.HIGHLIGHT_RECOVERY,
+                        AppSettings.HIGHLIGHT_RECOVERY_CHOICES,
+                        new String[]{"Auto", "Adaptive", "Subtract", "Hard"},
+                        AppSettings.HL_REC_AUTO);
+            } else if (AppSettings.COLOR_NR.equals(key)) {
+                addQuickSlider("Colour noise reduction", AppSettings.COLOR_NR, 0, 100, AppSettings.DEFAULT_COLOR_NR);
+            } else if (AppSettings.VIGNETTE.equals(key)) {
+                addQuickSlider("Vignette", AppSettings.VIGNETTE, 0, 100, AppSettings.DEFAULT_VIGNETTE);
+            } else if (AppSettings.LUT_INTENSITY.equals(key)) {
+                addQuickSlider("LUT intensity", AppSettings.LUT_INTENSITY, 0, 100, AppSettings.DEFAULT_LUT_INTENSITY);
+            }
+        }
+    }
+
+    private void addQuickPills(String title, String key, String[] values, String[] shortLabels, String fallback) {
+        LinearLayout control = new LinearLayout(this);
+        control.setOrientation(LinearLayout.VERTICAL);
+        control.setPadding(dp(9), dp(6), dp(9), dp(6));
+        control.setBackground(round(0xff171c1d, 10, 0xff293132, dp(1)));
+        LinearLayout.LayoutParams controlLp = new LinearLayout.LayoutParams(-1, -2);
+        controlLp.bottomMargin = dp(5);
+        quickControlsList.addView(control, controlLp);
+
+        String current = AppSettings.get(this, key, fallback);
+        LinearLayout labelRow = row();
+        labelRow.addView(label(title, 8, 0xffe6eae4, true), new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView activeLabel = label(current, 7.5f, ACCENT, true);
+        activeLabel.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        labelRow.addView(activeLabel);
+        control.addView(labelRow);
+
+        LinearLayout pillsRow = new LinearLayout(this);
+        pillsRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams pillsLp = new LinearLayout.LayoutParams(-1, dp(28));
+        pillsLp.topMargin = dp(5);
+        control.addView(pillsRow, pillsLp);
+
+        TextView[] buttons = new TextView[values.length];
+        for (int i = 0; i < values.length; i++) {
+            final String option = values[i];
+            final String shortLabel = (shortLabels != null && i < shortLabels.length) ? shortLabels[i] : option;
+            boolean active = option.equalsIgnoreCase(current);
+            TextView btn = pill(shortLabel, active);
+            btn.setTextSize(8f);
+            btn.setPadding(dp(4), 0, dp(4), 0);
+            buttons[i] = btn;
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
+            if (i > 0) lp.leftMargin = dp(4);
+            pillsRow.addView(btn, lp);
+            btn.setOnClickListener(v -> {
+                hapticClick(v);
+                AppSettings.prefs(MainActivity.this).edit().putString(key, option).apply();
+                activeLabel.setText(option);
+                for (int j = 0; j < values.length; j++) {
+                    boolean sel = values[j].equalsIgnoreCase(option);
+                    buttons[j].setTextColor(sel ? ACCENT : 0xffe9ede6);
+                    buttons[j].setBackground(round(sel ? 0xe21c1d1b : 0xd8191e1e, 22, sel ? ACCENT : 0x556e7872, dp(1)));
+                }
+                applyLiveFilmPreview();
+                updateContextualStatus();
+            });
+        }
     }
 
     private void addQuickSlider(String title, String key, int min, int max, int fallback) {
@@ -3355,11 +3473,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 .putInt(AppSettings.HIGHLIGHTS, AppSettings.DEFAULT_HIGHLIGHTS)
                 .putInt(AppSettings.SHADOWS, AppSettings.DEFAULT_SHADOWS)
                 .putInt(AppSettings.GRAIN, AppSettings.DEFAULT_GRAIN)
+                .putString(AppSettings.GRAIN_STRUCTURE, AppSettings.GRAIN_STRUCTURE_CHOICES[0])
+                .putString(AppSettings.GRAIN_RESPONSE, "Luminance-weighted")
                 .putInt(AppSettings.HALATION, AppSettings.DEFAULT_HALATION)
                 .putInt(AppSettings.SHARPEN, AppSettings.DEFAULT_SHARPEN)
                 .putInt(AppSettings.COLOR_NR, AppSettings.DEFAULT_COLOR_NR)
                 .putInt(AppSettings.VIGNETTE, AppSettings.DEFAULT_VIGNETTE)
+                .putInt(AppSettings.LUT_INTENSITY, AppSettings.DEFAULT_LUT_INTENSITY)
+                .putString(AppSettings.TONE_CURVE, "Filmic S-Curve")
+                .putString(AppSettings.SHADOW_PROFILE, AppSettings.SHADOW_PROFILE_AUTO)
+                .putString(AppSettings.HIGHLIGHT_RECOVERY, AppSettings.HL_REC_AUTO)
+                .putString(AppSettings.SKIN_PROTECTION_MODE, AppSettings.OVERRIDE_AUTO)
+                .putString(AppSettings.SMART_VIBRANCE_MODE, AppSettings.OVERRIDE_AUTO)
+                .putInt(AppSettings.WHITE_BALANCE, 0)
+                .putString(AppSettings.WHITE_BALANCE_MODE, "Auto · as shot")
                 .apply();
+        updateReadouts();
         applyLiveFilmPreview();
         updateContextualStatus();
         populateQuickControls();
@@ -4915,7 +5044,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             setFocusMode(still);
             setFlash(still, false);
             applyOpticalSettings(still, false);
-            if (focusMode != FocusMode.LOCKED && AppSettings.get(this, "focus_mode", "Continuous picture autofocus").startsWith("Single")) {
+            if (focusMode != FocusMode.LOCKED && AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS).startsWith("Single")) {
                 still.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
             }
             applyZoom(still);
@@ -4987,7 +5116,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
 
         boolean singleAf = focusMode != FocusMode.LOCKED
-                && AppSettings.get(this, "focus_mode", "Continuous picture autofocus").startsWith("Single");
+                && AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS).startsWith("Single");
 
         List<CaptureRequest> burstRequests = new ArrayList<>(frameCount);
         for (int i = 0; i < frameCount; i++) {
@@ -5457,14 +5586,43 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void applyCustomRecipeToPreferences(RawDeveloper.Look look) {
+        if (look == null) return;
+        SharedPreferences.Editor editor = AppSettings.prefs(this).edit();
         if (look.lutName != null) {
-            AppSettings.prefs(this).edit().putString(AppSettings.LUT_NAME, look.lutName).apply();
+            editor.putString(AppSettings.LUT_NAME, look.lutName);
         }
         if (look.filmPushPull != null) {
-            AppSettings.prefs(this).edit().putString(AppSettings.FILM_PUSH_PULL, look.filmPushPull).apply();
+            editor.putString(AppSettings.FILM_PUSH_PULL, look.filmPushPull);
         }
-        AppSettings.prefs(this).edit()
-                .putInt(AppSettings.EXPOSURE, Math.max(-20, Math.min(20, Math.round(look.exposureEv * 10f))))
+        if (look.grainStructure != null) {
+            editor.putString(AppSettings.GRAIN_STRUCTURE, look.grainStructure);
+        }
+        if (look.grainResponse != null) {
+            editor.putString(AppSettings.GRAIN_RESPONSE, look.grainResponse);
+        }
+        if (look.toneCurve != null) {
+            editor.putString(AppSettings.TONE_CURVE, look.toneCurve);
+        }
+        if (look.shadowProfile != null) {
+            editor.putString(AppSettings.SHADOW_PROFILE, look.shadowProfile);
+        }
+        if (look.highlightRecovery != null) {
+            editor.putString(AppSettings.HIGHLIGHT_RECOVERY, look.highlightRecovery);
+        }
+        if (look.skinProtectionMode != null) {
+            editor.putString(AppSettings.SKIN_PROTECTION_MODE, look.skinProtectionMode);
+        } else {
+            editor.putString(AppSettings.SKIN_PROTECTION_MODE,
+                    look.skinProtection ? AppSettings.OVERRIDE_AUTO : AppSettings.OVERRIDE_OFF);
+        }
+        if (look.smartVibranceMode != null) {
+            editor.putString(AppSettings.SMART_VIBRANCE_MODE, look.smartVibranceMode);
+        } else {
+            editor.putString(AppSettings.SMART_VIBRANCE_MODE,
+                    look.smartVibrance ? AppSettings.OVERRIDE_AUTO : AppSettings.OVERRIDE_OFF);
+        }
+        int wbKelvin = Math.max(0, look.whiteBalanceKelvin);
+        editor.putInt(AppSettings.EXPOSURE, Math.max(-20, Math.min(20, Math.round(look.exposureEv * 10f))))
                 .putInt(AppSettings.WARMTH, Math.round(look.warmth * 50f + 50f))
                 .putInt(AppSettings.CONTRAST, Math.round(look.contrast * 100f))
                 .putInt(AppSettings.PIVOT, Math.round(look.pivot * 100f))
@@ -5477,6 +5635,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 .putInt(AppSettings.SHARPEN, Math.round(look.sharpening * 100f))
                 .putInt(AppSettings.COLOR_NR, Math.round(look.chromaNr * 100f))
                 .putInt(AppSettings.VIGNETTE, Math.round(look.vignette * 100f))
+                .putInt(AppSettings.LUT_INTENSITY, Math.max(0, Math.min(100, Math.round(look.lutIntensity * 100f))))
+                .putInt(AppSettings.WHITE_BALANCE, wbKelvin)
+                .putString(AppSettings.WHITE_BALANCE_MODE, AppSettings.formatWhiteBalanceMode(wbKelvin))
                 .apply();
     }
 
@@ -5985,27 +6146,51 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private boolean isCustomLookActive() {
+        String grainStruct = AppSettings.get(this, AppSettings.GRAIN_STRUCTURE, AppSettings.GRAIN_STRUCTURE_CHOICES[0]);
+        if ("Monochrome".equals(grainStruct)) grainStruct = AppSettings.GRAIN_STRUCTURE_CHOICES[0];
         return AppSettings.getInt(this, AppSettings.EXPOSURE, AppSettings.DEFAULT_EXPOSURE) != AppSettings.DEFAULT_EXPOSURE
                 || AppSettings.getInt(this, AppSettings.WARMTH, AppSettings.DEFAULT_WARMTH) != AppSettings.DEFAULT_WARMTH
                 || AppSettings.getInt(this, AppSettings.CONTRAST, AppSettings.DEFAULT_CONTRAST) != AppSettings.DEFAULT_CONTRAST
+                || AppSettings.getInt(this, AppSettings.PIVOT, AppSettings.DEFAULT_PIVOT) != AppSettings.DEFAULT_PIVOT
                 || AppSettings.getInt(this, AppSettings.SATURATION, AppSettings.DEFAULT_SATURATION) != AppSettings.DEFAULT_SATURATION
+                || AppSettings.getInt(this, AppSettings.COLOR_ROLLOFF, AppSettings.DEFAULT_COLOR_ROLLOFF) != AppSettings.DEFAULT_COLOR_ROLLOFF
                 || AppSettings.getInt(this, AppSettings.HIGHLIGHTS, AppSettings.DEFAULT_HIGHLIGHTS) != AppSettings.DEFAULT_HIGHLIGHTS
                 || AppSettings.getInt(this, AppSettings.SHADOWS, AppSettings.DEFAULT_SHADOWS) != AppSettings.DEFAULT_SHADOWS
                 || AppSettings.getInt(this, AppSettings.GRAIN, AppSettings.DEFAULT_GRAIN) != AppSettings.DEFAULT_GRAIN
                 || AppSettings.getInt(this, AppSettings.HALATION, AppSettings.DEFAULT_HALATION) != AppSettings.DEFAULT_HALATION
-                || AppSettings.getInt(this, AppSettings.SHARPEN, AppSettings.DEFAULT_SHARPEN) != AppSettings.DEFAULT_SHARPEN;
+                || AppSettings.getInt(this, AppSettings.SHARPEN, AppSettings.DEFAULT_SHARPEN) != AppSettings.DEFAULT_SHARPEN
+                || AppSettings.getInt(this, AppSettings.COLOR_NR, AppSettings.DEFAULT_COLOR_NR) != AppSettings.DEFAULT_COLOR_NR
+                || AppSettings.getInt(this, AppSettings.VIGNETTE, AppSettings.DEFAULT_VIGNETTE) != AppSettings.DEFAULT_VIGNETTE
+                || AppSettings.getInt(this, AppSettings.LUT_INTENSITY, AppSettings.DEFAULT_LUT_INTENSITY) != AppSettings.DEFAULT_LUT_INTENSITY
+                || !AppSettings.GRAIN_STRUCTURE_CHOICES[0].equals(grainStruct)
+                || !"Filmic S-Curve".equals(AppSettings.get(this, AppSettings.TONE_CURVE, "Filmic S-Curve"))
+                || !AppSettings.SHADOW_PROFILE_AUTO.equals(AppSettings.get(this, AppSettings.SHADOW_PROFILE, AppSettings.SHADOW_PROFILE_AUTO))
+                || !AppSettings.HL_REC_AUTO.equals(AppSettings.get(this, AppSettings.HIGHLIGHT_RECOVERY, AppSettings.HL_REC_AUTO))
+                || AppSettings.resolveWhiteBalanceKelvin(this) > 0;
     }
 
     private static boolean isCustomLookActive(RawDeveloper.Look look) {
+        if (look == null) return false;
+        String grainStruct = "Monochrome".equals(look.grainStructure) ? AppSettings.GRAIN_STRUCTURE_CHOICES[0] : look.grainStructure;
         return Math.round(look.exposureEv * 10f) != AppSettings.DEFAULT_EXPOSURE
                 || Math.round(look.warmth * 50f + 50f) != AppSettings.DEFAULT_WARMTH
                 || Math.round(look.contrast * 100f) != AppSettings.DEFAULT_CONTRAST
+                || Math.round(look.pivot * 100f) != AppSettings.DEFAULT_PIVOT
                 || Math.round(look.saturation * 100f) != AppSettings.DEFAULT_SATURATION
+                || Math.round(look.colorRollOff * 100f) != AppSettings.DEFAULT_COLOR_ROLLOFF
                 || Math.round(look.highlights * 100f) != AppSettings.DEFAULT_HIGHLIGHTS
                 || Math.round(look.shadows * 100f) != AppSettings.DEFAULT_SHADOWS
                 || Math.round(look.grain * 100f) != AppSettings.DEFAULT_GRAIN
                 || Math.round(look.halation * 100f) != AppSettings.DEFAULT_HALATION
-                || Math.round(look.sharpening * 100f) != AppSettings.DEFAULT_SHARPEN;
+                || Math.round(look.sharpening * 100f) != AppSettings.DEFAULT_SHARPEN
+                || Math.round(look.chromaNr * 100f) != AppSettings.DEFAULT_COLOR_NR
+                || Math.round(look.vignette * 100f) != AppSettings.DEFAULT_VIGNETTE
+                || Math.round(look.lutIntensity * 100f) != AppSettings.DEFAULT_LUT_INTENSITY
+                || (grainStruct != null && !AppSettings.GRAIN_STRUCTURE_CHOICES[0].equals(grainStruct))
+                || (look.toneCurve != null && !"Filmic S-Curve".equals(look.toneCurve))
+                || (look.shadowProfile != null && !AppSettings.SHADOW_PROFILE_AUTO.equals(look.shadowProfile))
+                || (look.highlightRecovery != null && !AppSettings.HL_REC_AUTO.equals(look.highlightRecovery))
+                || look.whiteBalanceKelvin > 0;
     }
 
     private void updateEasyButton() {
@@ -6636,7 +6821,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         int[] modes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
         if (modes == null) return;
-        String preference = AppSettings.get(this, "focus_mode", "Continuous picture autofocus");
+        String preference = AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS);
         int wanted = preference.startsWith("Single") ? CaptureRequest.CONTROL_AF_MODE_AUTO
                 : CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE;
         if (Arrays.stream(modes).anyMatch(v -> v == wanted)) builder.set(CaptureRequest.CONTROL_AF_MODE, wanted);
