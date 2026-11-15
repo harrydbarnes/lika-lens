@@ -18,6 +18,7 @@ public final class CameraExposureHelper {
 
     public static final float MIN_ZOOM = 0.5f;
     public static final float MAX_ZOOM = 5.0f;
+    public static final float WIDE_ZOOM_THRESHOLD = 0.98f;
     public static final int ZOOM_SEEKBAR_MAX = 1000;
 
     private CameraExposureHelper() {}
@@ -208,6 +209,63 @@ public final class CameraExposureHelper {
         if (meteredNs <= 0 || meteredIso <= 0 || targetIso <= 0) return 0L;
         double equivalent = meteredNs * (meteredIso / (double) targetIso);
         return (long) Math.min(Math.min(maxNs, 2_000_000_000L), equivalent);
+    }
+
+    /**
+     * Returns true when a RAW-capable camera must drop its logical RAW_SENSOR stream and switch
+     * to a JPEG capture session so CONTROL_ZOOM_RATIO below 1.0x can switch to a wider sensor.
+     */
+    static boolean shouldUseJpegForWideZoom(boolean rawSupported, float targetZoom) {
+        return rawSupported && targetZoom < WIDE_ZOOM_THRESHOLD;
+    }
+
+    /**
+     * Normalizes SeekBar rounding just below 1.0x when returning to a RAW session so the HAL
+     * does not receive CONTROL_ZOOM_RATIO slightly below 1.0f with a logical RAW stream attached.
+     */
+    static float resolveZoomForSessionMode(float requestedZoom, boolean jpegWideMode) {
+        if (!jpegWideMode && requestedZoom >= WIDE_ZOOM_THRESHOLD && requestedZoom < 1.0f) {
+            return 1.0f;
+        }
+        return requestedZoom;
+    }
+
+    /**
+     * Returns true when staying on the same camera ID still requires recreating the capture session
+     * because the stream mode changed between logical RAW and wide-angle JPEG.
+     */
+    static boolean needsPreviewSessionReconfig(String currentCameraId, String targetCameraId,
+            boolean currentForceJpegWide, boolean targetForceJpegWide) {
+        return currentCameraId != null
+                && currentCameraId.equals(targetCameraId)
+                && currentForceJpegWide != targetForceJpegWide;
+    }
+
+    /**
+     * Evaluates whether the active camera supports the requested zoom factor natively.
+     */
+    static boolean canZoomOnCamera(boolean hasCharacteristics, Float minZoomRatio, Float maxZoomRatio,
+            boolean isMainCamera, float factor) {
+        if (!hasCharacteristics) return false;
+        if (minZoomRatio != null && maxZoomRatio != null) {
+            if (factor >= 1.0f) {
+                return factor <= maxZoomRatio + 0.05f;
+            }
+            return minZoomRatio < WIDE_ZOOM_THRESHOLD;
+        }
+        return factor >= 1.0f && isMainCamera;
+    }
+
+    /**
+     * Resolves a clamped wide-angle zoom ratio when CONTROL_ZOOM_RATIO_RANGE extends below 1.0x,
+     * or -1f when wide optical zoom is unsupported.
+     */
+    static float resolveWideZoomRatio(Float minZoomRatio, Float maxZoomRatio, float factor) {
+        if (minZoomRatio == null || maxZoomRatio == null
+                || minZoomRatio >= WIDE_ZOOM_THRESHOLD || maxZoomRatio < 1.0f) {
+            return -1f;
+        }
+        return Math.max(factor, minZoomRatio);
     }
 
 }

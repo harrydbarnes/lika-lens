@@ -139,4 +139,48 @@ public class CameraExposureHelperTest {
         assertEquals(2_000_000_000L,CameraExposureHelper.matchedNightExposure(500_000_000L,3200,200,2_000_000_000L));
     }
 
+    @Test
+    public void wideZoomDropsLogicalRawAndRestoresAboveThreshold() {
+        assertTrue(CameraExposureHelper.shouldUseJpegForWideZoom(true, 0.5f));
+        assertTrue(CameraExposureHelper.shouldUseJpegForWideZoom(true, 0.7f));
+        assertFalse(CameraExposureHelper.shouldUseJpegForWideZoom(true, 0.99f));
+        assertFalse(CameraExposureHelper.shouldUseJpegForWideZoom(true, 1.0f));
+        assertFalse(CameraExposureHelper.shouldUseJpegForWideZoom(true, 5.0f));
+        assertFalse(CameraExposureHelper.shouldUseJpegForWideZoom(false, 0.5f));
+    }
+
+    @Test
+    public void seekBarRoundingNearOneNormalizesForRawSession() {
+        float sliderOne = CameraExposureHelper.zoomForProgress(CameraExposureHelper.zoomProgressFor(1.0f));
+        assertEquals(1.0f, CameraExposureHelper.resolveZoomForSessionMode(sliderOne, false), 0.0001f);
+        assertEquals(0.5f, CameraExposureHelper.resolveZoomForSessionMode(0.5f, true), 0.0001f);
+        assertEquals(2.0f, CameraExposureHelper.resolveZoomForSessionMode(2.0f, false), 0.0001f);
+    }
+
+    @Test
+    public void sameCameraStreamModeChangeTriggersSessionReconfig() {
+        assertTrue(CameraExposureHelper.needsPreviewSessionReconfig("0", "0", false, true));
+        assertTrue(CameraExposureHelper.needsPreviewSessionReconfig("0", "0", true, false));
+        assertFalse(CameraExposureHelper.needsPreviewSessionReconfig("0", "0", false, false));
+        assertFalse(CameraExposureHelper.needsPreviewSessionReconfig("0", "0", true, true));
+        assertFalse(CameraExposureHelper.needsPreviewSessionReconfig("0", "1", false, true));
+        assertFalse(CameraExposureHelper.needsPreviewSessionReconfig(null, "0", false, true));
+    }
+
+    @Test
+    public void wideZoomRangeAndCapabilityResolution() {
+        assertEquals(0.5f, CameraExposureHelper.resolveWideZoomRatio(0.5f, 30.0f, 0.5f), 0.0001f);
+        assertEquals(0.58f, CameraExposureHelper.resolveWideZoomRatio(0.58f, 30.0f, 0.5f), 0.0001f);
+        assertEquals(-1f, CameraExposureHelper.resolveWideZoomRatio(1.0f, 10.0f, 0.5f), 0.0001f);
+        assertEquals(-1f, CameraExposureHelper.resolveWideZoomRatio(null, null, 0.5f), 0.0001f);
+
+        assertTrue(CameraExposureHelper.canZoomOnCamera(true, 0.5f, 30.0f, true, 0.5f));
+        assertTrue(CameraExposureHelper.canZoomOnCamera(true, 0.58f, 30.0f, false, 0.5f));
+        assertFalse(CameraExposureHelper.canZoomOnCamera(true, 1.0f, 10.0f, true, 0.5f));
+        assertTrue(CameraExposureHelper.canZoomOnCamera(true, 1.0f, 10.0f, true, 5.0f));
+        assertFalse(CameraExposureHelper.canZoomOnCamera(true, null, null, true, 0.5f));
+        assertTrue(CameraExposureHelper.canZoomOnCamera(true, null, null, true, 1.0f));
+        assertFalse(CameraExposureHelper.canZoomOnCamera(false, 0.5f, 30.0f, true, 0.5f));
+    }
+
 }
