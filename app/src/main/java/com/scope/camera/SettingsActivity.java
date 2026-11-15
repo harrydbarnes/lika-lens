@@ -1874,6 +1874,7 @@ public class SettingsActivity extends Activity {
             dialog.dismiss();
             try {
                 SettingsBackupManager.RestoreResult res = SettingsBackupManager.restoreBackup(this, data);
+                hapticsEnabled = AppSettings.getBoolean(this, AppSettings.HAPTICS, true);
                 rebuildContent();
                 String msg = "Restored \"" + res.backupName + "\"";
                 if (res.failedLuts > 0) {

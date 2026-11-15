@@ -208,4 +208,52 @@ public final class WindowMetricsHelper {
         }
         return null;
     }
+
+    public static final class HeaderCutoutZones {
+        public final boolean splitCenteredCutout;
+        public final int leftZoneWidth;
+        public final int spacerWidth;
+        public final int rightZoneWidth;
+
+        public HeaderCutoutZones(boolean splitCenteredCutout, int leftZoneWidth, int spacerWidth, int rightZoneWidth) {
+            this.splitCenteredCutout = splitCenteredCutout;
+            this.leftZoneWidth = leftZoneWidth;
+            this.spacerWidth = spacerWidth;
+            this.rightZoneWidth = rightZoneWidth;
+        }
+    }
+
+    public static HeaderCutoutZones computeHeaderCutoutZones(int screenWidth, int leftPad, int rightPad,
+                                                             int headerTop, int headerHeight,
+                                                             Rect cutoutRect,
+                                                             int minClearancePx, int centerTolerancePx) {
+        if (cutoutRect == null) {
+            return new HeaderCutoutZones(false, 0, 0, 0);
+        }
+        return computeHeaderCutoutZones(screenWidth, leftPad, rightPad, headerTop, headerHeight,
+                true, cutoutRect.left, cutoutRect.top, cutoutRect.right, cutoutRect.bottom,
+                minClearancePx, centerTolerancePx);
+    }
+
+    public static HeaderCutoutZones computeHeaderCutoutZones(int screenWidth, int leftPad, int rightPad,
+                                                             int headerTop, int headerHeight,
+                                                             boolean hasCutout,
+                                                             int cutoutLeft, int cutoutTop,
+                                                             int cutoutRight, int cutoutBottom,
+                                                             int minClearancePx, int centerTolerancePx) {
+        if (!hasCutout || screenWidth <= 0 || cutoutRight <= cutoutLeft || cutoutBottom <= cutoutTop) {
+            return new HeaderCutoutZones(false, 0, 0, 0);
+        }
+        float cutoutCenterX = (cutoutLeft + cutoutRight) * 0.5f;
+        boolean isCentered = Math.abs(cutoutCenterX - screenWidth * 0.5f) < centerTolerancePx;
+        boolean overlapsVertically = cutoutTop < (headerTop + headerHeight) && cutoutBottom > headerTop;
+        if (!isCentered || !overlapsVertically) {
+            return new HeaderCutoutZones(false, 0, 0, 0);
+        }
+        int clearance = Math.max(0, minClearancePx);
+        int spacer = (cutoutRight - cutoutLeft) + clearance * 2;
+        int leftZone = Math.max(0, (cutoutLeft - clearance) - leftPad);
+        int rightZone = Math.max(0, (screenWidth - rightPad) - (cutoutRight + clearance));
+        return new HeaderCutoutZones(true, leftZone, spacer, rightZone);
+    }
 }

@@ -234,6 +234,12 @@ public final class VideoRecordingCoordinator {
         }
     }
 
+    static boolean canAutoEngage180Shutter(boolean videoMode, boolean video180Active,
+                                            boolean aeLocked, boolean video180Requested,
+                                            boolean manualSupported) {
+        return videoMode && !video180Active && !aeLocked && video180Requested && manualSupported;
+    }
+
     /**
      * Evaluates whether a genuine 180-degree shutter (CONTROL_AE_MODE_OFF with Auto-ISO)
      * can run cleanly under the sensor's hardware limits and current metered exposure.

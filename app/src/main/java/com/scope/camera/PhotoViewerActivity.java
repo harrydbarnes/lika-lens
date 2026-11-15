@@ -747,11 +747,19 @@ public class PhotoViewerActivity extends Activity {
         if (requestCode == EDIT_REQUEST && resultCode == RESULT_OK) {
             if (data != null && data.getData() != null) {
                 photoUri = data.getData();
-                photoName = data.getStringExtra(EXTRA_NAME);
-                refreshPhotoListAsync(() -> {
-                    if (currentIndex >= 0) stepPhoto(0);
-                    else loadPhoto();
-                });
+                String nextName = data.getStringExtra(EXTRA_NAME);
+                if (nextName != null) {
+                    photoName = nextName;
+                    archiveKey = PhotoRepository.archiveKey(nextName);
+                }
+                stopComparing();
+                compareGeneration++;
+                if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
+                    rawOriginalBitmap.recycle();
+                }
+                rawOriginalBitmap = null;
+                loadPhoto();
+                refreshPhotoListAsync(null);
                 return;
             }
             loadPhoto();

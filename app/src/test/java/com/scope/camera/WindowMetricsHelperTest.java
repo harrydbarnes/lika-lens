@@ -65,4 +65,35 @@ public class WindowMetricsHelperTest {
         assertEquals(6, WindowMetricsHelper.calculateGalleryColumns(840));
         assertEquals(6, WindowMetricsHelper.calculateGalleryColumns(1200)); // clamped to max 6
     }
+
+    @Test
+    public void testHeaderCutoutZonesForCenteredAndEdgeCutouts() {
+        // Pixel 11 Pro portrait (1080px wide, centered punch-hole [498..582], top privacy dot rightPad=148px)
+        WindowMetricsHelper.HeaderCutoutZones pixelPortrait = WindowMetricsHelper.computeHeaderCutoutZones(
+                1080, 32, 148, 22, 84,
+                true, 498, 20, 582, 108,
+                16, 130
+        );
+        assertTrue(pixelPortrait.splitCenteredCutout);
+        assertEquals(450, pixelPortrait.leftZoneWidth);   // 498 - 16 - 32
+        assertEquals(116, pixelPortrait.spacerWidth);     // (582 - 498) + 32
+        assertEquals(334, pixelPortrait.rightZoneWidth);  // (1080 - 148) - (582 + 16)
+        assertEquals(1080, 32 + pixelPortrait.leftZoneWidth + pixelPortrait.spacerWidth + pixelPortrait.rightZoneWidth + 148);
+
+        // Centered notch entirely above the header row does not force split
+        WindowMetricsHelper.HeaderCutoutZones belowNotch = WindowMetricsHelper.computeHeaderCutoutZones(
+                1080, 32, 32, 120, 84,
+                true, 360, 0, 720, 100,
+                16, 130
+        );
+        assertFalse(belowNotch.splitCenteredCutout);
+
+        // Landscape corner punch-hole does not force centered split
+        WindowMetricsHelper.HeaderCutoutZones edgeHole = WindowMetricsHelper.computeHeaderCutoutZones(
+                2410, 110, 32, 22, 84,
+                true, 20, 20, 100, 104,
+                16, 130
+        );
+        assertFalse(edgeHole.splitCenteredCutout);
+    }
 }

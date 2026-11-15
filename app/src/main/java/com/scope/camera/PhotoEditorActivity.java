@@ -1224,15 +1224,20 @@ public class PhotoEditorActivity extends Activity {
                     }
                     final Bitmap rendered = bitmap;
                     mainHandler.post(() -> {
-                        if (isFinishing() || isDestroyed()) {
+                        if (isFinishing() || isDestroyed() || generation != thumbnailGeneration) {
                             if (rendered != null && !rendered.isRecycled()) rendered.recycle();
                             return;
                         }
                         if (rendered != null) {
-                            Bitmap prev = lookThumbCache.put(cacheKey, rendered);
-                            if (prev != null && prev != rendered && !prev.isRecycled()) prev.recycle();
-                            if (generation == thumbnailGeneration) {
+                            Bitmap existing = lookThumbCache.get(cacheKey);
+                            if (existing == null || existing.isRecycled()) {
+                                lookThumbCache.put(cacheKey, rendered);
                                 targetView.setImageBitmap(rendered);
+                            } else {
+                                targetView.setImageBitmap(existing);
+                                if (rendered != existing && !rendered.isRecycled()) {
+                                    rendered.recycle();
+                                }
                             }
                         }
                     });

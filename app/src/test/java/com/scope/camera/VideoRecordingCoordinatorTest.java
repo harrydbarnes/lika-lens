@@ -149,6 +149,14 @@ public class VideoRecordingCoordinatorTest {
 
         // Overexposed scene at minimum ISO disengages 180° shutter (-1)
         assertEquals(-1, VideoRecordingCoordinator.step180AutoIso(50, 220.0, 0f, 50, 3200));
+
+        // AE lock must prevent auto-engaging 180° shutter and overwriting locked exposure
+        org.junit.Assert.assertTrue(VideoRecordingCoordinator.canAutoEngage180Shutter(true, false, false, true, true));
+        assertFalse(VideoRecordingCoordinator.canAutoEngage180Shutter(true, false, true, true, true));
+        assertFalse(VideoRecordingCoordinator.canAutoEngage180Shutter(true, true, false, true, true));
+        assertFalse(VideoRecordingCoordinator.canAutoEngage180Shutter(false, false, false, true, true));
+        assertFalse(VideoRecordingCoordinator.canAutoEngage180Shutter(true, false, false, false, true));
+        assertFalse(VideoRecordingCoordinator.canAutoEngage180Shutter(true, false, false, true, false));
     }
 
     @Test
