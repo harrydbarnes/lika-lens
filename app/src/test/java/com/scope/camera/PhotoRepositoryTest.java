@@ -63,4 +63,48 @@ public class PhotoRepositoryTest {
         assertEquals(newer, PhotoRepository.pickNewer(null, newer));
         assertEquals(older, PhotoRepository.pickNewer(older, new PhotoRepository.Photo(null, "tie.jpg", 1000L)));
     }
+
+    @Test
+    public void testCollectAppFolderPhotosScansSubfoldersAndExcludesRaw() throws Exception {
+        java.io.File root = java.nio.file.Files.createTempDirectory("photo_repo_scan_test").toFile();
+        try {
+            java.io.File monthDir = new java.io.File(root, "2026-11");
+            java.io.File rawDir = new java.io.File(monthDir, "RAW");
+            assertTrue(rawDir.mkdirs());
+            assertTrue(new java.io.File(root, "root.jpg").createNewFile());
+            assertTrue(new java.io.File(monthDir, "month.jpeg").createNewFile());
+            assertTrue(new java.io.File(monthDir, "clip.gif").createNewFile());
+            assertTrue(new java.io.File(monthDir, "ignored.dng").createNewFile());
+            assertTrue(new java.io.File(rawDir, "raw_only.jpg").createNewFile());
+
+            java.util.List<PhotoRepository.Photo> out = new java.util.ArrayList<>();
+            PhotoRepository.collectAppFolderPhotos(root, out);
+
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (PhotoRepository.Photo p : out) names.add(p.name);
+            assertEquals(3, names.size());
+            assertTrue(names.contains("root.jpg"));
+            assertTrue(names.contains("month.jpeg"));
+            assertTrue(names.contains("clip.gif"));
+            assertFalse(names.contains("ignored.dng"));
+            assertFalse(names.contains("raw_only.jpg"));
+        } finally {
+            java.io.File[] stack = root.listFiles();
+            if (stack != null) {
+                for (java.io.File f : stack) deleteTree(f);
+            }
+            root.delete();
+        }
+    }
+
+    private static void deleteTree(java.io.File f) {
+        if (f == null || !f.exists()) return;
+        if (f.isDirectory()) {
+            java.io.File[] children = f.listFiles();
+            if (children != null) {
+                for (java.io.File c : children) deleteTree(c);
+            }
+        }
+        f.delete();
+    }
 }

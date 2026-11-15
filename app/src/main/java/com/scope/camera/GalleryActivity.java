@@ -514,7 +514,8 @@ public class GalleryActivity extends Activity {
             options.inPreferredConfig = Bitmap.Config.RGB_565;
             try (InputStream stream = context.getContentResolver().openInputStream(uri)) {
                 if (stream == null) return null;
-                return BitmapFactory.decodeStream(stream, null, options);
+                Bitmap decoded = BitmapFactory.decodeStream(stream, null, options);
+                return CaptureOrientation.orientBitmap(context, uri, decoded);
             }
         } catch (Exception e) {
             android.util.Log.w("GalleryActivity", "Failed to decode thumbnail: " + uri, e);
@@ -679,7 +680,7 @@ public class GalleryActivity extends Activity {
                         video.putExtra(GifStudioActivity.EXTRA_VIDEO_URI, "");
                         startActivity(video);
                     } else new AlertDialog.Builder(this).setTitle("Delete selected photos?")
-                            .setMessage("Delete " + selectedUris.size() + " selected photos and their RAW originals? This cannot be undone.")
+                            .setMessage("Delete " + selectedUris.size() + " selected photos and their private editable cache? Any saved DNG originals stay untouched. This cannot be undone.")
                             .setNegativeButton("Cancel", null).setPositiveButton("Delete", (dialog, choice) -> {
                                 final List<PhotoRepository.Photo> toDelete = selectedPhotos();
                                 final Context appContext = getApplicationContext();
@@ -720,7 +721,7 @@ public class GalleryActivity extends Activity {
             for (PhotoRepository.Photo photo : snapshot) {
                 try {
                     String key = PhotoRepository.archiveKey(photo.name);
-                    PhotoCopyExporter.export(context, key, RawArchive.read(context, key), recipe.copy());
+                    PhotoCopyExporter.export(context, key, photo.uri, RawArchive.read(context, key), recipe.copy());
                     saved++;
                 } catch (Exception e) { android.util.Log.e("GalleryActivity", "Could not export selected photo", e); }
             }

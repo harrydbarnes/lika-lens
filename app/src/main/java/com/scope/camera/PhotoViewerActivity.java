@@ -279,6 +279,8 @@ public class PhotoViewerActivity extends Activity {
         neutral.shadowProfile = "Neutral / Open Shadows";
         neutral.highlightRecovery = "Adaptive blend";
         neutral.easyMode = true;
+        neutral.skinProtectionMode = AppSettings.OVERRIDE_OFF;
+        neutral.smartVibranceMode = AppSettings.OVERRIDE_OFF;
         neutral.skinProtection = false;
         neutral.smartVibrance = false;
         neutral.contrast = 1.0f;
@@ -573,7 +575,7 @@ public class PhotoViewerActivity extends Activity {
         title.setLetterSpacing(.14f);
         sheet.addView(title);
 
-        TextView sub = text("Removes " + (photoName != null ? photoName : "this photo") + " and its associated RAW archive.", 9, 0xff9ba59e, false);
+        TextView sub = text("Removes " + (photoName != null ? photoName : "this photo") + " and its private editable cache. Any saved DNG original stays untouched.", 9, 0xff9ba59e, false);
         sub.setPadding(0, dp(6), 0, dp(16));
         sheet.addView(sub);
 
@@ -784,11 +786,12 @@ public class PhotoViewerActivity extends Activity {
                 options.inJustDecodeBounds = false;
                 options.inSampleSize = sample;
                 options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-                final Bitmap bitmap;
+                final Bitmap decoded;
                 try (InputStream in = appContext.getContentResolver().openInputStream(uri)) {
-                    bitmap = in == null ? null : BitmapFactory.decodeStream(in, null, options);
+                    decoded = in == null ? null : BitmapFactory.decodeStream(in, null, options);
                 }
-                if (bitmap == null) throw new IllegalStateException("Could not decode photo");
+                if (decoded == null) throw new IllegalStateException("Could not decode photo");
+                final Bitmap bitmap = CaptureOrientation.orientBitmap(appContext, uri, decoded);
                 mainHandler.post(() -> {
                     if (!imageJob.move(ticket, JobState.Phase.READY) || isDestroyed() || isFinishing()) {
                         bitmap.recycle();

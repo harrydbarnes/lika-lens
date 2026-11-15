@@ -1075,7 +1075,7 @@ public class PhotoEditorActivity extends Activity {
         worker.execute(() -> {
             String failure = null;
             PhotoRepository.Photo output = null;
-            try { output = PhotoCopyExporter.export(getApplicationContext(), archiveKey, source, snapshot); }
+            try { output = PhotoCopyExporter.export(getApplicationContext(), archiveKey, photoUri, source, snapshot); }
             catch (Exception e) { failure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
             final String error = failure;
             final PhotoRepository.Photo savedPhoto = output;

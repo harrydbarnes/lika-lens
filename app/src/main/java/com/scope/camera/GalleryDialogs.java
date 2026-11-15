@@ -88,7 +88,7 @@ public final class GalleryDialogs {
         title.setLetterSpacing(.12f);
         sheet.addView(title);
 
-        TextView sub = UiKit.text(activity, "Removes " + photo.name + " and its associated RAW archive.", 9, 0xff9aa49e, false);
+        TextView sub = UiKit.text(activity, "Removes " + photo.name + " and its private editable cache. Any saved DNG original stays untouched.", 9, 0xff9aa49e, false);
         sub.setPadding(0, UiKit.dp(activity, 6), 0, UiKit.dp(activity, 16));
         sheet.addView(sub);
 

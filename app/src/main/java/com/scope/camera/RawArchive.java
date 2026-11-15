@@ -370,55 +370,62 @@ final class RawArchive {
         int rowStride = frame.rowStride;
         int pixelStride = frame.pixelStride;
 
-        try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(
-                new DeflaterOutputStream(new FileOutputStream(temporary), new Deflater(4))))) {
-            out.writeInt(MAGIC);
-            out.writeInt(VERSION);
-            out.writeInt(frame.width); out.writeInt(frame.height); out.writeInt(frame.cfa);
-            out.writeInt(frame.orientation);
-            out.writeUTF(frame.key == null ? "" : frame.key);
-            out.writeUTF(frame.aspectRatio);
-            out.writeInt(frame.staticWhiteLevel); out.writeInt(frame.dynamicWhiteLevel);
-            out.writeLong(frame.exposureTimeNs);
-            out.writeInt(frame.sensitivityIso); out.writeInt(frame.aeExposureCompensation);
-            for (float v : frame.blackLevels) out.writeFloat(v);
-            for (float v : frame.wbGains) out.writeFloat(v);
-            for (float v : frame.neutralPoint) out.writeFloat(v);
-            writeMatrix(out, frame.colorCorrectionTransform);
-            writeMatrix(out, frame.sensorToXyz1);
-            writeMatrix(out, frame.sensorToXyz2);
-            out.writeInt(frame.illuminant1); out.writeInt(frame.illuminant2);
-            if (frame.lsmGains != null && frame.lsmCols > 0 && frame.lsmRows > 0) {
-                out.writeInt(frame.lsmCols);
-                out.writeInt(frame.lsmRows);
-                for (float g : frame.lsmGains) out.writeFloat(g);
-            } else {
-                out.writeInt(0);
-                out.writeInt(0);
-            }
-            out.writeInt(frame.postRawSensitivityBoost > 0 ? frame.postRawSensitivityBoost : 100);
-            out.writeFloat(frame.aeCompensationEv);
-            out.writeBoolean(frame.manualExposure);
-            out.writeFloat(frame.previewMidTarget);
-
-            byte[] rowBytes = new byte[width * 2];
-            int srcLimit = source.limit();
-            for (int y = 0; y < height; y++) {
-                int row = y * rowStride;
-                for (int x = 0; x < width; x++) {
-                    int offset = row + x * pixelStride;
-                    int sample = offset >= 0 && offset + 1 < srcLimit ? source.getShort(offset) & 0xffff : 0;
-                    int dst = x << 1;
-                    rowBytes[dst] = (byte) (sample >>> 8);
-                    rowBytes[dst + 1] = (byte) sample;
+        boolean committed = false;
+        try {
+            try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(
+                    new DeflaterOutputStream(new FileOutputStream(temporary), new Deflater(4))))) {
+                out.writeInt(MAGIC);
+                out.writeInt(VERSION);
+                out.writeInt(frame.width); out.writeInt(frame.height); out.writeInt(frame.cfa);
+                out.writeInt(frame.orientation);
+                out.writeUTF(frame.key == null ? "" : frame.key);
+                out.writeUTF(frame.aspectRatio);
+                out.writeInt(frame.staticWhiteLevel); out.writeInt(frame.dynamicWhiteLevel);
+                out.writeLong(frame.exposureTimeNs);
+                out.writeInt(frame.sensitivityIso); out.writeInt(frame.aeExposureCompensation);
+                for (float v : frame.blackLevels) out.writeFloat(v);
+                for (float v : frame.wbGains) out.writeFloat(v);
+                for (float v : frame.neutralPoint) out.writeFloat(v);
+                writeMatrix(out, frame.colorCorrectionTransform);
+                writeMatrix(out, frame.sensorToXyz1);
+                writeMatrix(out, frame.sensorToXyz2);
+                out.writeInt(frame.illuminant1); out.writeInt(frame.illuminant2);
+                if (frame.lsmGains != null && frame.lsmCols > 0 && frame.lsmRows > 0) {
+                    out.writeInt(frame.lsmCols);
+                    out.writeInt(frame.lsmRows);
+                    for (float g : frame.lsmGains) out.writeFloat(g);
+                } else {
+                    out.writeInt(0);
+                    out.writeInt(0);
                 }
-                out.write(rowBytes, 0, rowBytes.length);
+                out.writeInt(frame.postRawSensitivityBoost > 0 ? frame.postRawSensitivityBoost : 100);
+                out.writeFloat(frame.aeCompensationEv);
+                out.writeBoolean(frame.manualExposure);
+                out.writeFloat(frame.previewMidTarget);
+
+                byte[] rowBytes = new byte[width * 2];
+                int srcLimit = source.limit();
+                for (int y = 0; y < height; y++) {
+                    int row = y * rowStride;
+                    for (int x = 0; x < width; x++) {
+                        int offset = row + x * pixelStride;
+                        int sample = offset >= 0 && offset + 1 < srcLimit ? source.getShort(offset) & 0xffff : 0;
+                        int dst = x << 1;
+                        rowBytes[dst] = (byte) (sample >>> 8);
+                        rowBytes[dst + 1] = (byte) sample;
+                    }
+                    out.write(rowBytes, 0, rowBytes.length);
+                }
             }
-        }
-        if (target.exists() && !target.delete()) throw new IOException("Could not replace RAW archive");
-        if (!temporary.renameTo(target)) {
-            temporary.delete();
-            throw new IOException("Could not finish RAW archive");
+            if (target.exists() && !target.delete()) throw new IOException("Could not replace RAW archive");
+            if (!temporary.renameTo(target)) {
+                throw new IOException("Could not finish RAW archive");
+            }
+            committed = true;
+        } finally {
+            if (!committed && temporary.exists()) {
+                temporary.delete();
+            }
         }
     }
 

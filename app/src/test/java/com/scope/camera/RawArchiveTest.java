@@ -107,4 +107,71 @@ public class RawArchiveTest {
         assertEquals("2 KB", RawArchive.formatBytes(2048L));
         assertEquals("1.5 MB", RawArchive.formatBytes(1572864L));
     }
+
+    @Test
+    public void testWriteArchiveRoundTripAndDeletesTemporaryOnFailure() throws Exception {
+        File dir = Files.createTempDirectory("raw_archive_write_test").toFile();
+        try {
+            RawArchive.Frame frame = new RawArchive.Frame();
+            frame.width = 2;
+            frame.height = 2;
+            frame.cfa = 0;
+            frame.orientation = 90;
+            frame.key = "ROUNDTRIP_TEST";
+            frame.aspectRatio = "4:3";
+            frame.staticWhiteLevel = 1023;
+            frame.dynamicWhiteLevel = 1023;
+            frame.exposureTimeNs = 10_000_000L;
+            frame.sensitivityIso = 200;
+            frame.wbGains = new float[]{1.8f, 1.0f, 1.0f, 1.5f};
+            frame.rowStride = 4;
+            frame.pixelStride = 2;
+            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            buf.putShort((short) 100);
+            buf.putShort((short) 200);
+            buf.putShort((short) 300);
+            buf.putShort((short) 400);
+            buf.flip();
+            frame.captureBuffer = buf;
+
+            File target = new File(dir, "ROUNDTRIP_TEST.sraw");
+            RawArchive.writeArchive(target, frame);
+            assertTrue(target.isFile());
+            assertFalse("Temporary file must be renamed/removed on success",
+                    new File(dir, "ROUNDTRIP_TEST.sraw.tmp").exists());
+
+            RawArchive.Frame loaded = RawArchive.readArchive(target);
+            assertEquals(2, loaded.width);
+            assertEquals(2, loaded.height);
+            assertEquals(90, loaded.orientation);
+            assertEquals(200, loaded.sensitivityIso);
+
+            // Force target replacement failure by pre-creating target as a non-empty directory.
+            File blockedTarget = new File(dir, "BLOCKED.sraw");
+            assertTrue(blockedTarget.mkdirs());
+            assertTrue(new File(blockedTarget, "keep").createNewFile());
+            boolean threw = false;
+            try {
+                RawArchive.writeArchive(blockedTarget, frame);
+            } catch (java.io.IOException expected) {
+                threw = true;
+            }
+            assertTrue("Blocking directory must cause IOException", threw);
+            assertFalse("Failed archive commit must clean up .tmp file",
+                    new File(dir, "BLOCKED.sraw.tmp").exists());
+        } finally {
+            deleteRecursively(dir);
+        }
+    }
+
+    private static void deleteRecursively(File f) {
+        if (f == null || !f.exists()) return;
+        if (f.isDirectory()) {
+            File[] children = f.listFiles();
+            if (children != null) {
+                for (File child : children) deleteRecursively(child);
+            }
+        }
+        f.delete();
+    }
 }

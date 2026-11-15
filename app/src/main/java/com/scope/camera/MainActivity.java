@@ -169,6 +169,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private View viewfinderSpacer;
     private SensorManager sensorManager;
     private Sensor orientationSensor;
+    private android.view.OrientationEventListener orientationEventListener;
+    private volatile int quantizedDeviceRotation = -1;
     private float deviceRollAngle = 0f;
     private float smoothRollAngle = 0f;
     private float devicePitchAngle = 0f;
@@ -967,6 +969,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 orientationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
             }
         }
+        orientationEventListener = new android.view.OrientationEventListener(this) {
+            @Override
+            public void onOrientationChanged(int orientation) {
+                if (orientation == ORIENTATION_UNKNOWN) return;
+                quantizedDeviceRotation = CaptureOrientation.quantizeClockwiseDeviceRotation(
+                        orientation, quantizedDeviceRotation);
+            }
+        };
         startBackgroundThread();
         String launchMode = AppSettings.get(this, AppSettings.LAUNCH_MODE, "Photo (default)");
         String intentAction = getIntent() != null ? getIntent().getAction() : null;
@@ -1049,6 +1059,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (sensorManager != null && orientationSensor != null) {
             sensorManager.registerListener(sensorEventListener, orientationSensor, SensorManager.SENSOR_DELAY_UI);
         }
+        quantizedDeviceRotation = CaptureOrientation.displayRotationToClockwiseDevice(
+                getWindowManager().getDefaultDisplay().getRotation());
+        if (orientationEventListener != null && orientationEventListener.canDetectOrientation()) {
+            orientationEventListener.enable();
+        }
         updateBrainButton();
         updateEasyButton();
         updateQuickButtons();
@@ -1127,6 +1142,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         liveLookPreview.clear();
         if (sensorManager != null) {
             sensorManager.unregisterListener(sensorEventListener);
+        }
+        if (orientationEventListener != null) {
+            orientationEventListener.disable();
         }
         hasOrientationSample = false;
         if (textureView != null) {
@@ -2540,13 +2558,20 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 outputModeText.setText(codecTag + " VIDEO  ·  " + videoProfileLabel());
             } else if (rawSupported && rawSize != null) {
                 cameraState.setText("RAW SENSOR READY  ·  " + Math.round(rawSize.getWidth() * rawSize.getHeight() / 1000000f) + " MP");
-                outputModeText.setText("RAW SENSOR  ·  DNG ORIGINAL + LIKA LENS JPEG");
+                outputModeText.setText(stillOutputSummary());
             } else if (jpegReader != null) {
                 cameraState.setText("RAW NOT AVAILABLE  ·  JPEG LOOK FALLBACK");
                 outputModeText.setText("JPEG FALLBACK  ·  SENSOR RAW NOT AVAILABLE");
             }
         }
         updateTelemetryVisibility();
+    }
+
+    private String stillOutputSummary() {
+        String output = AppSettings.get(this, AppSettings.PHOTO_OUTPUT, AppSettings.PHOTO_OUTPUT_JPEG_ONLY);
+        if (AppSettings.isDngOnly(output)) return "RAW SENSOR  ·  DNG ORIGINAL ONLY";
+        if (AppSettings.shouldSaveDng(output)) return "RAW SENSOR  ·  JPEG + DNG ORIGINAL";
+        return "RAW SENSOR  ·  PROCESSED JPEG (EDITABLE RAW)";
     }
 
     private void styleModeButton(TextView button, boolean active) {
@@ -2602,21 +2627,37 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (!videoState.isRecordingOrPaused() || textureView == null || !textureView.isAvailable()) return;
         triggerShutterWink();
         playShutterSound(android.media.MediaActionSound.SHUTTER_CLICK);
-        Bitmap frameBmp = textureView.getBitmap();
-        if (frameBmp == null) {
+        final Bitmap rawBitmap = textureView.getBitmap();
+        if (rawBitmap == null) {
             showMessage("Could not capture video frame.");
             return;
         }
-        boolean mirror = isFrontCamera() && AppSettings.getBoolean(this, AppSettings.MIRROR_FRONT, true);
+        final boolean isFront = isFrontCamera();
+        final boolean wantMirror = AppSettings.getBoolean(this, AppSettings.MIRROR_FRONT, true);
+        final int displayClockwise = CaptureOrientation.displayRotationToClockwiseDevice(
+                getWindowManager().getDefaultDisplay().getRotation());
+        final int physicalClockwise = quantizedDeviceRotation >= 0 ? quantizedDeviceRotation : displayClockwise;
+        final int relativeRotation = ((physicalClockwise - displayClockwise) % 360 + 360) % 360;
         String vAspect = AppSettings.get(this, AppSettings.VIDEO_ASPECT, "16:9 Widescreen");
         String targetAspect = vAspect.contains("2.39") ? "2.39:1" : "16:9";
         final long stillJob = captureJobs.begin();
         updateGalleryProcessingUi();
         final RawDeveloper.Look stillLook = RawDeveloper.Look.fromPreferences(this);
-        stillLook.flipHorizontal = mirror;
+        // TextureView.getBitmap() on front camera is already mirrored in upright coordinates after rotation.
+        stillLook.flipHorizontal = isFront && !wantMirror;
         processor.execute(() -> {
             boolean stillSucceeded = false;
+            Bitmap frameBmp = rawBitmap;
             try {
+                if (relativeRotation != 0) {
+                    Matrix m = new Matrix();
+                    m.postRotate(relativeRotation);
+                    Bitmap rotated = Bitmap.createBitmap(frameBmp, 0, 0, frameBmp.getWidth(), frameBmp.getHeight(), m, true);
+                    if (rotated != frameBmp) {
+                        frameBmp.recycle();
+                        frameBmp = rotated;
+                    }
+                }
                 String savedBorder = stillLook.frameBorder;
                 stillLook.frameBorder = "None";
                 Bitmap developed = RawDeveloper.developBitmap(frameBmp, stillLook, true);
@@ -2628,7 +2669,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     }
                     String stamp = formatCaptureStamp();
                     String prefix = resolvedFilePrefix();
-                    writeJpeg(developed, prefix + "_STILL_" + stamp + ".jpg", null, "");
+                    String stem = CaptureFileNaming.ensureUniqueStem(
+                            CaptureFileNaming.buildVideoStillBaseStem(prefix, stamp),
+                            candidate -> CaptureFileNaming.stillStemExists(MainActivity.this, candidate, ""));
+                    writeJpeg(developed, stem + ".jpg", null, "");
                     Bitmap quickThumbnail = createGalleryThumbnail(developed);
                     developed.recycle();
                     stillSucceeded = true;
@@ -3118,7 +3162,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     source=stitched;
                 }
                 job.publishing();
-                String name=resolvedFilePrefix()+"_VIDEO_"+new SimpleDateFormat("yyyyMMdd_HHmmss_SSS",Locale.US).format(new Date())+".mp4";
+                String videoStem = CaptureFileNaming.ensureUniqueStem(
+                        CaptureFileNaming.buildVideoBaseStem(resolvedFilePrefix(), formatCaptureStamp()),
+                        candidate -> CaptureFileNaming.videoStemExists(MainActivity.this, candidate));
+                String name = videoStem + ".mp4";
                 final Uri result;
                 try(MediaOutput output=MediaOutput.allocate(this,name,"video/mp4",Environment.DIRECTORY_MOVIES+"/Lika Lens",true)) {
                     try(InputStream in=new FileInputStream(source);OutputStream out=output.open()) {
@@ -3761,12 +3808,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private String resolvedFilePrefix() {
-        String prefix = AppSettings.get(this, AppSettings.FILE_PREFIX, "LIKA");
-        if (prefix.startsWith("CUSTOM") || prefix.startsWith("Custom")) {
-            String custom = AppSettings.get(this, AppSettings.CUSTOM_PREFIX_VALUE, "LIKA").trim();
-            return custom.isEmpty() ? "LIKA" : custom;
-        }
-        return prefix;
+        return CaptureFileNaming.resolvePrefix(
+                AppSettings.get(this, AppSettings.FILE_PREFIX, "LIKA"),
+                AppSettings.get(this, AppSettings.CUSTOM_PREFIX_VALUE, "LIKA"));
     }
 
     private void updateQuickButtons() {
@@ -3992,7 +4036,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             rawReader = ImageReader.newInstance(rawSize.getWidth(), rawSize.getHeight(), ImageFormat.RAW_SENSOR, 4);
             rawReader.setOnImageAvailableListener(this::onImageAvailable, cameraHandler);
             cameraState.setText("RAW SENSOR READY  ·  " + Math.round(rawSize.getWidth() * rawSize.getHeight() / 1000000f) + " MP");
-            outputModeText.setText("RAW SENSOR  ·  DNG ORIGINAL + LIKA LENS JPEG");
+            outputModeText.setText(stillOutputSummary());
         } else {
             Size jpegSize = chooseJpegSize(map.getOutputSizes(ImageFormat.JPEG));
             if (jpegSize == null) jpegSize = new Size(1920, 1080);
@@ -4415,26 +4459,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             this.saveDng = raw && AppSettings.shouldSaveDng(photoOutput);
             this.captureLocation = getCaptureLocation();
             String prefix = resolvedFilePrefix();
-            String namingPattern = AppSettings.get(MainActivity.this, AppSettings.FILE_NAMING, "Prefix + Timestamp");
-            if (namingPattern.contains("Film Look")) {
-                String stockName = recipe.look.brain != null ? recipe.look.brain.replaceAll("[^A-Za-z0-9]", "") : "LIKA";
-                this.baseFileStem = prefix + "_" + stockName + "_" + stamp;
-            } else if (namingPattern.contains("Roll counter")) {
-                int roll = AppSettings.getInt(MainActivity.this, "roll_counter", 1);
-                AppSettings.prefs(MainActivity.this).edit().putInt("roll_counter", roll + 1).apply();
-                this.baseFileStem = prefix + "_ROLL_" + String.format(Locale.US, "%04d", roll);
-            } else {
-                this.baseFileStem = prefix + "_" + stamp;
-            }
             String folderOrg = AppSettings.get(MainActivity.this, AppSettings.FOLDER_ORG, "Single folder (Pictures/Lika Lens)");
-            if (folderOrg.contains("month")) {
-                this.orgSub = formatMonthFolder();
-            } else if (folderOrg.contains("film look")) {
-                this.orgSub = recipe.look.brain != null
-                        ? recipe.look.brain.replaceAll("[^A-Za-z0-9_ ]", "").replace(' ', '_')
-                        : "LIKA_FILM";
-            } else {
-                this.orgSub = "";
+            final String sub = CaptureFileNaming.buildFolderSubpath(folderOrg, recipe.look.brain, formatMonthFolder());
+            this.orgSub = sub;
+            String namingPattern = AppSettings.get(MainActivity.this, AppSettings.FILE_NAMING, "Prefix + Timestamp");
+            boolean isRoll = namingPattern.contains("Roll counter");
+            int roll = isRoll ? AppSettings.getInt(MainActivity.this, "roll_counter", 1) : 1;
+            String rawStem = CaptureFileNaming.buildStillBaseStem(prefix, namingPattern, recipe.look.brain, stamp, roll);
+            this.baseFileStem = CaptureFileNaming.ensureUniqueStem(
+                    rawStem, candidate -> CaptureFileNaming.stillStemExists(MainActivity.this, candidate, sub));
+            if (isRoll) {
+                AppSettings.prefs(MainActivity.this).edit().putInt("roll_counter", roll + 1).apply();
             }
             this.archiveKey = this.baseFileStem;
         }
@@ -5244,13 +5279,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         Integer sensor = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
         Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
         int sensorOrientation = sensor == null ? 90 : sensor;
-        int rotation = getWindowManager().getDefaultDisplay().getRotation();
-        int deviceDegrees = rotation == Surface.ROTATION_90 ? 90 : rotation == Surface.ROTATION_180 ? 180 : rotation == Surface.ROTATION_270 ? 270 : 0;
-        if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
-            return (sensorOrientation + deviceDegrees) % 360;
-        } else {
-            return (sensorOrientation - deviceDegrees + 360) % 360;
-        }
+        boolean isFront = facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT;
+        int clockwiseDevice = quantizedDeviceRotation >= 0
+                ? quantizedDeviceRotation
+                : CaptureOrientation.displayRotationToClockwiseDevice(getWindowManager().getDefaultDisplay().getRotation());
+        return CaptureOrientation.calculateCaptureOrientation(sensorOrientation, isFront, clockwiseDevice);
     }
 
     /** Applies the selected composition to the render. The DNG remains full-frame. */
@@ -5395,13 +5428,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         boolean published = false;
         File temp = File.createTempFile("lika_export_", ".jpg", getCacheDir());
         try {
-            String qualityChoice = AppSettings.get(this, AppSettings.JPEG_QUALITY, "High · 95% (Recommended)");
-            int quality;
-            if (qualityChoice.startsWith("Maximum")) quality = 98;
-            else if (qualityChoice.startsWith("High")) quality = 95;
-            else if (qualityChoice.startsWith("Balanced")) quality = 90;
-            else if (qualityChoice.startsWith("Compact")) quality = 85;
-            else quality = 95;
+            int quality = CaptureFileNaming.resolveJpegQuality(
+                    AppSettings.get(this, AppSettings.JPEG_QUALITY, "High · 95% (Recommended)"));
 
             try (FileOutputStream tempOut = new FileOutputStream(temp)) {
                 if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, tempOut)) {
@@ -5883,7 +5911,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 BitmapFactory.Options options = new BitmapFactory.Options();
                 options.inSampleSize = sample;
                 options.inPreferredConfig = Bitmap.Config.RGB_565;
-                Bitmap thumbnail = BitmapFactory.decodeStream(stream, null, options);
+                Bitmap decoded = BitmapFactory.decodeStream(stream, null, options);
+                Bitmap thumbnail = CaptureOrientation.orientBitmap(this, latest.uri, decoded);
                 if (thumbnail != null) {
                     runOnUiThread(() -> {
                         if (galleryButton != null && !isFinishing() && !isDestroyed()) {

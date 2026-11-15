@@ -94,12 +94,28 @@ final class PhotoRepository {
                 ? displayName.substring(0, displayName.length() - 4) : displayName;
     }
 
-    static Uri saveBitmap(Context context,Bitmap bitmap,String name) {
-        if(bitmap==null) return null;
-        try(MediaOutput output=MediaOutput.allocate(context,name,"image/jpeg",Environment.DIRECTORY_PICTURES+"/Lika Lens",true)) {
-            try(OutputStream stream=output.open()) { if(!bitmap.compress(Bitmap.CompressFormat.JPEG,96,stream)) throw new java.io.IOException("JPEG encode failed"); }
-            output.publish();return output.result();
-        } catch(Exception error) { Log.e(TAG,"Could not save photo",error);return null; }
+    static Uri saveBitmap(Context context, Bitmap bitmap, String name) {
+        return saveBitmap(context, bitmap, name, "");
+    }
+
+    static Uri saveBitmap(Context context, Bitmap bitmap, String name, String subfolder) {
+        if (bitmap == null) return null;
+        int quality = CaptureFileNaming.resolveJpegQuality(
+                AppSettings.get(context, AppSettings.JPEG_QUALITY, "High · 95% (Recommended)"));
+        String dir = Environment.DIRECTORY_PICTURES + "/Lika Lens"
+                + (subfolder != null && !subfolder.isEmpty() ? "/" + subfolder : "");
+        try (MediaOutput output = MediaOutput.allocate(context, name, "image/jpeg", dir, true)) {
+            try (OutputStream stream = output.open()) {
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)) {
+                    throw new java.io.IOException("JPEG encode failed");
+                }
+            }
+            output.publish();
+            return output.result();
+        } catch (Exception error) {
+            Log.e(TAG, "Could not save photo", error);
+            return null;
+        }
     }
 
     static Uri saveGif(Context context,byte[] bytes,String name) {
@@ -146,15 +162,28 @@ final class PhotoRepository {
         List<Photo> photos = new ArrayList<>();
         File pictures = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
         for (String folderName : new String[]{"Lika Lens", "SCOPE"}) {
-            File folder = new File(pictures, folderName);
-            File[] files = folder.listFiles((dir, name) -> {
-                String lower = name.toLowerCase(java.util.Locale.US);
-                return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif");
-            });
-            if (files == null) continue;
-            for (File file : files) photos.add(new Photo(Uri.fromFile(file), file.getName(), file.lastModified()));
+            collectAppFolderPhotos(new File(pictures, folderName), photos);
         }
         return photos;
+    }
+
+    static void collectAppFolderPhotos(File dir, List<Photo> out) {
+        if (dir == null || !dir.isDirectory()) return;
+        File[] entries = dir.listFiles();
+        if (entries == null) return;
+        for (File entry : entries) {
+            if (entry == null) continue;
+            if (entry.isDirectory()) {
+                if (!"RAW".equalsIgnoreCase(entry.getName())) {
+                    collectAppFolderPhotos(entry, out);
+                }
+            } else if (entry.isFile()) {
+                String lower = entry.getName().toLowerCase(java.util.Locale.US);
+                if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif")) {
+                    out.add(new Photo(Uri.fromFile(entry), entry.getName(), entry.lastModified()));
+                }
+            }
+        }
     }
 
     static boolean delete(Context context, Uri uri, String displayName, String archiveKey) {
@@ -173,23 +202,9 @@ final class PhotoRepository {
         }
         String stem = archiveKey != null && !archiveKey.isEmpty() ? archiveKey : archiveKey(displayName);
         if (stem != null && !stem.isEmpty()) {
+            // Only remove the app-private editable cache & edit recipe; explicitly saved DNGs are preserved.
             RawArchive.delete(context, stem);
             PhotoEditStore.reset(context, stem);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                try {
-                    Uri filesUri = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
-                    context.getContentResolver().delete(filesUri,
-                            MediaStore.MediaColumns.DISPLAY_NAME + "=?",
-                            new String[]{stem + ".dng"});
-                } catch (Exception e) {
-                    Log.w(TAG, "Failed to delete raw DNG from MediaStore: " + stem, e);
-                }
-            }
-            File pictures = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
-            if (pictures != null) {
-                File rawDng = new File(new File(new File(pictures, "Lika Lens"), "RAW"), stem + ".dng");
-                if (rawDng.exists()) rawDng.delete();
-            }
         }
         return deleted;
     }
