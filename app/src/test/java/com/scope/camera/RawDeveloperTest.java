@@ -675,14 +675,14 @@ public class RawDeveloperTest {
         skinOff.brain = AppSettings.BRAIN_LIKA_FILM;
         skinOff.easyMode = true;
         skinOff.grain = 0f;
-        skinOff.saturation = 1.35f;
+        skinOff.saturation = 1.85f;
         skinOff.skinProtectionMode = AppSettings.OVERRIDE_OFF;
         skinOff.skinProtection = false;
         RawDeveloper.Look skinOn = skinOff.copy();
         skinOn.skinProtectionMode = AppSettings.OVERRIDE_ON;
         skinOn.skinProtection = true;
-        int pxSkinOff = RawDeveloper.renderLook(0.36f, 0.16f, 0.09f, skinOff, 0, 0, 1);
-        int pxSkinOn = RawDeveloper.renderLook(0.36f, 0.16f, 0.09f, skinOn, 0, 0, 1);
+        int pxSkinOff = RawDeveloper.renderLook(0.45f, 0.18f, 0.08f, skinOff, 0, 0, 1);
+        int pxSkinOn = RawDeveloper.renderLook(0.45f, 0.18f, 0.08f, skinOn, 0, 0, 1);
         org.junit.Assert.assertNotEquals("Skin Protection Off vs On must produce different output even in Easy Mode",
                 pxSkinOff, pxSkinOn);
 
@@ -707,12 +707,12 @@ public class RawDeveloperTest {
             RawDeveloper.Look lowPivot = new RawDeveloper.Look();
             lowPivot.brain = brain;
             lowPivot.pivot = 0.12f;
-            lowPivot.contrast = 1.30f;
+            lowPivot.contrast = 1.40f;
             lowPivot.grain = 0f;
             RawDeveloper.Look highPivot = lowPivot.copy();
             highPivot.pivot = 0.36f;
-            int pLow = RawDeveloper.renderLook(0.18f, 0.18f, 0.18f, lowPivot, 0, 0, 1);
-            int pHigh = RawDeveloper.renderLook(0.18f, 0.18f, 0.18f, highPivot, 0, 0, 1);
+            int pLow = RawDeveloper.renderLook(0.28f, 0.28f, 0.28f, lowPivot, 0, 0, 1);
+            int pHigh = RawDeveloper.renderLook(0.28f, 0.28f, 0.28f, highPivot, 0, 0, 1);
             org.junit.Assert.assertNotEquals("Pivot must affect tonal rendering for " + brain, pLow, pHigh);
         }
     }

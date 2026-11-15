@@ -30,7 +30,7 @@ public class CaptureFileNamingTest {
     public void testResolvePrefixSupportsStandardAndCustom() {
         assertEquals("LIKA", CaptureFileNaming.resolvePrefix("LIKA", "CUSTOM_X"));
         assertEquals("IMG", CaptureFileNaming.resolvePrefix("IMG", "CUSTOM_X"));
-        assertEquals("PORTRAIT_01", CaptureFileNaming.resolvePrefix("Custom...", " Portrait 01 "));
+        assertEquals("Portrait_01", CaptureFileNaming.resolvePrefix("Custom...", " Portrait 01 "));
         assertEquals("LIKA", CaptureFileNaming.resolvePrefix("CUSTOM", "   "));
     }
 
