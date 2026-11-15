@@ -16,7 +16,6 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.Gravity;
-import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -35,11 +34,14 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Manages GitHub Releases update checking, changelog parsing, background APK downloading,
@@ -53,8 +55,29 @@ public final class AppUpdateManager {
     private static final int BG_DIALOG = 0xff0e1314;
     private static final int BORDER_CARD = 0xff2a3233;
 
-    private static final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private static final Pattern SAFE_TAG_PATTERN = Pattern.compile("[^a-zA-Z0-9._-]");
+    private static final Pattern NON_DIGIT_PATTERN = Pattern.compile("[^0-9]");
+    private static final Pattern DIGITS_PATTERN = Pattern.compile("(\\d+)");
+    private static final Pattern LINE_SPLIT_PATTERN = Pattern.compile("\\r?\\n");
+    private static final Pattern HEADING_WHATS_CHANGED = Pattern.compile("(?i)^#+\\s*what'?s\\s*changed.*$");
+    private static final Pattern HORIZONTAL_RULE = Pattern.compile("^[-*_]{3,}$");
+    private static final Pattern CD_FOOTER = Pattern.compile("(?i)^\\*?continuous (?:delivery|integration).*");
+    private static final Pattern FOOTER_HASH = Pattern.compile("^\\(?[a-f0-9]{7,40}\\)?\\*?$");
+    private static final Pattern TRAILING_COMMIT_HASH = Pattern.compile("\\s*\\([a-f0-9]{7,40}\\)$");
+
+    private static final ExecutorService checkExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "UpdateCheckWorker");
+        t.setDaemon(true);
+        return t;
+    });
+    private static final ExecutorService downloadExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "UpdateDownloadWorker");
+        t.setDaemon(true);
+        return t;
+    });
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private static volatile String cachedVersionName;
+    private static volatile int cachedVersionCode = -1;
 
     enum UpdateState {
         AVAILABLE,
@@ -199,7 +222,7 @@ public final class AppUpdateManager {
     public static File getApkFileForTag(Context context, String tagName) {
         File updateDir = new File(context.getCacheDir(), "updates");
         if (!updateDir.exists()) updateDir.mkdirs();
-        String safeTag = tagName != null ? tagName.replaceAll("[^a-zA-Z0-9._-]", "_") : "latest";
+        String safeTag = tagName != null ? SAFE_TAG_PATTERN.matcher(tagName).replaceAll("_") : "latest";
         return new File(updateDir, "lika-lens-update-" + safeTag + ".apk");
     }
 
@@ -224,7 +247,7 @@ public final class AppUpdateManager {
     private static int parseSafeInt(String s) {
         if (s == null) return 0;
         try {
-            return Integer.parseInt(s.replaceAll("[^0-9]", ""));
+            return Integer.parseInt(NON_DIGIT_PATTERN.matcher(s).replaceAll(""));
         } catch (Exception e) {
             return 0;
         }
@@ -233,7 +256,7 @@ public final class AppUpdateManager {
     private static int extractTrailingNumber(String s) {
         if (s == null) return 0;
         try {
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)").matcher(s);
+            Matcher m = DIGITS_PATTERN.matcher(s);
             int lastNum = 0;
             while (m.find()) {
                 lastNum = Integer.parseInt(m.group(1));
@@ -300,12 +323,14 @@ public final class AppUpdateManager {
      * Asynchronously checks GitHub Releases for an available update.
      */
     public static void checkForUpdate(Context context, boolean isManual, UpdateCallback callback) {
-        final long checkTicket=checkJob.begin(JobState.Phase.LOADING);
-        String channel = AppSettings.get(context, AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_BETA);
-        String currentVersionName = getAppVersionName(context);
-        int currentVersionCode = getAppVersionCode(context);
+        final long checkTicket = checkJob.begin(JobState.Phase.LOADING);
+        final Context appContext = context.getApplicationContext();
+        final WeakReference<Activity> activityRef = new WeakReference<>(context instanceof Activity ? (Activity) context : null);
+        String channel = AppSettings.get(appContext, AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_BETA);
+        String currentVersionName = getAppVersionName(appContext);
+        int currentVersionCode = getAppVersionCode(appContext);
 
-        worker.execute(() -> {
+        checkExecutor.execute(() -> {
             HttpURLConnection conn = null;
             try {
                 URL url = new URL(GITHUB_RELEASES_API);
@@ -326,11 +351,12 @@ public final class AppUpdateManager {
                         }
                     }
                     UpdateInfo info = parseLatestRelease(sb.toString(), channel, currentVersionName, currentVersionCode);
-                    AppSettings.prefs(context).edit().putLong(AppSettings.LAST_UPDATE_CHECK_TIME, System.currentTimeMillis()).apply();
+                    AppSettings.prefs(appContext).edit().putLong(AppSettings.LAST_UPDATE_CHECK_TIME, System.currentTimeMillis()).apply();
 
                     mainHandler.post(() -> {
-                        if(!checkJob.accepts(checkTicket) || (context instanceof Activity && (((Activity)context).isFinishing() || ((Activity)context).isDestroyed()))) return;
-                        checkJob.move(checkTicket,JobState.Phase.READY);
+                        Activity act = activityRef.get();
+                        if (!checkJob.accepts(checkTicket) || (act != null && (act.isFinishing() || act.isDestroyed()))) return;
+                        checkJob.move(checkTicket, JobState.Phase.READY);
                         if (info != null) {
                             if (callback != null) callback.onUpdateAvailable(info);
                         } else {
@@ -339,16 +365,18 @@ public final class AppUpdateManager {
                     });
                 } else {
                     mainHandler.post(() -> {
-                        if(!checkJob.accepts(checkTicket) || (context instanceof Activity && (((Activity)context).isFinishing() || ((Activity)context).isDestroyed()))) return;
-                        checkJob.move(checkTicket,JobState.Phase.READY);
+                        Activity act = activityRef.get();
+                        if (!checkJob.accepts(checkTicket) || (act != null && (act.isFinishing() || act.isDestroyed()))) return;
+                        checkJob.move(checkTicket, JobState.Phase.READY);
                         if (callback != null) callback.onError("GitHub API HTTP " + code);
                     });
                 }
             } catch (Exception e) {
                 Log.w(TAG, "Update check failed", e);
                 mainHandler.post(() -> {
-                        if(!checkJob.accepts(checkTicket) || (context instanceof Activity && (((Activity)context).isFinishing() || ((Activity)context).isDestroyed()))) return;
-                        checkJob.move(checkTicket,JobState.Phase.READY);
+                    Activity act = activityRef.get();
+                    if (!checkJob.accepts(checkTicket) || (act != null && (act.isFinishing() || act.isDestroyed()))) return;
+                    checkJob.move(checkTicket, JobState.Phase.READY);
                     if (callback != null) callback.onError(e.getMessage() != null ? e.getMessage() : "Network error");
                 });
             } finally {
@@ -362,10 +390,12 @@ public final class AppUpdateManager {
      */
     public static void downloadAndInstall(Activity activity, UpdateInfo info, DownloadProgressListener listener) {
         final long downloadTicket = session.beginDownload(info);
-        if(downloadTicket==0) return;
-        worker.execute(() -> {
-            cleanStaleApks(activity, info.tagName);
-            File destFile = getApkFileForTag(activity, info.tagName);
+        if (downloadTicket == 0) return;
+        final Context appContext = activity.getApplicationContext();
+        final WeakReference<Activity> activityRef = new WeakReference<>(activity);
+        downloadExecutor.execute(() -> {
+            cleanStaleApks(appContext, info.tagName);
+            File destFile = getApkFileForTag(appContext, info.tagName);
             File tempFile = new File(destFile.getParentFile(), destFile.getName() + ".part");
             if (tempFile.exists()) tempFile.delete();
 
@@ -397,6 +427,10 @@ public final class AppUpdateManager {
                     redirects++;
                 }
 
+                if (responseCode != HttpURLConnection.HTTP_OK) {
+                    throw new java.io.IOException("Download HTTP " + responseCode);
+                }
+
                 long totalBytes = conn.getContentLengthLong();
                 if (totalBytes <= 0) totalBytes = info.apkSize;
 
@@ -408,6 +442,7 @@ public final class AppUpdateManager {
                     long lastProgressUpdate = 0;
 
                     while ((count = input.read(buffer)) != -1) {
+                        if (!session.owns(downloadTicket)) break;
                         output.write(buffer, 0, count);
                         downloaded += count;
                         long now = System.currentTimeMillis();
@@ -417,7 +452,8 @@ public final class AppUpdateManager {
                             final long finalDownloaded = downloaded;
                             final long finalTotal = totalBytes;
                             mainHandler.post(() -> {
-                                if (!session.owns(downloadTicket) || activity.isDestroyed()) return;
+                                Activity act = activityRef.get();
+                                if (!session.owns(downloadTicket) || act == null || act.isDestroyed()) return;
                                 if (listener != null) listener.onProgress(percent, finalDownloaded, finalTotal);
                             });
                         }
@@ -425,6 +461,10 @@ public final class AppUpdateManager {
                     output.flush();
                 }
 
+                if (!session.owns(downloadTicket)) {
+                    if (tempFile.exists()) tempFile.delete();
+                    return;
+                }
                 if (destFile.exists() && !destFile.delete()) {
                     throw new java.io.IOException("Could not replace existing APK");
                 }
@@ -432,21 +472,25 @@ public final class AppUpdateManager {
                     throw new java.io.IOException("Could not finalize downloaded APK");
                 }
                 destFile.setReadable(true, false);
-                if(!session.owns(downloadTicket)) return;
+                if (!session.owns(downloadTicket)) return;
                 session.apk = destFile;
                 session.state = UpdateState.READY_TO_INSTALL;
 
                 mainHandler.post(() -> {
-                    if(!session.owns(downloadTicket) || !isForegroundActivity(activity)) return;
+                    Activity act = activityRef.get();
+                    if (!session.owns(downloadTicket) || act == null || !isForegroundActivity(act)) return;
                     if (listener != null) listener.onComplete(destFile);
-                    promptInstall(activity, destFile, info);
+                    promptInstall(act, destFile, info);
                 });
             } catch (Exception e) {
                 if (tempFile.exists()) tempFile.delete();
-                if(session.owns(downloadTicket)) session.state=UpdateState.FAILED;
+                if (session.owns(downloadTicket)) session.state = UpdateState.FAILED;
                 Log.e(TAG, "Download failed", e);
                 mainHandler.post(() -> {
-                    if(session.owns(downloadTicket) && !activity.isDestroyed() && listener != null) listener.onError("Download failed: " + e.getMessage());
+                    Activity act = activityRef.get();
+                    if (session.owns(downloadTicket) && act != null && !act.isDestroyed() && listener != null) {
+                        listener.onError("Download failed: " + e.getMessage());
+                    }
                 });
             } finally {
                 if (conn != null) conn.disconnect();
@@ -593,7 +637,6 @@ public final class AppUpdateManager {
         int dp16 = Math.round(16 * density);
         int dp14 = Math.round(14 * density);
         int dp12 = Math.round(12 * density);
-        int dp10 = Math.round(10 * density);
         int dp8 = Math.round(8 * density);
         int dp6 = Math.round(6 * density);
         int dp4 = Math.round(4 * density);
@@ -742,9 +785,7 @@ public final class AppUpdateManager {
         sheet.addView(actions);
 
         installBtn.setOnClickListener(v -> {
-            if (AppSettings.getBoolean(activity, AppSettings.HAPTICS, true)) {
-                installBtn.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-            }
+            UiKit.hapticClick(activity, installBtn);
             boolean hasApk = destFile.exists() && destFile.length() > 1024;
             if (shouldPromptInstallInsteadOfDownload(session.state, hasApk)) {
                 session.state = UpdateState.READY_TO_INSTALL;
@@ -796,18 +837,26 @@ public final class AppUpdateManager {
     }
 
     public static String getAppVersionName(Context context) {
+        String cached = cachedVersionName;
+        if (cached != null) return cached;
         try {
             PackageInfo p = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
-            return p.versionName != null ? p.versionName : "0.1.0";
+            cachedVersionName = p.versionName != null ? p.versionName : "0.1.0";
+            if (cachedVersionCode < 0) cachedVersionCode = p.versionCode;
+            return cachedVersionName;
         } catch (Exception e) {
             return "0.1.0";
         }
     }
 
     public static int getAppVersionCode(Context context) {
+        int cached = cachedVersionCode;
+        if (cached >= 0) return cached;
         try {
             PackageInfo p = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
-            return p.versionCode;
+            if (cachedVersionName == null) cachedVersionName = p.versionName != null ? p.versionName : "0.1.0";
+            cachedVersionCode = p.versionCode;
+            return cachedVersionCode;
         } catch (Exception e) {
             return 1;
         }
@@ -821,37 +870,38 @@ public final class AppUpdateManager {
         if (rawNotes == null || rawNotes.trim().isEmpty()) {
             return "Latest bug fixes and performance improvements.";
         }
-        String[] lines = rawNotes.split("\r?\n");
-        StringBuilder sb = new StringBuilder();
+        String[] lines = LINE_SPLIT_PATTERN.split(rawNotes);
+        StringBuilder sb = new StringBuilder(rawNotes.length());
         boolean inFooter = false;
 
         for (String rawLine : lines) {
             String line = rawLine.trim();
             if (line.isEmpty()) {
-                if (sb.length() > 0 && !sb.toString().endsWith("\n\n")) {
-                    sb.append("\n");
+                int len = sb.length();
+                if (len > 0 && !(len >= 2 && sb.charAt(len - 1) == '\n' && sb.charAt(len - 2) == '\n')) {
+                    sb.append('\n');
                 }
                 continue;
             }
 
             // Strip markdown heading "## What's Changed" or similar
-            if (line.matches("(?i)^#+\\s*what'?s\\s*changed.*$")) {
+            if (HEADING_WHATS_CHANGED.matcher(line).matches()) {
                 continue;
             }
 
             // Strip horizontal rules
-            if (line.matches("^[-*_]{3,}$")) {
+            if (HORIZONTAL_RULE.matcher(line).matches()) {
                 continue;
             }
 
             // Strip continuous delivery footer notes
-            if (line.matches("(?i)^\\*?continuous delivery.*") || line.matches("(?i)^\\*?continuous integration.*")) {
+            if (CD_FOOTER.matcher(line).matches()) {
                 inFooter = true;
                 continue;
             }
             if (inFooter) {
                 // If the footer wrapped onto subsequent lines (e.g., hash in parentheses), drop them
-                if (line.matches("^\\(?[a-f0-9]{7,40}\\)?\\*?$") || line.isEmpty()) {
+                if (FOOTER_HASH.matcher(line).matches()) {
                     continue;
                 } else {
                     inFooter = false;
@@ -862,7 +912,7 @@ public final class AppUpdateManager {
             if (line.startsWith("* ") || line.startsWith("- ") || line.startsWith("• ")) {
                 String bulletText = line.substring(2).trim();
                 // Strip trailing commit hash like (568e235) or (568e235d8229966f7c1f1635c92484a836565f5d)
-                bulletText = bulletText.replaceAll("\\s*\\([a-f0-9]{7,40}\\)$", "");
+                bulletText = TRAILING_COMMIT_HASH.matcher(bulletText).replaceAll("");
                 sb.append("• ").append(bulletText).append("\n\n");
             } else {
                 sb.append(line).append("\n\n");

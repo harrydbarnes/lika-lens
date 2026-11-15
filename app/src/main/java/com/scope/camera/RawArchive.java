@@ -213,13 +213,18 @@ final class RawArchive {
             out.writeBoolean(frame.manualExposure);
             out.writeFloat(frame.previewMidTarget);
 
+            byte[] rowBytes = new byte[width * 2];
+            int srcLimit = source.limit();
             for (int y = 0; y < height; y++) {
                 int row = y * rowStride;
                 for (int x = 0; x < width; x++) {
                     int offset = row + x * pixelStride;
-                    int sample = offset >= 0 && offset + 1 < source.limit() ? source.getShort(offset) & 0xffff : 0;
-                    out.writeShort(sample);
+                    int sample = offset >= 0 && offset + 1 < srcLimit ? source.getShort(offset) & 0xffff : 0;
+                    int dst = x << 1;
+                    rowBytes[dst] = (byte) (sample >>> 8);
+                    rowBytes[dst + 1] = (byte) sample;
                 }
+                out.write(rowBytes, 0, rowBytes.length);
             }
         }
         if (target.exists() && !target.delete()) throw new IOException("Could not replace RAW archive");

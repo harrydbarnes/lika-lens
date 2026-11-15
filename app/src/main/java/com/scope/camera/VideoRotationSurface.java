@@ -48,6 +48,7 @@ final class VideoRotationSurface implements AutoCloseable {
     private SurfaceTexture texture;
     private Surface input;
     private int program, textureId;
+    private int positionAttr, uvAttr, textureMatrixUniform, cameraUniform;
     private volatile State state = State.INITIALIZING;
 
     VideoRotationSurface(Surface encoder, int width, int height, int rotation, Runnable onFailure) {
@@ -106,14 +107,30 @@ final class VideoRotationSurface implements AutoCloseable {
         int[] linked = new int[1];
         GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, linked, 0);
         check(linked[0] != 0, "link rotation shader");
+        positionAttr = GLES20.glGetAttribLocation(program, "p");
+        uvAttr = GLES20.glGetAttribLocation(program, "uv");
+        textureMatrixUniform = GLES20.glGetUniformLocation(program, "textureMatrix");
+        cameraUniform = GLES20.glGetUniformLocation(program, "camera");
         int[] names = new int[1];
         GLES20.glGenTextures(1, names, 0);
         textureId = names[0];
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId);
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glUseProgram(program);
+        GLES20.glUniform1i(cameraUniform, 0);
+        GLES20.glViewport(0, 0, width, height);
+        GLES20.glClearColor(0, 0, 0, 1);
+        GLES20.glEnableVertexAttribArray(positionAttr);
+        GLES20.glEnableVertexAttribArray(uvAttr);
+        vertices.position(0);
+        coordinates.position(0);
+        GLES20.glVertexAttribPointer(positionAttr, 2, GLES20.GL_FLOAT, false, 0, vertices);
+        GLES20.glVertexAttribPointer(uvAttr, 2, GLES20.GL_FLOAT, false, 0, coordinates);
+        check(GLES20.glGetError() == GLES20.GL_NO_ERROR, "configure rotation shader");
         texture = new SurfaceTexture(textureId);
         texture.setDefaultBufferSize(width, height);
         input = new Surface(texture);
@@ -127,24 +144,9 @@ final class VideoRotationSurface implements AutoCloseable {
             texture.updateTexImage();
             texture.getTransformMatrix(textureMatrix);
             VideoRecordingCoordinator.recordingTextureMatrix(textureMatrix, samplingMatrix);
-            GLES20.glViewport(0, 0, width, height);
-            GLES20.glClearColor(0, 0, 0, 1);
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-            GLES20.glUseProgram(program);
-            int position = GLES20.glGetAttribLocation(program, "p");
-            int uv = GLES20.glGetAttribLocation(program, "uv");
-            vertices.position(0);
-            coordinates.position(0);
-            GLES20.glVertexAttribPointer(position, 2, GLES20.GL_FLOAT, false, 0, vertices);
-            GLES20.glVertexAttribPointer(uv, 2, GLES20.GL_FLOAT, false, 0, coordinates);
-            GLES20.glEnableVertexAttribArray(position);
-            GLES20.glEnableVertexAttribArray(uv);
-            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "textureMatrix"), 1, false, samplingMatrix, 0);
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId);
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "camera"), 0);
+            GLES20.glUniformMatrix4fv(textureMatrixUniform, 1, false, samplingMatrix, 0);
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
-            check(GLES20.glGetError() == GLES20.GL_NO_ERROR, "rotate recording frame");
             check(EGLExt.eglPresentationTimeANDROID(display, window, texture.getTimestamp()), "set frame timestamp");
             check(EGL14.eglSwapBuffers(display, window), "submit recording frame");
         } catch (RuntimeException e) {

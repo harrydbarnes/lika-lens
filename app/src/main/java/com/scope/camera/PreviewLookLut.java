@@ -13,11 +13,19 @@ final class PreviewLookLut {
 
     static PreviewLookLut build(RawDeveloper.Look look, RawArchive.Frame frame) {
         RawDeveloper.PreparedLook prepared = RawDeveloper.prepareDisplayLook(look.copy(), frame);
-        int[] pixels = new int[SIZE * SIZE * SIZE];
-        for (int b = 0; b < SIZE; b++) for (int g = 0; g < SIZE; g++) for (int r = 0; r < SIZE; r++) {
-            pixels[r + SIZE * (g + SIZE * b)] = RawDeveloper.renderDisplayRgb(
-                    r / (float) (SIZE - 1), g / (float) (SIZE - 1), b / (float) (SIZE - 1), prepared);
-        }
+        final int[] pixels = new int[SIZE * SIZE * SIZE];
+        final float inv = 1f / (SIZE - 1);
+        java.util.stream.IntStream.range(0, SIZE).parallel().forEach(b -> {
+            float bf = b * inv;
+            int bOff = SIZE * b;
+            for (int g = 0; g < SIZE; g++) {
+                float gf = g * inv;
+                int bgOff = SIZE * (g + bOff);
+                for (int r = 0; r < SIZE; r++) {
+                    pixels[r + bgOff] = RawDeveloper.renderDisplayRgb(r * inv, gf, bf, prepared);
+                }
+            }
+        });
         return new PreviewLookLut(pixels);
     }
 }

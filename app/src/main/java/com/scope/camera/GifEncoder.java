@@ -38,6 +38,9 @@ public final class GifEncoder {
     private State state = State.NEW;
     private int frameCount = 0;
     private OnProgressListener progressListener;
+    private int[] framePixelBuf;
+    private byte[] indexedPixelBuf;
+    private final LzwEncoder lzwEncoder = new LzwEncoder();
 
     public GifEncoder() {}
 
@@ -98,19 +101,24 @@ public final class GifEncoder {
             needsRecycle = (scaled != bitmap);
         }
 
-        int[] pixels = new int[frameW * frameH];
-        scaled.getPixels(pixels, 0, frameW, 0, 0, frameW, frameH);
+        int numPixels = frameW * frameH;
+        if (framePixelBuf == null || framePixelBuf.length < numPixels) {
+            framePixelBuf = new int[numPixels];
+        }
+        scaled.getPixels(framePixelBuf, 0, frameW, 0, 0, frameW, frameH);
 
         if (needsRecycle) {
             scaled.recycle();
         }
 
-        return addFrame(frameW, frameH, pixels);
+        return addFrame(frameW, frameH, framePixelBuf);
     }
 
     /** Adds a frame from an ARGB integer pixel array. */
     public boolean addFrame(int frameW, int frameH, int[] pixels) {
         if (!isAcceptingFrames() || pixels == null || frameW <= 0 || frameH <= 0) return false;
+        int numPixels = frameW * frameH;
+        if (pixels.length < numPixels) return false;
         try {
             if (width <= 0 || height <= 0) {
                 width = frameW;
@@ -129,10 +137,13 @@ public final class GifEncoder {
                 progressListener.onProgress(frameCount + 1, -1, "Quantizing colors for frame " + (frameCount + 1));
             }
 
-            // Quantize colors using NeuQuant
-            NeuQuant quantizer = new NeuQuant(pixels, frameW * frameH, sampleQuality);
+            // Quantize colors using NeuQuant directly from ARGB pixels
+            NeuQuant quantizer = new NeuQuant(pixels, numPixels, sampleQuality);
             byte[] colorTable = quantizer.process();
-            byte[] indexedPixels = quantizer.mapPixels(pixels);
+            if (indexedPixelBuf == null || indexedPixelBuf.length < numPixels) {
+                indexedPixelBuf = new byte[numPixels];
+            }
+            quantizer.mapPixels(pixels, numPixels, indexedPixelBuf);
 
             writeGraphicControlExt();
             writeImageDescriptor(frameW, frameH);
@@ -142,8 +153,7 @@ public final class GifEncoder {
                 progressListener.onProgress(frameCount + 1, -1, "Compressing frame " + (frameCount + 1));
             }
 
-            LzwEncoder lzw = new LzwEncoder(frameW, frameH, indexedPixels, 8);
-            lzw.encode(out);
+            lzwEncoder.encode(frameW, frameH, indexedPixelBuf, 8, out);
 
             frameCount++;
             return true;
@@ -163,6 +173,8 @@ public final class GifEncoder {
             ok = false;
         } finally {
             state = State.FINISHED;
+            framePixelBuf = null;
+            indexedPixelBuf = null;
         }
         return ok;
     }
@@ -235,7 +247,6 @@ public final class GifEncoder {
         private static final int PRIME2 = 491;
         private static final int PRIME3 = 487;
         private static final int PRIME4 = 503;
-        private static final int MINPICTUREBYTES = (3 * PRIME4);
 
         private static final int MAXNETPOS = (NETSIZE - 1);
         private static final int NETBIASSHIFT = 4;
@@ -253,33 +264,32 @@ public final class GifEncoder {
         private static final int BETA = (GAMMA >> 10);
         private static final int BETASHIFT = 10;
         private static final int BETAGAMMA = (GAMMA << 10);
+        private static final int RAD_FACTOR = 256;
 
-        private final byte[] thepicture;
-        private final int lengthcount;
+        private final int[] pixels;
+        private final int numPixels;
         private final int samplefac;
 
-        private final int[][] network = new int[NETSIZE][4];
+        // Flattened [i * 4 + 0..3] = {B, G, R, originalIndex}
+        private final int[] network = new int[NETSIZE * 4];
         private final int[] netindex = new int[256];
         private final int[] bias = new int[NETSIZE];
         private final int[] freq = new int[NETSIZE];
         private final int[] radpower = new int[NETSIZE];
 
         NeuQuant(int[] pixels, int numPixels, int sample) {
+            this.pixels = pixels;
+            this.numPixels = numPixels;
             this.samplefac = sample;
-            this.lengthcount = numPixels * 3;
-            this.thepicture = new byte[lengthcount];
 
-            int idx = 0;
-            for (int p : pixels) {
-                thepicture[idx++] = (byte) (p & 0xFF);         // Blue
-                thepicture[idx++] = (byte) ((p >> 8) & 0xFF);  // Green
-                thepicture[idx++] = (byte) ((p >> 16) & 0xFF); // Red
-            }
-
+            int initFreq = INITALPHA / NETSIZE;
             for (int i = 0; i < NETSIZE; i++) {
-                int[] n = network[i];
-                n[0] = n[1] = n[2] = (i << (NETBIASSHIFT + 8)) / NETSIZE;
-                freq[i] = INITALPHA / NETSIZE;
+                int base = i << 2;
+                int v = (i << (NETBIASSHIFT + 8)) / NETSIZE;
+                network[base] = v;
+                network[base + 1] = v;
+                network[base + 2] = v;
+                freq[i] = initFreq;
                 bias[i] = 0;
             }
         }
@@ -295,50 +305,58 @@ public final class GifEncoder {
             byte[] map = new byte[3 * NETSIZE];
             int[] index = new int[NETSIZE];
             for (int i = 0; i < NETSIZE; i++) {
-                index[network[i][3]] = i;
+                index[network[(i << 2) + 3]] = i;
             }
             int k = 0;
             for (int i = 0; i < NETSIZE; i++) {
-                int j = index[i];
-                map[k++] = (byte) network[j][2]; // Red
-                map[k++] = (byte) network[j][1]; // Green
-                map[k++] = (byte) network[j][0]; // Blue
+                int j = index[i] << 2;
+                map[k++] = (byte) network[j + 2]; // Red
+                map[k++] = (byte) network[j + 1]; // Green
+                map[k++] = (byte) network[j];     // Blue
             }
             return map;
         }
 
-        byte[] mapPixels(int[] pixels) {
-            byte[] mapped = new byte[pixels.length];
-            for (int i = 0; i < pixels.length; i++) {
-                int p = pixels[i];
-                int b = p & 0xFF;
-                int g = (p >> 8) & 0xFF;
-                int r = (p >> 16) & 0xFF;
-                mapped[i] = (byte) inxsearch(b, g, r);
+        void mapPixels(int[] pixels, int count, byte[] mapped) {
+            if (count >= 65536) {
+                int chunks = 8;
+                int chunkSize = (count + chunks - 1) / chunks;
+                java.util.stream.IntStream.range(0, chunks).parallel().forEach(c -> {
+                    int start = c * chunkSize;
+                    int end = Math.min(count, start + chunkSize);
+                    for (int i = start; i < end; i++) {
+                        int p = pixels[i];
+                        mapped[i] = (byte) inxsearch(p & 0xFF, (p >> 8) & 0xFF, (p >> 16) & 0xFF);
+                    }
+                });
+            } else {
+                for (int i = 0; i < count; i++) {
+                    int p = pixels[i];
+                    mapped[i] = (byte) inxsearch(p & 0xFF, (p >> 8) & 0xFF, (p >> 16) & 0xFF);
+                }
             }
-            return mapped;
         }
 
         private void inxbuild() {
             int previouscol = 0;
             int startpos = 0;
             for (int i = 0; i < NETSIZE; i++) {
-                int[] p = network[i];
+                int pBase = i << 2;
                 int smallpos = i;
-                int smallval = p[1]; // Index on Green
+                int smallval = network[pBase + 1]; // Index on Green
                 for (int j = i + 1; j < NETSIZE; j++) {
-                    int[] q = network[j];
-                    if (q[1] < smallval) {
+                    int qVal = network[(j << 2) + 1];
+                    if (qVal < smallval) {
                         smallpos = j;
-                        smallval = q[1];
+                        smallval = qVal;
                     }
                 }
-                int[] q = network[smallpos];
                 if (i != smallpos) {
-                    int tmp = q[0]; q[0] = p[0]; p[0] = tmp;
-                    tmp = q[1]; q[1] = p[1]; p[1] = tmp;
-                    tmp = q[2]; q[2] = p[2]; p[2] = tmp;
-                    tmp = q[3]; q[3] = p[3]; p[3] = tmp;
+                    int qBase = smallpos << 2;
+                    int tmp = network[qBase]; network[qBase] = network[pBase]; network[pBase] = tmp;
+                    tmp = network[qBase + 1]; network[qBase + 1] = network[pBase + 1]; network[pBase + 1] = tmp;
+                    tmp = network[qBase + 2]; network[qBase + 2] = network[pBase + 2]; network[pBase + 2] = tmp;
+                    tmp = network[qBase + 3]; network[qBase + 3] = network[pBase + 3]; network[pBase + 3] = tmp;
                 }
                 if (smallval != previouscol) {
                     netindex[previouscol] = (startpos + i) >> 1;
@@ -356,42 +374,43 @@ public final class GifEncoder {
             int best = -1;
             int i = netindex[g];
             int j = i - 1;
+            int[] net = this.network;
 
             while ((i < NETSIZE) || (j >= 0)) {
                 if (i < NETSIZE) {
-                    int[] p = network[i];
-                    int dist = p[1] - g;
+                    int base = i << 2;
+                    int dist = net[base + 1] - g;
                     if (dist >= bestd) i = NETSIZE;
                     else {
                         i++;
                         if (dist < 0) dist = -dist;
-                        int a = p[0] - b; if (a < 0) a = -a;
+                        int a = net[base] - b; if (a < 0) a = -a;
                         dist += a;
                         if (dist < bestd) {
-                            a = p[2] - r; if (a < 0) a = -a;
+                            a = net[base + 2] - r; if (a < 0) a = -a;
                             dist += a;
                             if (dist < bestd) {
                                 bestd = dist;
-                                best = p[3];
+                                best = net[base + 3];
                             }
                         }
                     }
                 }
                 if (j >= 0) {
-                    int[] p = network[j];
-                    int dist = g - p[1];
+                    int base = j << 2;
+                    int dist = g - net[base + 1];
                     if (dist >= bestd) j = -1;
                     else {
                         j--;
                         if (dist < 0) dist = -dist;
-                        int a = p[0] - b; if (a < 0) a = -a;
+                        int a = net[base] - b; if (a < 0) a = -a;
                         dist += a;
                         if (dist < bestd) {
-                            a = p[2] - r; if (a < 0) a = -a;
+                            a = net[base + 2] - r; if (a < 0) a = -a;
                             dist += a;
                             if (dist < bestd) {
                                 bestd = dist;
-                                best = p[3];
+                                best = net[base + 3];
                             }
                         }
                     }
@@ -401,12 +420,11 @@ public final class GifEncoder {
         }
 
         private void learn() {
-            int lengthcount = this.lengthcount;
+            int[] p = this.pixels;
+            int lim = this.numPixels;
             int alphadec = 30 + ((samplefac - 1) / 3);
-            byte[] p = thepicture;
             int pix = 0;
-            int lim = lengthcount;
-            int samplepixels = lengthcount / (3 * samplefac);
+            int samplepixels = lim / samplefac;
             int delta = samplepixels / NCYCLES;
             if (delta == 0) delta = 1;
             int alpha = INITALPHA;
@@ -421,33 +439,33 @@ public final class GifEncoder {
             }
 
             int step;
-            if (lengthcount < MINPICTUREBYTES) {
-                step = 3;
-            } else if ((lengthcount % PRIME1) != 0) {
-                step = 3 * PRIME1;
-            } else if ((lengthcount % PRIME2) != 0) {
-                step = 3 * PRIME2;
-            } else if ((lengthcount % PRIME3) != 0) {
-                step = 3 * PRIME3;
+            if (lim < PRIME4) {
+                step = 1;
+            } else if ((lim % PRIME1) != 0) {
+                step = PRIME1;
+            } else if ((lim % PRIME2) != 0) {
+                step = PRIME2;
+            } else if ((lim % PRIME3) != 0) {
+                step = PRIME3;
             } else {
-                step = 3 * PRIME4;
+                step = PRIME4;
             }
 
             int i = 0;
             while (i < samplepixels) {
-                int b = (p[pix] & 0xFF) << NETBIASSHIFT;
-                int g = (p[pix + 1] & 0xFF) << NETBIASSHIFT;
-                int r = (p[pix + 2] & 0xFF) << NETBIASSHIFT;
+                int argb = p[pix];
+                int b = (argb & 0xFF) << NETBIASSHIFT;
+                int g = ((argb >> 8) & 0xFF) << NETBIASSHIFT;
+                int r = ((argb >> 16) & 0xFF) << NETBIASSHIFT;
                 int j = contest(b, g, r);
 
                 altersingle(alpha, j, b, g, r);
                 if (rad != 0) alterneigh(rad, j, b, g, r);
 
                 pix += step;
-                if (pix >= lim) pix -= lengthcount;
+                if (pix >= lim) pix -= lim;
 
                 i++;
-                if (delta == 0) delta = 1;
                 if (i % delta == 0) {
                     alpha -= alpha / alphadec;
                     radius -= radius / RADIUSDEC;
@@ -462,13 +480,11 @@ public final class GifEncoder {
             }
         }
 
-        private static final int RAD_FACTOR = 256;
-
         private void altersingle(int alpha, int i, int b, int g, int r) {
-            int[] n = network[i];
-            n[0] -= (alpha * (n[0] - b)) / INITALPHA;
-            n[1] -= (alpha * (n[1] - g)) / INITALPHA;
-            n[2] -= (alpha * (n[2] - r)) / INITALPHA;
+            int base = i << 2;
+            network[base] -= (alpha * (network[base] - b)) / INITALPHA;
+            network[base + 1] -= (alpha * (network[base + 1] - g)) / INITALPHA;
+            network[base + 2] -= (alpha * (network[base + 2] - r)) / INITALPHA;
         }
 
         private void alterneigh(int rad, int i, int b, int g, int r) {
@@ -477,19 +493,20 @@ public final class GifEncoder {
             int j = i + 1;
             int k = i - 1;
             int q = 1;
+            int[] net = this.network;
             while ((j < hi) || (k >= lo)) {
                 int a = (q < radpower.length) ? radpower[q++] : 0;
                 if (j < hi) {
-                    int[] p = network[j++];
-                    p[0] -= (a * (p[0] - b)) / (INITALPHA * RAD_FACTOR);
-                    p[1] -= (a * (p[1] - g)) / (INITALPHA * RAD_FACTOR);
-                    p[2] -= (a * (p[2] - r)) / (INITALPHA * RAD_FACTOR);
+                    int base = (j++) << 2;
+                    net[base] -= (a * (net[base] - b)) / (INITALPHA * RAD_FACTOR);
+                    net[base + 1] -= (a * (net[base + 1] - g)) / (INITALPHA * RAD_FACTOR);
+                    net[base + 2] -= (a * (net[base + 2] - r)) / (INITALPHA * RAD_FACTOR);
                 }
                 if (k >= lo) {
-                    int[] p = network[k--];
-                    p[0] -= (a * (p[0] - b)) / (INITALPHA * RAD_FACTOR);
-                    p[1] -= (a * (p[1] - g)) / (INITALPHA * RAD_FACTOR);
-                    p[2] -= (a * (p[2] - r)) / (INITALPHA * RAD_FACTOR);
+                    int base = (k--) << 2;
+                    net[base] -= (a * (net[base] - b)) / (INITALPHA * RAD_FACTOR);
+                    net[base + 1] -= (a * (net[base + 1] - g)) / (INITALPHA * RAD_FACTOR);
+                    net[base + 2] -= (a * (net[base + 2] - r)) / (INITALPHA * RAD_FACTOR);
                 }
             }
         }
@@ -499,10 +516,14 @@ public final class GifEncoder {
             int bestbiasd = bestd;
             int bestpos = -1;
             int bestbiaspos = bestpos;
+            int[] net = this.network;
 
             for (int i = 0; i < NETSIZE; i++) {
-                int[] n = network[i];
-                int dist = Math.abs(n[0] - b) + Math.abs(n[1] - g) + Math.abs(n[2] - r);
+                int base = i << 2;
+                int db = net[base] - b; if (db < 0) db = -db;
+                int dg = net[base + 1] - g; if (dg < 0) dg = -dg;
+                int dr = net[base + 2] - r; if (dr < 0) dr = -dr;
+                int dist = db + dg + dr;
                 if (dist < bestd) {
                     bestd = dist;
                     bestpos = i;
@@ -523,10 +544,11 @@ public final class GifEncoder {
 
         private void unbiasnet() {
             for (int i = 0; i < NETSIZE; i++) {
-                network[i][0] >>= NETBIASSHIFT;
-                network[i][1] >>= NETBIASSHIFT;
-                network[i][2] >>= NETBIASSHIFT;
-                network[i][3] = i; // Save original position
+                int base = i << 2;
+                network[base] >>= NETBIASSHIFT;
+                network[base + 1] >>= NETBIASSHIFT;
+                network[base + 2] >>= NETBIASSHIFT;
+                network[base + 3] = i; // Save original position
             }
         }
     }
@@ -539,18 +561,16 @@ public final class GifEncoder {
         private static final int BITS = 12;
         private static final int HSIZE = 5003; // Prime hash table size > 4096
 
-        private final int imgW;
-        private final int imgH;
-        private final byte[] pixAry;
-        private final int initCodeSize;
+        private byte[] pixAry;
+        private int initCodeSize;
 
         private int remaining;
         private int curPixel;
 
         private int n_bits;
-        private int maxbits = BITS;
+        private final int maxbits = BITS;
         private int maxcode;
-        private int maxmaxcode = 1 << BITS;
+        private final int maxmaxcode = 1 << BITS;
 
         private final int[] htab = new int[HSIZE];
         private final int[] codetab = new int[HSIZE];
@@ -564,7 +584,7 @@ public final class GifEncoder {
         private int cur_accum = 0;
         private int cur_bits = 0;
 
-        private final int[] masks = {
+        private static final int[] MASKS = {
                 0x0000, 0x0001, 0x0003, 0x0007, 0x000F,
                 0x001F, 0x003F, 0x007F, 0x00FF, 0x01FF,
                 0x03FF, 0x07FF, 0x0FFF, 0x1FFF, 0x3FFF,
@@ -574,19 +594,19 @@ public final class GifEncoder {
         private int a_count;
         private final byte[] accum = new byte[256];
 
-        LzwEncoder(int width, int height, byte[] pixels, int color_depth) {
-            this.imgW = width;
-            this.imgH = height;
+        void encode(int width, int height, byte[] pixels, int colorDepth, OutputStream os) throws IOException {
             this.pixAry = pixels;
-            this.initCodeSize = Math.max(2, color_depth);
-        }
-
-        void encode(OutputStream os) throws IOException {
+            this.initCodeSize = Math.max(2, colorDepth);
+            this.remaining = width * height;
+            this.curPixel = 0;
+            this.cur_accum = 0;
+            this.cur_bits = 0;
+            this.clear_flg = false;
+            this.a_count = 0;
             os.write(initCodeSize);
-            remaining = imgW * imgH;
-            curPixel = 0;
             compress(initCodeSize + 1, os);
             os.write(0); // Sub-block terminator
+            this.pixAry = null;
         }
 
         private void compress(int init_bits, OutputStream outs) throws IOException {
@@ -654,7 +674,7 @@ public final class GifEncoder {
         }
 
         private void output(int code, OutputStream outs) throws IOException {
-            cur_accum &= masks[cur_bits];
+            cur_accum &= MASKS[cur_bits];
             if (cur_bits > 0) cur_accum |= (code << cur_bits);
             else cur_accum = code;
 
@@ -695,7 +715,7 @@ public final class GifEncoder {
         }
 
         private void cl_hash(int hsize) {
-            for (int i = 0; i < hsize; ++i) htab[i] = -1;
+            java.util.Arrays.fill(htab, 0, hsize, -1);
         }
 
         private void char_out(byte c, OutputStream outs) throws IOException {

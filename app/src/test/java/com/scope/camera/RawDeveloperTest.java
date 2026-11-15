@@ -495,4 +495,128 @@ public class RawDeveloperTest {
         org.junit.Assert.assertNotEquals(baseKey, RawDeveloper.displayLookKey(exposureChanged, cool));
     }
 
+    @Test
+    public void testLinearSceneCacheMatchesFullDevelopAndInvalidatesOnSceneParams() {
+        RawArchive.Frame frame = new RawArchive.Frame();
+        frame.width = 48;
+        frame.height = 36;
+        frame.rowStride = frame.width * 2;
+        frame.pixelStride = 2;
+        frame.orientation = 90;
+        frame.staticWhiteLevel = 1023;
+        frame.dynamicWhiteLevel = 1023;
+        frame.sensitivityIso = 800;
+        frame.postRawSensitivityBoost = 125;
+        frame.key = "linear-cache-test";
+        frame.blackLevels = new float[]{16f, 16f, 16f, 16f};
+        frame.wbGains = new float[]{1.45f, 1.0f, 1.0f, 1.65f};
+        frame.colorCorrectionTransform = new float[]{
+                1.15f, -0.10f, -0.05f,
+                -0.05f, 1.10f, -0.05f,
+                -0.04f, -0.12f, 1.16f
+        };
+        frame.lsmCols = 4;
+        frame.lsmRows = 3;
+        frame.lsmGains = new float[4 * 3 * 4];
+        for (int i = 0; i < frame.lsmGains.length; i++) {
+            frame.lsmGains[i] = 1.0f + (i % 4) * 0.05f;
+        }
+
+        // Use a smooth Bayer gradient so quad-sampled baseRgb and local-tone sampling are comparable
+        java.nio.ByteBuffer cap = java.nio.ByteBuffer.allocate(frame.width * frame.height * 2)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (int y = 0; y < frame.height; y++) {
+            for (int x = 0; x < frame.width; x++) {
+                int val = 40 + x * 8 + y * 6;
+                cap.putShort((short) val);
+            }
+        }
+        cap.flip();
+        frame.captureBuffer = cap;
+
+        // 1. Manual mode (easyMode = false): LinearSceneCache must match develop() pixel-for-pixel
+        RawDeveloper.Look manual = new RawDeveloper.Look();
+        manual.brain = AppSettings.BRAIN_LIKA_FILM;
+        manual.easyMode = false;
+        manual.exposureEv = 0.2f;
+        manual.contrast = 1.18f;
+        manual.saturation = 1.05f;
+        manual.grain = 0.22f;
+        manual.halation = 0.18f;
+        manual.sharpening = 0.10f;
+        manual.chromaNr = 0.16f;
+        manual.vignette = 0.15f;
+        manual.aspectRatio = "3:2";
+        manual.flipHorizontal = true;
+        manual.opticalCorrection = true;
+
+        RawDeveloper.LinearSceneCache manualScene = RawDeveloper.prepareLinearScene(frame, manual, 24);
+        assertNotNull(manualScene);
+        org.junit.Assert.assertTrue(manualScene.matches(frame, manual, 24));
+        org.junit.Assert.assertArrayEquals("Manual LinearSceneCache must match develop() pixel-for-pixel",
+                RawDeveloper.developPixels(frame, manual, 24),
+                RawDeveloper.developFromLinearPixels(manualScene, manual));
+
+        // Changing non-cached grading/effect controls keeps the linear scene cache valid
+        // and still matches full develop() pixel-for-pixel.
+        RawDeveloper.Look regraded = manual.copy();
+        regraded.brain = AppSettings.BRAIN_KODACHROME;
+        regraded.exposureEv = -0.6f;
+        regraded.contrast = 1.42f;
+        regraded.saturation = 0.78f;
+        regraded.lutName = LutManager.LUT_PORTRA;
+        regraded.lutIntensity = 0.80f;
+        regraded.vignette = 0.35f;
+        regraded.halation = 0.28f;
+        regraded.grain = 0.45f;
+        org.junit.Assert.assertTrue(manualScene.matches(frame, regraded, 24));
+        org.junit.Assert.assertArrayEquals("Re-graded LinearSceneCache must match develop() pixel-for-pixel",
+                RawDeveloper.developPixels(frame, regraded, 24),
+                RawDeveloper.developFromLinearPixels(manualScene, regraded));
+
+        // 2. Easy Mode (easyMode = true): local tone gain grid uses quad-sampled baseRgb and stays tightly aligned
+        RawDeveloper.Look easy = manual.copy();
+        easy.easyMode = true;
+        org.junit.Assert.assertFalse(manualScene.matches(frame, easy, 24));
+        RawDeveloper.LinearSceneCache easyScene = RawDeveloper.prepareLinearScene(frame, easy, 24);
+        assertNotNull(easyScene);
+        org.junit.Assert.assertTrue(easyScene.matches(frame, easy, 24));
+        int[] easyDirect = RawDeveloper.developPixels(frame, easy, 24);
+        int[] easyCached = RawDeveloper.developFromLinearPixels(easyScene, easy);
+        assertEquals(easyDirect.length, easyCached.length);
+        int maxEasyDiff = 0;
+        for (int i = 0; i < easyDirect.length; i++) {
+            for (int shift : new int[]{16, 8, 0}) {
+                maxEasyDiff = Math.max(maxEasyDiff,
+                        Math.abs(((easyDirect[i] >> shift) & 0xff) - ((easyCached[i] >> shift) & 0xff)));
+            }
+        }
+        org.junit.Assert.assertTrue("Easy-mode LinearSceneCache should stay close to develop(), maxDiff=" + maxEasyDiff,
+                maxEasyDiff <= 10);
+
+        // 3. Verify cache invalidates on every scene-affecting parameter
+        org.junit.Assert.assertFalse(easyScene.matches(frame, easy, 32));
+
+        RawDeveloper.Look flipped = easy.copy();
+        flipped.flipHorizontal = !easy.flipHorizontal;
+        org.junit.Assert.assertFalse(easyScene.matches(frame, flipped, 24));
+
+        RawDeveloper.Look wbChanged = easy.copy();
+        wbChanged.whiteBalanceKelvin = 4000;
+        org.junit.Assert.assertFalse(easyScene.matches(frame, wbChanged, 24));
+
+        RawDeveloper.Look optChanged = easy.copy();
+        optChanged.opticalCorrection = false;
+        org.junit.Assert.assertFalse(easyScene.matches(frame, optChanged, 24));
+
+        RawDeveloper.Look aspectChanged = easy.copy();
+        aspectChanged.aspectRatio = "16:9";
+        org.junit.Assert.assertFalse(easyScene.matches(frame, aspectChanged, 24));
+
+        org.junit.Assert.assertFalse(easyScene.matches(new RawArchive.Frame(), easy, 24));
+
+        frame.key = "linear-cache-test-2";
+        org.junit.Assert.assertFalse(easyScene.matches(frame, easy, 24));
+    }
+
 }

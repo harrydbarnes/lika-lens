@@ -20,6 +20,13 @@ public class AppSettingsTest {
         assertEquals(4.0f / 3.0f, AppSettings.parseAspectRatio(null), 0.001f);
         assertEquals(4.0f / 3.0f, AppSettings.parseAspectRatio(""), 0.001f);
         assertEquals(4.0f / 3.0f, AppSettings.parseAspectRatio("invalid:string"), 0.001f);
+        assertEquals(2.39f, AppSettings.parseAspectRatio("2.39:1 · Cinemascope"), 0.001f);
+        assertEquals(1.85f, AppSettings.parseAspectRatio("1.85:1 · Flat Widescreen"), 0.001f);
+        assertEquals(16.0f / 9.0f, AppSettings.parseAspectRatio(" 16 : 9 "), 0.001f);
+        assertEquals(4.0f / 3.0f, AppSettings.parseAspectRatio("0:9"), 0.001f);
+        assertEquals(4.0f / 3.0f, AppSettings.parseAspectRatio("16:0"), 0.001f);
+        assertEquals(4.0f / 3.0f, AppSettings.parseAspectRatio("16:9:1"), 0.001f);
+        assertEquals(4.0f / 3.0f, AppSettings.parseAspectRatio("16"), 0.001f);
     }
 
     @Test

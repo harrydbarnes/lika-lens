@@ -61,69 +61,150 @@ public final class GifExporter {
         worker.execute(() -> {
             List<Bitmap> frames = new ArrayList<>();
             try {
-                requireCurrent(job,ticket);
-                if (params.isVideoMode) frames.addAll(GifMediaHelper.extractVideoFrames(context,params.videoUri,
-                        params.targetRes,params.targetFps,params.videoStartSec,params.videoDurationSec,null,() -> job.accepts(ticket)));
-                else for (Uri uri : params.photoUris) {
-                    requireCurrent(job,ticket);
-                    Bitmap b = GifMediaHelper.decodeAndScaleBitmap(context,uri,params.targetRes);
-                    if (b != null) frames.add(b);
-                }
-                requireCurrent(job,ticket);
-                if (frames.isEmpty()) throw new IllegalStateException("No frames extracted for GIF");
-                job.move(ticket,JobState.Phase.GRADING);
-                if (!"NONE".equals(params.lutProfile)) {
-                    LutManager.Lut3D lut=LutManager.generateBuiltIn(params.lutProfile,17);
-                    for(int i=0;i<frames.size();i++) {
-                        requireCurrent(job,ticket);
-                        Bitmap original=frames.get(i), graded=LutManager.applyToBitmap(original,lut,1f);
-                        if(graded!=null && graded!=original) { original.recycle();frames.set(i,graded); }
+                requireCurrent(job, ticket);
+                LutManager.Lut3D lut = !"NONE".equals(params.lutProfile)
+                        ? LutManager.getBuiltIn(params.lutProfile, 17)
+                        : null;
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                GifEncoder encoder = new GifEncoder();
+                encoder.setDelay(1000 / Math.max(1, params.targetFps));
+                encoder.setRepeat(0);
+                encoder.setQuality(10);
+                if (!encoder.start(bytes)) throw new IllegalStateException("Could not start GIF encoder");
+
+                int encodedTotal;
+                if (!params.isVideoMode && !params.boomerang) {
+                    // Stream one photo at a time so only a single decoded/graded Bitmap is live in RAM.
+                    int estTotal = params.photoUris.size();
+                    encodedTotal = 0;
+                    job.move(ticket, JobState.Phase.ENCODING);
+                    for (int i = 0; i < params.photoUris.size(); i++) {
+                        requireCurrent(job, ticket);
+                        Bitmap frame = GifMediaHelper.decodeAndScaleBitmap(context, params.photoUris.get(i), params.targetRes);
+                        if (frame == null) continue;
+                        try {
+                            if (lut != null) {
+                                Bitmap graded = LutManager.applyToBitmap(frame, lut, 1f);
+                                if (graded != null && graded != frame) {
+                                    frame.recycle();
+                                    frame = graded;
+                                }
+                            }
+                            if (encodedTotal == 0) {
+                                encoder.setSize(frame.getWidth(), frame.getHeight());
+                            }
+                            if (!encoder.addFrame(frame)) throw new IllegalStateException("Could not encode GIF frame");
+                            encodedTotal++;
+                            final int n = encodedTotal;
+                            final int denom = Math.max(1, estTotal);
+                            mainHandler.post(() -> {
+                                if (current(activity, job, ticket)) {
+                                    progress.update("Encoding frame " + n + " of " + denom + "…", Math.min(90, n * 90 / denom));
+                                }
+                            });
+                        } finally {
+                            if (!frame.isRecycled()) frame.recycle();
+                        }
+                    }
+                    if (encodedTotal == 0) throw new IllegalStateException("No frames extracted for GIF");
+                } else {
+                    if (params.isVideoMode) {
+                        frames.addAll(GifMediaHelper.extractVideoFrames(context, params.videoUri,
+                                params.targetRes, params.targetFps, params.videoStartSec, params.videoDurationSec, null, () -> job.accepts(ticket)));
+                    } else {
+                        for (Uri uri : params.photoUris) {
+                            requireCurrent(job, ticket);
+                            Bitmap b = GifMediaHelper.decodeAndScaleBitmap(context, uri, params.targetRes);
+                            if (b != null) frames.add(b);
+                        }
+                    }
+                    requireCurrent(job, ticket);
+                    if (frames.isEmpty()) throw new IllegalStateException("No frames extracted for GIF");
+                    if (lut != null) {
+                        job.move(ticket, JobState.Phase.GRADING);
+                        for (int i = 0; i < frames.size(); i++) {
+                            requireCurrent(job, ticket);
+                            Bitmap original = frames.get(i);
+                            Bitmap graded = LutManager.applyToBitmap(original, lut, 1f);
+                            if (graded != null && graded != original) {
+                                original.recycle();
+                                frames.set(i, graded);
+                            }
+                        }
+                    }
+                    int baseCount = frames.size();
+                    boolean doBounce = params.boomerang && baseCount > 2;
+                    final int bounceTotal = doBounce ? baseCount * 2 - 2 : baseCount;
+                    encodedTotal = bounceTotal;
+                    job.move(ticket, JobState.Phase.ENCODING);
+                    encoder.setSize(frames.get(0).getWidth(), frames.get(0).getHeight());
+                    int encodedIdx = 0;
+                    for (int i = 0; i < baseCount; i++) {
+                        requireCurrent(job, ticket);
+                        Bitmap frame = frames.get(i);
+                        if (!encoder.addFrame(frame)) throw new IllegalStateException("Could not encode GIF frame");
+                        // Recycle immediately when not needed for the boomerang return pass (ends: 0 and baseCount-1)
+                        if (!doBounce || i == 0 || i == baseCount - 1) {
+                            frame.recycle();
+                            frames.set(i, null);
+                        }
+                        final int n = ++encodedIdx;
+                        mainHandler.post(() -> {
+                            if (current(activity, job, ticket)) {
+                                progress.update("Encoding frame " + n + " of " + bounceTotal + "…", n * 90 / bounceTotal);
+                            }
+                        });
+                    }
+                    if (doBounce) {
+                        for (int i = baseCount - 2; i > 0; i--) {
+                            requireCurrent(job, ticket);
+                            Bitmap frame = frames.get(i);
+                            if (!encoder.addFrame(frame)) throw new IllegalStateException("Could not encode GIF frame");
+                            frame.recycle();
+                            frames.set(i, null);
+                            final int n = ++encodedIdx;
+                            mainHandler.post(() -> {
+                                if (current(activity, job, ticket)) {
+                                    progress.update("Encoding frame " + n + " of " + bounceTotal + "…", n * 90 / bounceTotal);
+                                }
+                            });
+                        }
                     }
                 }
-                if(params.boomerang && frames.size()>2) for(int i=frames.size()-2;i>0;i--) {
-                    requireCurrent(job,ticket);
-                    frames.add(frames.get(i).copy(Bitmap.Config.ARGB_8888,true));
-                }
-                int total=frames.size();
-                job.move(ticket,JobState.Phase.ENCODING);
-                ByteArrayOutputStream bytes=new ByteArrayOutputStream();
-                GifEncoder encoder=new GifEncoder();
-                encoder.setDelay(1000/params.targetFps);encoder.setRepeat(0);encoder.setQuality(10);
-                encoder.setSize(frames.get(0).getWidth(),frames.get(0).getHeight());
-                if(!encoder.start(bytes)) throw new IllegalStateException("Could not start GIF encoder");
-                for(int i=0;i<frames.size();i++) {
-                    requireCurrent(job,ticket);
-                    if(!encoder.addFrame(frames.get(i))) throw new IllegalStateException("Could not encode GIF frame");
-                    frames.get(i).recycle();
-                    final int n=i+1;
-                    mainHandler.post(() -> { if(current(activity,job,ticket)) progress.update("Encoding frame "+n+" of "+total+"…",n*90/total); });
-                }
-                if(!encoder.finish()) throw new IllegalStateException("Could not finish GIF encoder");
-                requireCurrent(job,ticket);
-                job.move(ticket,JobState.Phase.SAVING);
-                byte[] gifBytes=bytes.toByteArray();
-                String name="LIKA_GIF_"+new SimpleDateFormat("yyyyMMdd_HHmmss_SSS",Locale.US).format(new Date())+".gif";
-                Uri saved=PhotoRepository.saveGif(context,gifBytes,name);
-                if(saved==null) throw new IllegalStateException("Could not save GIF");
+                if (!encoder.finish()) throw new IllegalStateException("Could not finish GIF encoder");
+                requireCurrent(job, ticket);
+                job.move(ticket, JobState.Phase.SAVING);
+                byte[] gifBytes = bytes.toByteArray();
+                String name = "LIKA_GIF_" + new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date()) + ".gif";
+                Uri saved = PhotoRepository.saveGif(context, gifBytes, name);
+                if (saved == null) throw new IllegalStateException("Could not save GIF");
+                final int totalFinal = encodedTotal;
                 mainHandler.post(() -> {
-                    if(!current(activity,job,ticket)) return;
-                    job.move(ticket,JobState.Phase.READY);progress.dismiss();
-                    GifStudioDialogs.showExportSuccessDialog(activity,saved,name,gifBytes.length,total,params.targetFps,
-                            () -> { Intent intent=new Intent(activity,PhotoViewerActivity.class);
-                                intent.putExtra(PhotoViewerActivity.EXTRA_URI,saved.toString());
-                                intent.putExtra(PhotoViewerActivity.EXTRA_NAME,name);
-                                intent.putExtra(PhotoViewerActivity.EXTRA_FROM_LIBRARY,true);
-                                activity.startActivity(intent);activity.finish(); },activity::finish);
+                    if (!current(activity, job, ticket)) return;
+                    job.move(ticket, JobState.Phase.READY);
+                    progress.dismiss();
+                    GifStudioDialogs.showExportSuccessDialog(activity, saved, name, gifBytes.length, totalFinal, params.targetFps,
+                            () -> {
+                                Intent intent = new Intent(activity, PhotoViewerActivity.class);
+                                intent.putExtra(PhotoViewerActivity.EXTRA_URI, saved.toString());
+                                intent.putExtra(PhotoViewerActivity.EXTRA_NAME, name);
+                                intent.putExtra(PhotoViewerActivity.EXTRA_FROM_LIBRARY, true);
+                                activity.startActivity(intent);
+                                activity.finish();
+                            }, activity::finish);
                 });
             } catch (java.util.concurrent.CancellationException ignored) {
                 mainHandler.post(progress::dismiss);
             } catch (Exception error) {
-                mainHandler.post(() -> { if(current(activity,job,ticket)) {
-                    job.move(ticket,JobState.Phase.FAILED);progress.dismiss();
-                    Toast.makeText(activity,"Export failed: "+error.getMessage(),Toast.LENGTH_LONG).show();
-                }});
+                mainHandler.post(() -> {
+                    if (current(activity, job, ticket)) {
+                        job.move(ticket, JobState.Phase.FAILED);
+                        progress.dismiss();
+                        Toast.makeText(activity, "Export failed: " + error.getMessage(), Toast.LENGTH_LONG).show();
+                    }
+                });
             } finally {
-                for(Bitmap b:frames) if(b!=null && !b.isRecycled()) b.recycle();
+                for (Bitmap b : frames) if (b != null && !b.isRecycled()) b.recycle();
             }
         });
         return progress;

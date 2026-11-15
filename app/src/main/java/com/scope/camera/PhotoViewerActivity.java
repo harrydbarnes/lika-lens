@@ -70,6 +70,7 @@ public class PhotoViewerActivity extends Activity {
     private Bitmap developedBitmap;
     private CompareState compareState = CompareState.OFF;
     private int compareGeneration = 0;
+    private volatile boolean currentHasRaw;
     private final JobState imageJob = new JobState();
     private boolean viewerActive;
     private TextView compareButton;
@@ -80,7 +81,11 @@ public class PhotoViewerActivity extends Activity {
     private List<PhotoRepository.Photo> allPhotos = new java.util.ArrayList<>();
     private int currentIndex = -1;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "lika-viewer-worker");
+        t.setDaemon(true);
+        return t;
+    });
 
     // Zoom & Pan state
     private final Matrix matrix = new Matrix();
@@ -95,9 +100,7 @@ public class PhotoViewerActivity extends Activity {
     private GestureMode gestureMode = GestureMode.IDLE;
 
     private void hapticClick(View v) {
-        if (v != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
-            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-        }
+        UiKit.hapticClick(this, v);
     }
 
     @Override public void onCreate(Bundle saved) {
@@ -181,6 +184,7 @@ public class PhotoViewerActivity extends Activity {
         deleteBtn.setOnClickListener(v -> { hapticClick(v); confirmDeleteCurrentPhoto(); });
 
         compareButton = pill("RAW", false);
+        compareButton.setVisibility(View.GONE);
         LinearLayout.LayoutParams compLp = new LinearLayout.LayoutParams(dp(44), dp(32));
         compLp.leftMargin = dp(4);
         header.addView(compareButton, compLp);
@@ -198,6 +202,7 @@ public class PhotoViewerActivity extends Activity {
         });
 
         editButton = pill("EDIT", true);
+        editButton.setVisibility(View.GONE);
         LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(dp(46), dp(32));
         editLp.leftMargin = dp(4);
         header.addView(editButton, editLp);
@@ -241,7 +246,7 @@ public class PhotoViewerActivity extends Activity {
         root.addView(infoCard, getInfoCardLayoutParams());
 
         setContentView(root);
-        refreshPhotoList();
+        refreshPhotoListAsync(null);
         loadPhoto();
     }
 
@@ -298,12 +303,14 @@ public class PhotoViewerActivity extends Activity {
     }
 
     private void preloadRawOriginal(String keyForLoad, int targetW, int targetH) {
-        if (keyForLoad == null || !RawArchive.exists(this, keyForLoad)) return;
+        if (keyForLoad == null || !currentHasRaw) return;
         final int generation = compareGeneration;
+        final android.content.Context appContext = getApplicationContext();
         worker.execute(() -> {
             try {
                 if (generation != compareGeneration || !keyForLoad.equals(archiveKey) || isFinishing() || isDestroyed()) return;
-                RawArchive.Frame frame = RawArchive.read(PhotoViewerActivity.this, keyForLoad);
+                if (!RawArchive.exists(appContext, keyForLoad)) return;
+                RawArchive.Frame frame = RawArchive.read(appContext, keyForLoad);
                 RawDeveloper.Look neutral = buildNeutralRawLook(frame);
                 int targetDim = Math.max(1200, Math.max(targetW, targetH));
                 Bitmap rawBmp = RawDeveloper.develop(frame, neutral, targetDim);
@@ -343,6 +350,7 @@ public class PhotoViewerActivity extends Activity {
 
     private void startComparing() {
         if (compareState != CompareState.OFF) return;
+        if (!currentHasRaw && rawOriginalBitmap == null) return;
         compareState = rawOriginalBitmap != null ? CompareState.SHOWING_ORIGINAL : CompareState.LOADING_ORIGINAL;
         if (compareBadge != null) {
             compareBadge.setText(compareState == CompareState.SHOWING_ORIGINAL
@@ -351,12 +359,10 @@ public class PhotoViewerActivity extends Activity {
             compareBadge.setVisibility(View.VISIBLE);
         }
         if (compareButton != null) compareButton.setTextColor(ACCENT);
-        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
-            photoView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-        }
+        hapticClick(photoView);
         if (compareState == CompareState.SHOWING_ORIGINAL) {
             photoView.setImageBitmap(rawOriginalBitmap);
-        } else if (archiveKey != null && RawArchive.exists(this, archiveKey)) {
+        } else if (archiveKey != null && currentHasRaw) {
             int targetW = developedBitmap != null ? developedBitmap.getWidth() : 2000;
             int targetH = developedBitmap != null ? developedBitmap.getHeight() : 2000;
             preloadRawOriginal(archiveKey, targetW, targetH);
@@ -427,7 +433,7 @@ public class PhotoViewerActivity extends Activity {
             }
 
             @Override public void onLongPress(MotionEvent e) {
-                if (archiveKey != null && RawArchive.exists(PhotoViewerActivity.this, archiveKey)) {
+                if (currentHasRaw) {
                     startComparing();
                 }
             }
@@ -499,23 +505,38 @@ public class PhotoViewerActivity extends Activity {
         });
     }
 
-    private void refreshPhotoList() {
-        allPhotos = PhotoRepository.all(this);
-        currentIndex = -1;
-        if (photoUri == null) return;
-        String target = photoUri.toString();
-        for (int i = 0; i < allPhotos.size(); i++) {
-            PhotoRepository.Photo p = allPhotos.get(i);
-            if (p.uri != null && (target.equals(p.uri.toString()) || (photoName != null && photoName.equals(p.name)))) {
-                currentIndex = i;
-                break;
-            }
-        }
+    private void refreshPhotoListAsync(Runnable onReady) {
+        if (worker.isShutdown()) return;
+        final android.content.Context appContext = getApplicationContext();
+        worker.execute(() -> {
+            List<PhotoRepository.Photo> loaded = PhotoRepository.all(appContext);
+            mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                allPhotos = loaded;
+                currentIndex = -1;
+                if (photoUri != null) {
+                    String target = photoUri.toString();
+                    for (int i = 0; i < allPhotos.size(); i++) {
+                        PhotoRepository.Photo p = allPhotos.get(i);
+                        if (p.uri != null && (target.equals(p.uri.toString()) || (photoName != null && photoName.equals(p.name)))) {
+                            currentIndex = i;
+                            break;
+                        }
+                    }
+                }
+                if (onReady != null) onReady.run();
+            });
+        });
     }
 
     private void stepPhoto(int delta) {
-        if (allPhotos == null || allPhotos.isEmpty()) refreshPhotoList();
-        if (allPhotos == null || allPhotos.size() <= 1 || currentIndex < 0) return;
+        if (allPhotos == null || allPhotos.isEmpty()) {
+            refreshPhotoListAsync(() -> {
+                if (allPhotos != null && allPhotos.size() > 1 && currentIndex >= 0) stepPhoto(delta);
+            });
+            return;
+        }
+        if (allPhotos.size() <= 1 || currentIndex < 0) return;
         int nextIndex = currentIndex + delta;
         if (nextIndex < 0 || nextIndex >= allPhotos.size()) {
             showZoomHud(delta < 0 ? "NEWEST FRAME" : "OLDEST FRAME");
@@ -541,23 +562,9 @@ public class PhotoViewerActivity extends Activity {
 
     private void confirmDeleteCurrentPhoto() {
         if (photoUri == null) return;
-        android.app.Dialog dialog = new android.app.Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
-        android.view.Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
-            window.setLayout(android.view.WindowManager.LayoutParams.MATCH_PARENT, android.view.WindowManager.LayoutParams.MATCH_PARENT);
-        }
-
         FrameLayout scrim = new FrameLayout(this);
-        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        scrim.setBackgroundColor(0x77000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
         LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setClickable(true);
-        sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
-        sheet.setPadding(dp(20), dp(18), dp(20), dp(20));
+        android.app.Dialog dialog = UiKit.createBottomSheetDialog(this, scrim, sheet, 440);
 
         TextView title = text("DELETE THIS FRAME?", 11, ACCENT, true);
         title.setLetterSpacing(.14f);
@@ -583,42 +590,46 @@ public class PhotoViewerActivity extends Activity {
         confirmLp.leftMargin = dp(6);
         actions.addView(confirm, confirmLp);
         confirm.setOnClickListener(v -> {
-            dialog.dismiss();
-            boolean deleted = PhotoRepository.delete(this, photoUri, photoName, archiveKey);
-            if (deleted) {
-                Toast.makeText(this, "Frame deleted", Toast.LENGTH_SHORT).show();
-                refreshPhotoList();
-                if (allPhotos.isEmpty()) {
-                    finish();
-                } else {
-                    stopComparing();
-                    compareGeneration++;
-                    int idx = Math.max(0, Math.min(currentIndex, allPhotos.size() - 1));
-                    currentIndex = idx;
-                    PhotoRepository.Photo next = allPhotos.get(idx);
-                    photoUri = next.uri;
-                    photoName = next.name;
-                    archiveKey = PhotoRepository.archiveKey(next.name);
-                    if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
-                        rawOriginalBitmap.recycle();
+            confirm.setEnabled(false);
+            cancel.setEnabled(false);
+            final Uri targetUri = photoUri;
+            final String targetName = photoName;
+            final String targetKey = archiveKey;
+            final android.content.Context appContext = getApplicationContext();
+            worker.execute(() -> {
+                boolean deleted = PhotoRepository.delete(appContext, targetUri, targetName, targetKey);
+                List<PhotoRepository.Photo> remaining = deleted ? PhotoRepository.all(appContext) : null;
+                mainHandler.post(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    dialog.dismiss();
+                    if (deleted) {
+                        Toast.makeText(this, "Frame deleted", Toast.LENGTH_SHORT).show();
+                        allPhotos = remaining != null ? remaining : new ArrayList<>();
+                        if (allPhotos.isEmpty()) {
+                            finish();
+                        } else {
+                            stopComparing();
+                            compareGeneration++;
+                            int idx = Math.max(0, Math.min(currentIndex, allPhotos.size() - 1));
+                            currentIndex = idx;
+                            PhotoRepository.Photo next = allPhotos.get(idx);
+                            photoUri = next.uri;
+                            photoName = next.name;
+                            archiveKey = PhotoRepository.archiveKey(next.name);
+                            if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
+                                rawOriginalBitmap.recycle();
+                            }
+                            rawOriginalBitmap = null;
+                            loadPhoto();
+                        }
+                    } else {
+                        Toast.makeText(this, "Could not delete this frame", Toast.LENGTH_SHORT).show();
                     }
-                    rawOriginalBitmap = null;
-                    loadPhoto();
-                }
-            } else {
-                Toast.makeText(this, "Could not delete this frame", Toast.LENGTH_SHORT).show();
-            }
+                });
+            });
         });
 
         sheet.addView(actions, new LinearLayout.LayoutParams(-1, -2));
-
-        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM
-        );
-        scrim.addView(sheet, sheetLp);
-        dialog.setContentView(scrim);
         dialog.show();
     }
 
@@ -710,118 +721,132 @@ public class PhotoViewerActivity extends Activity {
             if (data != null && data.getData() != null) {
                 photoUri = data.getData();
                 photoName = data.getStringExtra(EXTRA_NAME);
-                refreshPhotoList();
-                if (currentIndex >= 0) { stepPhoto(0); return; }
+                refreshPhotoListAsync(() -> {
+                    if (currentIndex >= 0) stepPhoto(0);
+                    else loadPhoto();
+                });
+                return;
             }
             loadPhoto();
         }
     }
 
     private void loadPhoto() {
-        if(photoUri==null || photoView==null || imageJob.isClosed()) return;
-        final long ticket=imageJob.begin(JobState.Phase.LOADING);
-        final Uri uri=photoUri;
-        final String name=photoName, key=archiveKey;
-        final boolean hasRaw=key!=null && RawArchive.exists(this,key);
-        final int maxW=getResources().getDisplayMetrics().widthPixels*2;
-        final int maxH=getResources().getDisplayMetrics().heightPixels*2;
-        if(titleView!=null) titleView.setText(name==null?"LIKA LENS":name);
-        if(compareButton!=null) compareButton.setVisibility(hasRaw?View.VISIBLE:View.GONE);
-        if(editButton!=null) editButton.setVisibility(hasRaw?View.VISIBLE:View.GONE);
+        if (photoUri == null || photoView == null || imageJob.isClosed()) return;
+        final long ticket = imageJob.begin(JobState.Phase.LOADING);
+        final Uri uri = photoUri;
+        final String name = photoName, key = archiveKey;
+        final int maxW = getResources().getDisplayMetrics().widthPixels * 2;
+        final int maxH = getResources().getDisplayMetrics().heightPixels * 2;
+        final android.content.Context appContext = getApplicationContext();
+        currentHasRaw = false;
+        if (titleView != null) titleView.setText(name == null ? "LIKA LENS" : name);
+        if (compareButton != null) compareButton.setVisibility(View.GONE);
+        if (editButton != null) editButton.setVisibility(View.GONE);
         stopAnimatedPhoto();
         worker.execute(() -> {
-            if(!imageJob.accepts(ticket)) return;
+            if (!imageJob.accepts(ticket)) return;
             try {
-                if(name!=null && name.toLowerCase(Locale.US).endsWith(".gif") && Build.VERSION.SDK_INT>=28) {
+                final boolean hasRaw = key != null && RawArchive.exists(appContext, key);
+                if (name != null && name.toLowerCase(Locale.US).endsWith(".gif") && Build.VERSION.SDK_INT >= 28) {
                     try {
-                        android.graphics.drawable.Drawable drawable=android.graphics.ImageDecoder.decodeDrawable(
-                                android.graphics.ImageDecoder.createSource(getContentResolver(),uri));
+                        android.graphics.drawable.Drawable drawable = android.graphics.ImageDecoder.decodeDrawable(
+                                android.graphics.ImageDecoder.createSource(appContext.getContentResolver(), uri));
                         mainHandler.post(() -> {
-                            if(!imageJob.move(ticket,JobState.Phase.READY) || isDestroyed() || isFinishing()) return;
-                            imageWidth=drawable.getIntrinsicWidth();
-                            imageHeight=drawable.getIntrinsicHeight();
-                            currentScale=1f;
+                            if (!imageJob.move(ticket, JobState.Phase.READY) || isDestroyed() || isFinishing()) return;
+                            currentHasRaw = hasRaw;
+                            if (compareButton != null) compareButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
+                            if (editButton != null) editButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
+                            imageWidth = drawable.getIntrinsicWidth();
+                            imageHeight = drawable.getIntrinsicHeight();
+                            currentScale = 1f;
                             photoView.setImageDrawable(drawable);
                             fitImageToView();
-                            if(viewerActive && drawable instanceof android.graphics.drawable.AnimatedImageDrawable)
-                                ((android.graphics.drawable.AnimatedImageDrawable)drawable).start();
+                            if (viewerActive && drawable instanceof android.graphics.drawable.AnimatedImageDrawable)
+                                ((android.graphics.drawable.AnimatedImageDrawable) drawable).start();
                             photoView.post(this::fitImageToView);
                         });
                         return;
-                    } catch(Exception decodeError) {
-                        android.util.Log.w("PhotoViewerActivity","ImageDecoder failed, falling back to BitmapFactory",decodeError);
+                    } catch (Exception decodeError) {
+                        android.util.Log.w("PhotoViewerActivity", "ImageDecoder failed, falling back to BitmapFactory", decodeError);
                     }
                 }
-                BitmapFactory.Options options=new BitmapFactory.Options();options.inJustDecodeBounds=true;
-                try(InputStream in=getContentResolver().openInputStream(uri)) { BitmapFactory.decodeStream(in,null,options); }
-                int sample=1;
-                while(options.outWidth/sample>maxW || options.outHeight/sample>maxH) sample*=2;
-                options.inJustDecodeBounds=false;options.inSampleSize=sample;options.inPreferredConfig=Bitmap.Config.ARGB_8888;
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inJustDecodeBounds = true;
+                try (InputStream in = appContext.getContentResolver().openInputStream(uri)) {
+                    BitmapFactory.decodeStream(in, null, options);
+                }
+                int sample = 1;
+                while (options.outWidth / sample > maxW || options.outHeight / sample > maxH) sample *= 2;
+                options.inJustDecodeBounds = false;
+                options.inSampleSize = sample;
+                options.inPreferredConfig = Bitmap.Config.ARGB_8888;
                 final Bitmap bitmap;
-                try(InputStream in=getContentResolver().openInputStream(uri)) { bitmap=in==null?null:BitmapFactory.decodeStream(in,null,options); }
-                if(bitmap==null) throw new IllegalStateException("Could not decode photo");
+                try (InputStream in = appContext.getContentResolver().openInputStream(uri)) {
+                    bitmap = in == null ? null : BitmapFactory.decodeStream(in, null, options);
+                }
+                if (bitmap == null) throw new IllegalStateException("Could not decode photo");
                 mainHandler.post(() -> {
-                    if(!imageJob.move(ticket,JobState.Phase.READY) || isDestroyed() || isFinishing()) { bitmap.recycle();return; }
-                    Bitmap old=developedBitmap;developedBitmap=bitmap;
-                    imageWidth=bitmap.getWidth();imageHeight=bitmap.getHeight();currentScale=1f;
+                    if (!imageJob.move(ticket, JobState.Phase.READY) || isDestroyed() || isFinishing()) {
+                        bitmap.recycle();
+                        return;
+                    }
+                    currentHasRaw = hasRaw;
+                    if (compareButton != null) compareButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
+                    if (editButton != null) editButton.setVisibility(hasRaw ? View.VISIBLE : View.GONE);
+                    Bitmap old = developedBitmap;
+                    developedBitmap = bitmap;
+                    imageWidth = bitmap.getWidth();
+                    imageHeight = bitmap.getHeight();
+                    currentScale = 1f;
                     photoView.setImageBitmap(bitmap);
                     fitImageToView();
                     photoView.post(this::fitImageToView);
-                    if(old!=null && old!=bitmap && !old.isRecycled()) old.recycle();
-                    if(infoVisible) populateInfoData();
-                    if(hasRaw && rawOriginalBitmap==null) preloadRawOriginal(key,imageWidth,imageHeight);
+                    if (old != null && old != bitmap && !old.isRecycled()) old.recycle();
+                    if (infoVisible) populateInfoData();
+                    if (hasRaw && rawOriginalBitmap == null) preloadRawOriginal(key, imageWidth, imageHeight);
                 });
-            } catch(Exception error) {
-                mainHandler.post(() -> { if(imageJob.move(ticket,JobState.Phase.FAILED) && !isDestroyed())
-                    Toast.makeText(this,"Could not open this frame.",Toast.LENGTH_SHORT).show(); });
+            } catch (Exception error) {
+                mainHandler.post(() -> {
+                    if (imageJob.move(ticket, JobState.Phase.FAILED) && !isDestroyed())
+                        Toast.makeText(this, "Could not open this frame.", Toast.LENGTH_SHORT).show();
+                });
             }
         });
     }
 
     private void stopAnimatedPhoto() {
-        if(Build.VERSION.SDK_INT>=28 && photoView!=null && photoView.getDrawable() instanceof android.graphics.drawable.AnimatedImageDrawable)
-            ((android.graphics.drawable.AnimatedImageDrawable)photoView.getDrawable()).stop();
+        if (Build.VERSION.SDK_INT >= 28 && photoView != null && photoView.getDrawable() instanceof android.graphics.drawable.AnimatedImageDrawable)
+            ((android.graphics.drawable.AnimatedImageDrawable) photoView.getDrawable()).stop();
     }
     @Override protected void onResume() {
-        super.onResume();viewerActive=true;
-        if(Build.VERSION.SDK_INT>=28 && photoView!=null && photoView.getDrawable() instanceof android.graphics.drawable.AnimatedImageDrawable)
-            ((android.graphics.drawable.AnimatedImageDrawable)photoView.getDrawable()).start();
+        super.onResume(); viewerActive = true;
+        if (Build.VERSION.SDK_INT >= 28 && photoView != null && photoView.getDrawable() instanceof android.graphics.drawable.AnimatedImageDrawable)
+            ((android.graphics.drawable.AnimatedImageDrawable) photoView.getDrawable()).start();
     }
-    @Override protected void onPause() { viewerActive=false;stopAnimatedPhoto();super.onPause(); }
+    @Override protected void onPause() { viewerActive = false; stopAnimatedPhoto(); super.onPause(); }
 
     private TextView text(String value, float size, int color, boolean bold) {
-        TextView view = new TextView(this);
-        view.setText(value == null ? "LIKA LENS FRAME" : value);
-        view.setTextSize(size);
-        view.setTextColor(color);
-        if (bold) view.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
-        view.setGravity(Gravity.CENTER_VERTICAL);
-        return view;
+        return UiKit.text(this, value == null ? "LIKA LENS FRAME" : value, size, color, bold);
     }
 
     private TextView pill(String label, boolean active) {
-        TextView view = text(label, 8, active ? ACCENT : 0xffd8ded7, true);
-        view.setGravity(Gravity.CENTER);
-        view.setBackground(round(active ? 0xff1d1d1a : 0xd8191e1e, 16,
-                active ? ACCENT : 0x556e7872, dp(1)));
-        return view;
+        return UiKit.pill(this, label, active, 8f, 16f,
+                ACCENT, 0xffd8ded7, 0xff1d1d1a, 0xd8191e1e, ACCENT, 0x556e7872);
     }
 
     private android.graphics.drawable.GradientDrawable round(int color, int radius, int strokeColor, int strokeWidth) {
-        android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable();
-        d.setColor(color);
-        d.setCornerRadius(dp(radius));
-        if (strokeWidth > 0) d.setStroke(strokeWidth, strokeColor);
-        return d;
+        return UiKit.round(this, color, radius, strokeColor, strokeWidth);
     }
 
-    private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private int dp(float value) { return UiKit.dp(this, value); }
 
     @Override protected void onDestroy() {
-        imageJob.close();compareGeneration++;
+        imageJob.close(); compareGeneration++;
         stopAnimatedPhoto();
         mainHandler.removeCallbacksAndMessages(null);
         worker.shutdown();
+        if (photoView != null) photoView.setImageDrawable(null);
         if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
             rawOriginalBitmap.recycle();
             rawOriginalBitmap = null;

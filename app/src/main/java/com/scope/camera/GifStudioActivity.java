@@ -10,7 +10,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
-import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -20,7 +19,6 @@ import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -64,8 +62,6 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
     private boolean isVideoMode() { return sourceMode == SourceMode.VIDEO; }
     private final List<Uri> photoUris = new ArrayList<>();
     private Uri videoUri = null;
-    private long videoDurationMs = 0;
-    private int videoRotation = 0;
 
     // Tuning options
     private int selectedFps = 10; // 2, 5, 10, 15
@@ -80,11 +76,23 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
     // Live preview state
     private ImageView previewImageView;
     private TextView previewTimecode;
+    private final List<Bitmap> baseFrames = new ArrayList<>();
     private final List<Bitmap> previewFrames = new ArrayList<>();
+    private String cachedBaseKey = "";
     private int currentPreviewIndex = 0;
+    private final StringBuilder timecodeBuilder = new StringBuilder(32);
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService previewWorker = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "GifPreviewWorker");
+        t.setDaemon(true);
+        return t;
+    });
+    private final ExecutorService exportWorker = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "GifExportWorker");
+        t.setDaemon(true);
+        return t;
+    });
 
     // UI elements
     private FrameLayout rootLayout;
@@ -123,8 +131,15 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
                 }
             }
             if (previewTimecode != null) {
-                previewTimecode.setText(String.format(Locale.US, "FRAME %d / %d · %d FPS",
-                        currentPreviewIndex + 1, previewFrames.size(), selectedFps));
+                timecodeBuilder.setLength(0);
+                timecodeBuilder.append("FRAME ")
+                        .append(currentPreviewIndex + 1)
+                        .append(" / ")
+                        .append(previewFrames.size())
+                        .append(" · ")
+                        .append(selectedFps)
+                        .append(" FPS");
+                previewTimecode.setText(timecodeBuilder);
             }
             int delayMs = Math.max(20, 1000 / selectedFps);
             mainHandler.postDelayed(this, delayMs);
@@ -132,9 +147,7 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
     };
 
     private void hapticClick(View v) {
-        if (v != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
-            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-        }
+        UiKit.hapticClick(this, v);
     }
 
     @Override
@@ -142,6 +155,10 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
         super.onCreate(savedInstanceState);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
+
+        selectedFps = parseOptionInt(AppSettings.get(this, AppSettings.GIF_FPS, "10"), new int[]{2, 5, 10, 15}, 10);
+        selectedResolution = parseOptionInt(AppSettings.get(this, AppSettings.GIF_RESOLUTION, "480"), new int[]{320, 480, 640}, 480);
+        bounceMode = AppSettings.getBoolean(this, AppSettings.GIF_BOOMERANG, false);
 
         // Parse initial extras
         ArrayList<String> uriStrings = getIntent().getStringArrayListExtra(EXTRA_PHOTO_URIS);
@@ -155,17 +172,42 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
             sourceMode = SourceMode.VIDEO;
         }
 
-        // If nothing passed, default to loading latest photos from library
-        if (photoUris.isEmpty() && videoUri == null) {
-            List<PhotoRepository.Photo> all = PhotoRepository.all(this);
-            int count = Math.min(5, all.size());
-            for (int i = 0; i < count; i++) {
-                if (!all.get(i).isGif) photoUris.add(all.get(i).uri);
-            }
-        }
-
         buildUi();
-        loadPreviewFramesAsync();
+
+        // If nothing passed, default to loading latest photos from library off the UI thread
+        if (photoUris.isEmpty() && videoUri == null) {
+            if (previewTimecode != null) previewTimecode.setText("LOADING LIBRARY…");
+            final android.content.Context appCtx = getApplicationContext();
+            previewWorker.execute(() -> {
+                List<PhotoRepository.Photo> all = PhotoRepository.all(appCtx);
+                final List<Uri> initial = new ArrayList<>(5);
+                for (int i = 0; i < all.size() && initial.size() < 5; i++) {
+                    if (!all.get(i).isGif) initial.add(all.get(i).uri);
+                }
+                mainHandler.post(() -> {
+                    if (screenState == ScreenState.CLOSED || !photoUris.isEmpty() || videoUri != null) return;
+                    photoUris.addAll(initial);
+                    refreshFilmstripUi();
+                    loadPreviewFramesAsync();
+                });
+            });
+        } else {
+            loadPreviewFramesAsync();
+        }
+    }
+
+    private static int parseOptionInt(String raw, int[] allowed, int fallback) {
+        if (raw == null || raw.isEmpty()) return fallback;
+        int end = 0;
+        while (end < raw.length() && Character.isDigit(raw.charAt(end))) end++;
+        if (end == 0) return fallback;
+        try {
+            int parsed = Integer.parseInt(raw.substring(0, end));
+            for (int v : allowed) {
+                if (v == parsed) return parsed;
+            }
+        } catch (NumberFormatException ignored) {}
+        return fallback;
     }
 
     @Override
@@ -185,11 +227,15 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
     @Override
     protected void onDestroy() {
         screenState = ScreenState.CLOSED;
-        previewJob.close(); exportJob.close();
+        previewJob.close();
+        exportJob.close();
         if (exportProgress != null) exportProgress.dismiss();
         stopPreviewPlayback();
-        recyclePreviewFrames();
-        worker.shutdown();
+        mainHandler.removeCallbacksAndMessages(null);
+        controlsBuilder.destroy();
+        recycleBaseFrames();
+        previewWorker.shutdownNow();
+        exportWorker.shutdownNow();
         super.onDestroy();
     }
 
@@ -376,19 +422,31 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
         final List<Uri> photos = new ArrayList<>(photoUris);
         final int fps = selectedFps, start = videoStartSec, duration = videoDurationSec;
         final String lut = selectedLutProfile;
-        final boolean bounce = bounceMode;
+        final String baseKey = buildBaseKey(video, sourceVideo, photos, fps, start, duration, lut);
         stopPreviewPlayback();
+
+        if (baseKey.equals(cachedBaseKey) && !baseFrames.isEmpty()) {
+            rebuildPreviewSequence(bounceMode);
+            currentPreviewIndex = 0;
+            previewJob.move(ticket, JobState.Phase.READY);
+            updatePreviewBitmap();
+            startPreviewPlayback();
+            return;
+        }
+
         if (previewTimecode != null) previewTimecode.setText("PREPARING FRAMES…");
-        worker.execute(() -> {
+        previewWorker.execute(() -> {
             if (!previewJob.accepts(ticket)) return;
-            final long[] metadata = new long[2];
             List<Bitmap> loaded;
             try {
                 loaded = GifMediaHelper.loadPreviewFrames(getApplicationContext(), video, sourceVideo, photos,
-                        fps, start, duration, lut, bounce, (dur,rot) -> { metadata[0]=dur; metadata[1]=rot; },() -> previewJob.accepts(ticket));
+                        fps, start, duration, lut, false, null, () -> previewJob.accepts(ticket));
             } catch (Exception error) {
-                mainHandler.post(() -> { if (previewJob.move(ticket, JobState.Phase.FAILED) && screenState != ScreenState.CLOSED)
-                    previewTimecode.setText("COULD NOT LOAD PREVIEW"); });
+                mainHandler.post(() -> {
+                    if (previewJob.move(ticket, JobState.Phase.FAILED) && screenState != ScreenState.CLOSED && previewTimecode != null) {
+                        previewTimecode.setText("COULD NOT LOAD PREVIEW");
+                    }
+                });
                 return;
             }
             mainHandler.post(() -> {
@@ -396,22 +454,57 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
                     for (Bitmap b : loaded) if (b != null && !b.isRecycled()) b.recycle();
                     return;
                 }
-                recyclePreviewFrames();
-                previewFrames.addAll(loaded);
-                videoDurationMs=metadata[0]; videoRotation=(int) metadata[1];
-                currentPreviewIndex=0;
+                recycleBaseFrames();
+                baseFrames.addAll(loaded);
+                cachedBaseKey = baseKey;
+                rebuildPreviewSequence(bounceMode);
+                currentPreviewIndex = 0;
                 previewJob.move(ticket, JobState.Phase.READY);
-                if (!previewFrames.isEmpty()) { updatePreviewBitmap(); startPreviewPlayback(); }
-                else if (previewTimecode != null) previewTimecode.setText(video ? "SELECT A VIDEO TO START" : "SELECT PHOTOS TO START");
+                if (!previewFrames.isEmpty()) {
+                    updatePreviewBitmap();
+                    startPreviewPlayback();
+                } else if (previewTimecode != null) {
+                    previewTimecode.setText(video ? "SELECT A VIDEO TO START" : "SELECT PHOTOS TO START");
+                }
             });
         });
     }
 
-    private void recyclePreviewFrames() {
-        for (Bitmap b : previewFrames) {
+    private static String buildBaseKey(boolean video, Uri sourceVideo, List<Uri> photos,
+                                       int fps, int start, int duration, String lut) {
+        StringBuilder sb = new StringBuilder(64);
+        sb.append(video ? "V|" : "P|").append(fps).append('|').append(start)
+                .append('|').append(duration).append('|').append(lut).append('|');
+        if (video) {
+            sb.append(sourceVideo);
+        } else {
+            for (int i = 0; i < photos.size(); i++) {
+                if (i > 0) sb.append(',');
+                sb.append(photos.get(i));
+            }
+        }
+        return sb.toString();
+    }
+
+    private void rebuildPreviewSequence(boolean bounce) {
+        if (previewImageView != null) previewImageView.setImageDrawable(null);
+        previewFrames.clear();
+        previewFrames.addAll(baseFrames);
+        if (bounce && baseFrames.size() > 2) {
+            for (int i = baseFrames.size() - 2; i > 0; i--) {
+                previewFrames.add(baseFrames.get(i));
+            }
+        }
+    }
+
+    private void recycleBaseFrames() {
+        if (previewImageView != null) previewImageView.setImageDrawable(null);
+        previewFrames.clear();
+        cachedBaseKey = "";
+        for (Bitmap b : baseFrames) {
             if (b != null && !b.isRecycled()) b.recycle();
         }
-        previewFrames.clear();
+        baseFrames.clear();
     }
 
     // =========================================================================
@@ -430,7 +523,7 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
         params.videoStartSec = videoStartSec;
         params.videoDurationSec = videoDurationSec;
 
-        exportProgress = GifExporter.startExport(this, params, worker, mainHandler, exportJob);
+        exportProgress = GifExporter.startExport(this, params, exportWorker, mainHandler, exportJob);
     }
 
     // =========================================================================
@@ -498,16 +591,13 @@ public class GifStudioActivity extends Activity implements GifStudioControlsBuil
     // UI Helpers
     // =========================================================================
     private TextView text(String s, int sp, int color, boolean bold) {
-        TextView tv = new TextView(this);
-        tv.setText(s);
-        tv.setTextSize(sp);
-        tv.setTextColor(color);
+        TextView tv = UiKit.text(this, s, sp, color, bold);
         tv.setTypeface(android.graphics.Typeface.MONOSPACE, bold ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
         return tv;
     }
 
     private int dp(int v) {
-        return Math.round(v * getResources().getDisplayMetrics().density);
+        return UiKit.dp(this, v);
     }
 }
 

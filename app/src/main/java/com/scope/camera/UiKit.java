@@ -1,0 +1,107 @@
+package com.scope.camera;
+
+import android.app.Activity;
+import android.app.Dialog;
+import android.content.Context;
+import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.GradientDrawable;
+import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+
+/**
+ * Shared programmatic UI primitives and dialog helpers.
+ */
+final class UiKit {
+    static final int ACCENT = 0xffd7b574;
+
+    private UiKit() {}
+
+    static int dp(Context context, float value) {
+        return Math.round(value * context.getResources().getDisplayMetrics().density);
+    }
+
+    static GradientDrawable round(Context context, int color, float radiusDp, int strokeColor, int strokeWidthPx) {
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(color);
+        d.setCornerRadius(dp(context, radiusDp));
+        if (strokeWidthPx > 0) d.setStroke(strokeWidthPx, strokeColor);
+        return d;
+    }
+
+    static TextView text(Context context, CharSequence value, float sizeSp, int color, boolean bold) {
+        TextView view = new TextView(context);
+        view.setText(value);
+        view.setTextSize(sizeSp);
+        view.setTextColor(color);
+        if (bold) view.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        view.setGravity(Gravity.CENTER_VERTICAL);
+        return view;
+    }
+
+    static TextView pill(Context context, CharSequence label, boolean active) {
+        return pill(context, label, active, 8f, 18f,
+                ACCENT, 0xffd8ded7, 0xff1d1d1a, 0xff202626, ACCENT, 0xff39413e);
+    }
+
+    static TextView pill(
+            Context context,
+            CharSequence label,
+            boolean active,
+            float sizeSp,
+            float radiusDp,
+            int activeTextColor,
+            int inactiveTextColor,
+            int activeBgColor,
+            int inactiveBgColor,
+            int activeStrokeColor,
+            int inactiveStrokeColor
+    ) {
+        TextView view = text(context, label, sizeSp, active ? activeTextColor : inactiveTextColor, true);
+        view.setGravity(Gravity.CENTER);
+        view.setBackground(round(context, active ? activeBgColor : inactiveBgColor, radiusDp,
+                active ? activeStrokeColor : inactiveStrokeColor, dp(context, 1)));
+        return view;
+    }
+
+    static void hapticClick(Context context, View view) {
+        if (view != null && context != null && AppSettings.getBoolean(context, AppSettings.HAPTICS, true)) {
+            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
+    }
+
+    static Dialog createBottomSheetDialog(Activity activity, FrameLayout scrim, LinearLayout sheet, int maxWidthDp) {
+        Dialog dialog = new Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(0));
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+        }
+        scrim.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setBackgroundColor(0x77000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setClickable(true);
+        sheet.setBackground(round(activity, 0xff0e1314, 20, 0xff2a3233, dp(activity, 1)));
+        sheet.setPadding(dp(activity, 20), dp(activity, 18), dp(activity, 20), dp(activity, 20));
+
+        int maxSheetWidth = Math.min(dp(activity, maxWidthDp), activity.getResources().getDisplayMetrics().widthPixels);
+        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
+                maxSheetWidth,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
+        );
+        scrim.addView(sheet, sheetLp);
+        dialog.setContentView(scrim);
+        return dialog;
+    }
+}

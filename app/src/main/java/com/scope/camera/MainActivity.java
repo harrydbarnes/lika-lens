@@ -7,6 +7,7 @@ import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -17,8 +18,6 @@ import android.graphics.ColorMatrixColorFilter;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.RadialGradient;
-import android.graphics.Shader;
 import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
@@ -48,7 +47,6 @@ import android.media.ExifInterface;
 import android.media.Image;
 import android.media.ImageReader;
 import android.media.MediaRecorder;
-import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -89,7 +87,6 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -106,6 +103,7 @@ import java.util.Locale;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** Lika Lens: Camera2 framing preview plus RAW_SENSOR/DNG capture and app-side development. */
@@ -183,17 +181,60 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private float deviceStabilityScore = 0f;
     private final InteractionState.Motion motion = new InteractionState.Motion();
 
+    private volatile boolean prefVisualLevel = true;
+    private volatile boolean prefHaptics = true;
+    private volatile String prefHorizonSensitivity = "Normal (±1.0°)";
+    private volatile String prefHorizonMode = "Smart (near level only)";
+    private volatile String prefStabilization = "Cinema OIS + EIS";
+    private volatile String prefGridStyle = "None";
+    private volatile boolean prefHistogram = false;
+    private volatile String prefHistogramMode = "Luminance";
+    private volatile boolean prefZebra = false;
+    private volatile boolean prefFocusPeaking = false;
+    private volatile boolean prefOpticalLoupe = false;
+    private volatile boolean prefLiveFilmPreview = true;
+    private volatile boolean prefDirtyLensWarning = true;
+    private volatile boolean prefPalmTimer = false;
+    private volatile String prefAspectRatio = "4:3";
+
+    private final float[] rotationMatrixBuf = new float[9];
+
+    private final SharedPreferences.OnSharedPreferenceChangeListener hotPrefsListener =
+            (prefs, key) -> refreshHotPrefs(prefs);
+
+    private void refreshHotPrefs() {
+        refreshHotPrefs(AppSettings.prefs(this));
+    }
+
+    private void refreshHotPrefs(SharedPreferences prefs) {
+        prefVisualLevel = prefs.getBoolean(AppSettings.VISUAL_LEVEL, true);
+        prefHaptics = prefs.getBoolean(AppSettings.HAPTICS, true);
+        prefHorizonSensitivity = prefs.getString(AppSettings.HORIZON_SENSITIVITY, "Normal (±1.0°)");
+        prefHorizonMode = prefs.getString(AppSettings.HORIZON_MODE, "Smart (near level only)");
+        prefStabilization = prefs.getString(AppSettings.STABILIZATION, "Cinema OIS + EIS");
+        prefGridStyle = prefs.getString(AppSettings.GRID_STYLE, "None");
+        prefHistogram = prefs.getBoolean(AppSettings.HISTOGRAM, false);
+        prefHistogramMode = prefs.getString(AppSettings.HISTOGRAM_MODE, "Luminance");
+        prefZebra = prefs.getBoolean(AppSettings.ZEBRA, false);
+        prefFocusPeaking = prefs.getBoolean(AppSettings.FOCUS_PEAKING, false);
+        prefOpticalLoupe = prefs.getBoolean(AppSettings.OPTICAL_LOUPE, false);
+        prefLiveFilmPreview = prefs.getBoolean(AppSettings.LIVE_FILM_PREVIEW, true);
+        prefDirtyLensWarning = prefs.getBoolean(AppSettings.DIRTY_LENS_WARNING, true);
+        prefPalmTimer = prefs.getBoolean(AppSettings.PALM_TIMER, false);
+        prefAspectRatio = prefs.getString(AppSettings.ASPECT_RATIO, "4:3");
+        invalidateFramingRectCache();
+    }
+
     private final SensorEventListener sensorEventListener = new SensorEventListener() {
         @Override
         public void onSensorChanged(SensorEvent event) {
             if (event.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
-                float[] rotationMatrix = new float[9];
-                SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
+                SensorManager.getRotationMatrixFromVector(rotationMatrixBuf, event.values);
                 // In rotationMatrix, row 2 represents the world Up vector (0, 0, 1) in device coordinates:
                 // rotationMatrix[6] = Up.x, rotationMatrix[7] = Up.y, rotationMatrix[8] = Up.z
-                float upX = rotationMatrix[6];
-                float upY = rotationMatrix[7];
-                float upZ = rotationMatrix[8];
+                float upX = rotationMatrixBuf[6];
+                float upY = rotationMatrixBuf[7];
+                float upZ = rotationMatrixBuf[8];
 
                 // Elevation tilt relative to the horizon:
                 // 0° when aiming at the horizon (optical axis horizontal)
@@ -260,10 +301,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             smoothRollAngle = smoothRollAngle * 0.82f + deviceRollAngle * 0.18f;
         }
 
-        boolean showLevel = AppSettings.getBoolean(this, AppSettings.VISUAL_LEVEL, true);
-        if (showLevel && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
-            String sens = AppSettings.get(this, AppSettings.HORIZON_SENSITIVITY, "Normal (±1.0°)");
-            float deadband = sens.contains("0.5") ? 0.5f : 1.0f;
+        boolean showLevel = prefVisualLevel;
+        if (showLevel && prefHaptics) {
+            float deadband = prefHorizonSensitivity.contains("0.5") ? 0.5f : 1.0f;
             boolean isFlatLay = Math.abs(smoothPitchAngle) > 65f;
             boolean isLevel = isFlatLay
                     ? (Math.hypot(smoothTiltX, smoothTiltY) <= (deadband * 0.025f))
@@ -287,14 +327,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         float deltaMovement = Math.abs(deviceRollAngle - smoothRollAngle) + Math.abs(devicePitchAngle - smoothPitchAngle);
         deviceStabilityScore = deviceStabilityScore * 0.90f + deltaMovement * 0.10f;
         long nowUptime = SystemClock.uptimeMillis();
-        motion.sample(deviceStabilityScore,nowUptime);
+        motion.sample(deviceStabilityScore, nowUptime);
 
-        if (gridOverlay != null) {
+        if (showLevel && gridOverlay != null) {
             gridOverlay.postInvalidate();
         }
         if (videoState.isRecordingOrPaused() && captureSession != null && previewRequest != null) {
-            String stab = AppSettings.get(this, AppSettings.STABILIZATION, "Cinema OIS + EIS");
-            if (stab.startsWith("Locked") && hasLockedVideoAnchor) {
+            if (prefStabilization.startsWith("Locked") && hasLockedVideoAnchor) {
                 long now = SystemClock.uptimeMillis();
                 if (now - lastTripodCropUpdateAt > 40L) {
                     lastTripodCropUpdateAt = now;
@@ -314,7 +353,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private Vibrator vibrator;
 
     private void hapticClick(View v) {
-        if (!AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) return;
+        if (!prefHaptics) return;
         boolean vibrated = false;
         try {
             if (vibrator != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -331,7 +370,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void hapticDetent() {
-        if (!AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) return;
+        if (!prefHaptics) return;
         boolean vibrated = false;
         try {
             if (vibrator != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -429,7 +468,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             metadata.exposureTimeNs = exposure == null ? 0L : exposure;
             metadata.sensitivityIso = iso == null ? 0 : iso;
             previewColourMetadata = metadata;
-            runOnUiThread(MainActivity.this::applyLiveFilmPreview);
+            if (prefLiveFilmPreview) {
+                runOnUiThread(MainActivity.this::applyLiveFilmPreview);
+            }
         }
     };
     private Surface previewSurface;
@@ -443,8 +484,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private File videoTempFile;
     private HandlerThread cameraThread;
     private Handler cameraHandler;
-    private final ExecutorService processor = Executors.newSingleThreadExecutor();
-    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService processor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "CaptureProcessor");
+        t.setDaemon(true);
+        return t;
+    });
+    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "CameraIO");
+        t.setDaemon(true);
+        return t;
+    });
     private final Object captureLock = new Object();
     private InFlightCapture<Image, TotalCaptureResult> activeCapture;
     private final java.util.Map<ImageReader,ResourceLease> readerLeases=new java.util.IdentityHashMap<>();
@@ -469,7 +518,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private float zoomRowStartX;
     private float zoomRowStartY;
     private float zoomRowStartZoom;
-    private int zoomTouchSlop;
     private boolean videoMode;
     private final VideoStateMachine videoState = new VideoStateMachine();
     private long videoPauseStartedAt;
@@ -487,13 +535,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private float primaryFocalLength = 1f;
     private float physicalFocalFactor = 1f;
     private float requestedZoom = 1f;
-    private int displayRotation;
     private long toastUntil;
     private long videoStartedAt;
 
     private Size videoSize;
 
     // Live exposure aids state (32-bin histogram + 24x24 zebra & peaking grid)
+    private final Object exposureAidLock = new Object();
+    private final AtomicBoolean exposureAidBusy = new AtomicBoolean(false);
     private final int[] liveHistogramBins = new int[32];
     private final int[] liveHistR = new int[32];
     private final int[] liveHistG = new int[32];
@@ -507,29 +556,51 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private int[] liveSampleLuma = new int[64 * 48];
     private final Runnable exposureAidsSampler = new Runnable() {
         @Override public void run() {
-            if (textureView != null && textureView.isAvailable() && gridOverlay != null) {
-                boolean wantHist = AppSettings.getBoolean(MainActivity.this, AppSettings.HISTOGRAM, false);
-                boolean wantZebra = AppSettings.getBoolean(MainActivity.this, AppSettings.ZEBRA, false);
-                boolean wantPeak = AppSettings.getBoolean(MainActivity.this, AppSettings.FOCUS_PEAKING, false);
-                boolean wantDirty = AppSettings.getBoolean(MainActivity.this, AppSettings.DIRTY_LENS_WARNING, true);
-                boolean wantPalm = AppSettings.getBoolean(MainActivity.this, AppSettings.PALM_TIMER, false)
+            final TextureView tv = textureView;
+            final CompositionGrid grid = gridOverlay;
+            if (tv != null && tv.isAvailable() && grid != null) {
+                final boolean wantHist = prefHistogram;
+                final boolean wantZebra = prefZebra;
+                final boolean wantPeak = prefFocusPeaking;
+                final boolean wantDirty = prefDirtyLensWarning && !isFrontCamera();
+                final boolean wantPalm = prefPalmTimer
                         && !videoMode && !videoState.isRecordingOrPaused() && !stillCaptureState.isBusy();
-                if (wantHist || wantZebra || wantPeak || wantDirty || wantPalm) {
+                if (!wantHist && !wantZebra && !wantPeak && !wantDirty && !wantPalm) {
+                    tv.postDelayed(this, 1000L);
+                    return;
+                }
+                if (exposureAidBusy.compareAndSet(false, true)) {
+                    Bitmap sample = null;
                     try {
-                        Bitmap sample = textureView.getBitmap(64, 48);
-                        if (sample != null) {
-                            computeExposureAids(sample, wantHist, wantZebra, wantPeak, wantDirty, wantPalm);
-                            sample.recycle();
-                            gridOverlay.invalidate();
-                        }
+                        sample = tv.getBitmap(64, 48);
                     } catch (Throwable t) {
                         Log.w(TAG, "Failed to sample texture for exposure aids", t);
                     }
-                    textureView.postDelayed(this, (wantHist || wantZebra || wantPeak || wantPalm) ? 120L : 450L);
-                    return;
+                    if (sample != null) {
+                        final Bitmap sampleRef = sample;
+                        final int sampleW = sampleRef.getWidth();
+                        final int sampleH = sampleRef.getHeight();
+                        ioExecutor.execute(() -> {
+                            try {
+                                computeExposureAids(sampleRef, sampleW, sampleH, wantHist, wantZebra, wantPeak, wantDirty, wantPalm);
+                                if (wantHist || wantZebra || wantPeak) {
+                                    grid.postInvalidate();
+                                }
+                            } catch (Throwable t) {
+                                Log.w(TAG, "Failed to analyze exposure aids", t);
+                            } finally {
+                                if (!sampleRef.isRecycled()) sampleRef.recycle();
+                                exposureAidBusy.set(false);
+                            }
+                        });
+                    } else {
+                        exposureAidBusy.set(false);
+                    }
                 }
+                tv.postDelayed(this, (wantHist || wantZebra || wantPeak || wantPalm) ? 120L : 450L);
+                return;
             }
-            if (textureView != null) textureView.postDelayed(this, 450L);
+            if (tv != null) tv.postDelayed(this, 450L);
         }
     };
 
@@ -677,9 +748,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
-    private void computeExposureAids(Bitmap bmp, boolean wantHist, boolean wantZebra, boolean wantPeak, boolean wantDirty, boolean wantPalm) {
-        int w = bmp.getWidth();
-        int h = bmp.getHeight();
+    private void computeExposureAids(Bitmap bmp, int w, int h, boolean wantHist, boolean wantZebra, boolean wantPeak, boolean wantDirty, boolean wantPalm) {
         int total = w * h;
         if (liveSamplePixels.length < total) {
             liveSamplePixels = new int[total];
@@ -688,12 +757,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         int[] px = liveSamplePixels;
         int[] luma = liveSampleLuma;
         bmp.getPixels(px, 0, w, 0, 0, w, h);
-        if (wantHist) {
-            Arrays.fill(liveHistogramBins, 0);
-            Arrays.fill(liveHistR, 0);
-            Arrays.fill(liveHistG, 0);
-            Arrays.fill(liveHistB, 0);
-        }
+
+        int[] localHist = wantHist ? new int[32] : null;
+        int[] localR = wantHist ? new int[32] : null;
+        int[] localG = wantHist ? new int[32] : null;
+        int[] localB = wantHist ? new int[32] : null;
         int clipHigh = 0;
         int clipLow = 0;
         for (int i = 0; i < total; i++) {
@@ -705,40 +773,46 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             luma[i] = y;
             if (wantHist) {
                 int bin = Math.min(31, y >> 3);
-                liveHistogramBins[bin]++;
-                liveHistR[Math.min(31, r >> 3)]++;
-                liveHistG[Math.min(31, g >> 3)]++;
-                liveHistB[Math.min(31, b >> 3)]++;
+                localHist[bin]++;
+                localR[Math.min(31, r >> 3)]++;
+                localG[Math.min(31, g >> 3)]++;
+                localB[Math.min(31, b >> 3)]++;
                 if (y >= 250) clipHigh++;
                 if (y <= 4) clipLow++;
             }
         }
-        if (wantHist) {
-            liveHighlightClipped = clipHigh > (total * 0.012f);
-            liveShadowClipped = clipLow > (total * 0.020f);
-        }
-        if (wantZebra || wantPeak) {
-            for (int cy = 0; cy < EXPOSURE_GRID_SIZE; cy++) {
-                int sy = Math.min(h - 1, (cy * h + (h / 2)) / EXPOSURE_GRID_SIZE);
-                int rowOff = sy * w;
-                int gridRow = cy * EXPOSURE_GRID_SIZE;
-                for (int cx = 0; cx < EXPOSURE_GRID_SIZE; cx++) {
-                    int idx = gridRow + cx;
-                    int sx = Math.min(w - 1, (cx * w + (w / 2)) / EXPOSURE_GRID_SIZE);
-                    int pIdx = rowOff + sx;
-                    int yVal = luma[pIdx];
-                    liveZebraCells[idx] = wantZebra && (yVal >= 242);
-                    if (wantPeak && sx > 0 && sx < w - 1 && sy > 0 && sy < h - 1) {
-                        int gx = Math.abs(luma[pIdx + 1] - luma[pIdx - 1]);
-                        int gy = Math.abs(luma[pIdx + w] - luma[pIdx - w]);
-                        livePeakingCells[idx] = (gx + gy) > 52;
-                    } else {
-                        livePeakingCells[idx] = false;
+        synchronized (exposureAidLock) {
+            if (wantHist) {
+                System.arraycopy(localHist, 0, liveHistogramBins, 0, 32);
+                System.arraycopy(localR, 0, liveHistR, 0, 32);
+                System.arraycopy(localG, 0, liveHistG, 0, 32);
+                System.arraycopy(localB, 0, liveHistB, 0, 32);
+                liveHighlightClipped = clipHigh > (total * 0.012f);
+                liveShadowClipped = clipLow > (total * 0.020f);
+            }
+            if (wantZebra || wantPeak) {
+                for (int cy = 0; cy < EXPOSURE_GRID_SIZE; cy++) {
+                    int sy = Math.min(h - 1, (cy * h + (h / 2)) / EXPOSURE_GRID_SIZE);
+                    int rowOff = sy * w;
+                    int gridRow = cy * EXPOSURE_GRID_SIZE;
+                    for (int cx = 0; cx < EXPOSURE_GRID_SIZE; cx++) {
+                        int idx = gridRow + cx;
+                        int sx = Math.min(w - 1, (cx * w + (w / 2)) / EXPOSURE_GRID_SIZE);
+                        int pIdx = rowOff + sx;
+                        int yVal = luma[pIdx];
+                        liveZebraCells[idx] = wantZebra && (yVal >= 242);
+                        if (wantPeak && sx > 0 && sx < w - 1 && sy > 0 && sy < h - 1) {
+                            int gx = Math.abs(luma[pIdx + 1] - luma[pIdx - 1]);
+                            int gy = Math.abs(luma[pIdx + w] - luma[pIdx - w]);
+                            livePeakingCells[idx] = (gx + gy) > 52;
+                        } else {
+                            livePeakingCells[idx] = false;
+                        }
                     }
                 }
             }
         }
-        if (wantDirty && !isFrontCamera()) {
+        if (wantDirty) {
             checkDirtyLens(luma, w, h);
         }
         if (wantPalm) {
@@ -796,6 +870,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             startVideoRecording();
         };
         AppSettings.migrateBranding(this);
+        refreshHotPrefs();
+        AppSettings.prefs(this).registerOnSharedPreferenceChangeListener(hotPrefsListener);
         LutManager.init(this);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true);
@@ -954,6 +1030,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     @Override protected void onResume() {
         super.onResume();
         activityResumed = true;
+        refreshHotPrefs();
         applyFullScreenImmersive();
         if (root != null) {
             root.postDelayed(this::applyFullScreenImmersive, 150L);
@@ -1071,6 +1148,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         volumeKeyHandler.removeCallbacks(volumeQuickTakeRunnable);
         volumeKeyHolding = false;
+        AppSettings.prefs(this).unregisterOnSharedPreferenceChangeListener(hotPrefsListener);
         super.onDestroy();
     }
 
@@ -2510,16 +2588,21 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         String targetAspect = vAspect.contains("2.39") ? "2.39:1" : "16:9";
         final long stillJob = captureJobs.begin();
         updateGalleryProcessingUi();
+        final RawDeveloper.Look stillLook = RawDeveloper.Look.fromPreferences(this);
+        stillLook.flipHorizontal = mirror;
         processor.execute(() -> {
             boolean stillSucceeded = false;
             try {
-                ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                frameBmp.compress(Bitmap.CompressFormat.JPEG, 95, bos);
-                frameBmp.recycle();
-                Bitmap developed = RawDeveloper.developJpeg(bos.toByteArray(), this, mirror);
+                String savedBorder = stillLook.frameBorder;
+                stillLook.frameBorder = "None";
+                Bitmap developed = RawDeveloper.developBitmap(frameBmp, stillLook, true);
                 if (developed != null) {
                     developed = cropToAspect(developed, targetAspect);
-                    String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
+                    if (savedBorder != null && !savedBorder.startsWith("None")) {
+                        stillLook.frameBorder = savedBorder;
+                        developed = RawDeveloper.applyFrameBorder(developed, stillLook, null);
+                    }
+                    String stamp = formatCaptureStamp();
                     String prefix = resolvedFilePrefix();
                     writeJpeg(developed, prefix + "_STILL_" + stamp + ".jpg", null, "");
                     Bitmap quickThumbnail = createGalleryThumbnail(developed);
@@ -2531,6 +2614,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     });
                 }
             } catch (Exception e) {
+                if (!frameBmp.isRecycled()) frameBmp.recycle();
                 runOnUiThread(() -> showMessage("Could not save video still."));
             } finally {
                 captureJobs.finish(stillJob, stillSucceeded);
@@ -3333,36 +3417,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         view.setCompoundDrawablesRelative(d, null, null, null);
     }
 
-    private TextView lensPill(String zoomName, String mmName, boolean active) {
-        TextView view = new TextView(this);
-        view.setGravity(Gravity.CENTER);
-        view.setLineSpacing(dp(-1), 1f);
-        view.setText(formatLensSpannable(zoomName, mmName, active));
-        view.setBackground(round(active ? 0xe21c1d1b : 0xd8191e1e, 22, active ? ACCENT : 0x556e7872, dp(1)));
-        view.setClickable(true);
-        return view;
-    }
-
-    private CharSequence formatLensSpannable(String zoomName, String mmName, boolean active) {
-        android.text.SpannableString s = new android.text.SpannableString(zoomName + "\n" + mmName);
-        int split = zoomName.length();
-        s.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD), 0, split, 0);
-        s.setSpan(new android.text.style.RelativeSizeSpan(0.72f), split + 1, s.length(), 0);
-        s.setSpan(new android.text.style.ForegroundColorSpan(active ? ACCENT : 0xffe9ede6), 0, split, 0);
-        s.setSpan(new android.text.style.ForegroundColorSpan(active ? 0xccffffff : 0x88a0aaa4), split + 1, s.length(), 0);
-        return s;
-    }
-
     private void handleViewfinderTap(float x, float y) {
         if (textureView == null || captureSession == null || previewRequest == null || cameraDevice == null) return;
-        if (AppSettings.getBoolean(this, AppSettings.HISTOGRAM, false) && gridOverlay != null && gridOverlay.isHistogramHit(x, y)) {
+        if (prefHistogram && gridOverlay != null && gridOverlay.isHistogramHit(x, y)) {
             cycleHistogramMode();
             return;
         }
         RectF frame = framingRect(textureView.getWidth(), textureView.getHeight());
         if (!frame.contains(x, y)) return;
 
-        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+        if (prefHaptics) {
             captureButton.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
         }
 
@@ -3681,14 +3745,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 videoSize = chooseVideoSize(map.getOutputSizes(MediaRecorder.class));
             }
             int[] capabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
-            Size[] rawOutputs = map.getOutputSizes(ImageFormat.RAW_SENSOR);
-            rawSupported = capabilities != null && Arrays.stream(capabilities).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
-                    && rawOutputs != null && rawOutputs.length > 0;
-            manualSupported = capabilities != null && Arrays.stream(capabilities).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR);
-            AppSettings.prefs(this).edit().putBoolean(AppSettings.MANUAL_SUPPORTED, manualSupported).apply();
+            rawSupported = isRawCapable(capabilities, map);
+            manualSupported = hasCapability(capabilities, CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR);
+            AppSettings.prefs(this).edit()
+                    .putBoolean(AppSettings.MANUAL_SUPPORTED, manualSupported)
+                    .putBoolean(AppSettings.RAW_SUPPORTED, rawSupported)
+                    .apply();
             updateReadouts();
             useRawForThisCamera = rawSupported && !forceJpegForWide;
-            AppSettings.prefs(this).edit().putBoolean(AppSettings.RAW_SUPPORTED, rawSupported).apply();
             rawSize = rawSupported ? chooseRawSize(map.getOutputSizes(ImageFormat.RAW_SENSOR)) : null;
             previewSize = choosePreviewSize(map.getOutputSizes(SurfaceTexture.class));
             if (previewSize == null) previewSize = new Size(1280, 720);
@@ -3703,6 +3767,27 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 showMessage("Could not open this camera.");
             });
         }
+    }
+
+    private static boolean hasCapability(int[] caps, int target) {
+        if (caps == null) return false;
+        for (int v : caps) {
+            if (v == target) return true;
+        }
+        return false;
+    }
+
+    private static boolean isRawCapable(CameraCharacteristics c, StreamConfigurationMap map) {
+        if (c == null || map == null) return false;
+        return isRawCapable(c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES), map);
+    }
+
+    private static boolean isRawCapable(int[] caps, StreamConfigurationMap map) {
+        if (map == null || !hasCapability(caps, CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)) {
+            return false;
+        }
+        Size[] rawSizes = map.getOutputSizes(ImageFormat.RAW_SENSOR);
+        return rawSizes != null && rawSizes.length > 0;
     }
 
     private void chooseMainCamera() throws CameraAccessException {
@@ -3733,12 +3818,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (facing == null || facing != CameraCharacteristics.LENS_FACING_BACK) continue;
                 StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
                 if (map == null) continue;
-                int[] caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
-                Size[] rawSizes = map.getOutputSizes(ImageFormat.RAW_SENSOR);
-                boolean raw = caps != null && Arrays.stream(caps).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
-                        && rawSizes != null && rawSizes.length > 0;
+                boolean raw = isRawCapable(c, map);
                 Size[] sizes = raw ? map.getOutputSizes(ImageFormat.RAW_SENSOR) : map.getOutputSizes(ImageFormat.JPEG);
-                long area = sizes == null ? 0 : Arrays.stream(sizes).mapToLong(s -> (long) s.getWidth() * s.getHeight()).max().orElse(0);
+                long area = maxSizeArea(sizes);
                 if ((raw && !foundRaw) || (raw == foundRaw && area > bestArea)) {
                     best = id;
                     bestArea = area;
@@ -3752,6 +3834,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         mainCameraId = best;
         primaryFocalLength = focal;
         physicalFocalFactor = 1f;
+    }
+
+    private static long maxSizeArea(Size[] sizes) {
+        if (sizes == null || sizes.length == 0) return 0L;
+        long max = 0L;
+        for (Size s : sizes) {
+            long area = (long) s.getWidth() * s.getHeight();
+            if (area > max) max = area;
+        }
+        return max;
     }
 
     private void prepareReader(StreamConfigurationMap map) {
@@ -3814,7 +3906,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (vAspect.contains("2.39")) return 2.39f;
             return 16f / 9f;
         }
-        return AppSettings.parseAspectRatio(AppSettings.get(this, AppSettings.ASPECT_RATIO, "4:3"));
+        return AppSettings.parseAspectRatio(prefAspectRatio);
     }
 
     private int privacyRightInset(int headerTop) {
@@ -3839,9 +3931,34 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         return Math.max(dp(8), (safeInsets.top - dp(32)) / 2);
     }
 
+    private final RectF cachedFrameRect = new RectF();
+    private float cachedFrameW = -1f;
+    private float cachedFrameH = -1f;
+    private float cachedFrameRatio = -1f;
+    private boolean cachedFrameVideoMode;
+
+    private void invalidateFramingRectCache() {
+        cachedFrameW = -1f;
+    }
+
     private RectF framingRect(float width, float height) {
-        if (width <= 0 || height <= 0) return new RectF(0, 0, 0, 0);
+        RectF out = new RectF();
+        framingRectInto(width, height, out);
+        return out;
+    }
+
+    private void framingRectInto(float width, float height, RectF out) {
+        if (width <= 0 || height <= 0) {
+            out.set(0, 0, 0, 0);
+            return;
+        }
         float ratio = aspectRatioSetting();
+        if (width == cachedFrameW && height == cachedFrameH
+                && ratio == cachedFrameRatio && videoMode == cachedFrameVideoMode
+                && root != null && root.getRootWindowInsets() != null) {
+            out.set(cachedFrameRect);
+            return;
+        }
         WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
         boolean isWide = windowInfo.isLandscape || (width >= height);
         if (!isWide) {
@@ -3866,7 +3983,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             float left = (width - frameWidth) * 0.5f;
             float top = viewfinderTopMin;
-            return new RectF(left, top, left + frameWidth, top + frameHeight);
+            out.set(left, top, left + frameWidth, top + frameHeight);
         } else {
             Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
             Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
@@ -3886,7 +4003,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             float canvasLeft = safeInsets.left + (leftHand ? gripWidth : 0f) + dp(12);
             float left = canvasLeft + (availableWidth - frameWidth) * 0.5f;
             float top = topOffset + (availableHeight - frameHeight) * 0.5f;
-            return new RectF(left, top, left + frameWidth, top + frameHeight);
+            out.set(left, top, left + frameWidth, top + frameHeight);
+        }
+        if (root != null && root.getRootWindowInsets() != null) {
+            cachedFrameW = width;
+            cachedFrameH = height;
+            cachedFrameRatio = ratio;
+            cachedFrameVideoMode = videoMode;
+            cachedFrameRect.set(out);
         }
     }
 
@@ -4054,11 +4178,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     && recipe.keepRaw
                     && !"Rendered JPEG only".equals(recipe.format);
             try {
-                String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
+                String stamp = formatCaptureStamp();
                 String format = recipe.format;
                 boolean saveDng = raw && dngPolicy.startsWith("Save DNG")
                         && (recipe.keepRaw || "DNG only".equals(format))
                         && !"Rendered JPEG only".equals(format);
+                Location captureLocation = (saveDng || !raw || !"DNG only".equals(format)) ? getCaptureLocation() : null;
 
                 String prefix = resolvedFilePrefix();
 
@@ -4078,7 +4203,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 String folderOrg = AppSettings.get(this, AppSettings.FOLDER_ORG, "Single folder (Pictures/Lika Lens)");
                 String orgSub = "";
                 if (folderOrg.contains("month")) {
-                    orgSub = new SimpleDateFormat("yyyy-MM", Locale.US).format(new Date());
+                    orgSub = formatMonthFolder();
                 } else if (folderOrg.contains("film look")) {
                     orgSub = captureLook.brain != null ? captureLook.brain.replaceAll("[^A-Za-z0-9_ ]", "").replace(' ', '_') : "LIKA_FILM";
                 }
@@ -4089,7 +4214,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (saveDng) {
                     try {
                         String dngSubfolder = orgSub.isEmpty() ? "RAW" : orgSub + "/RAW";
-                        writeDng(image, result, capturedCharacteristics, capturedOrientation, baseFileStem + ".dng", dngSubfolder);
+                        writeDng(image, result, capturedCharacteristics, capturedOrientation, baseFileStem + ".dng", dngSubfolder, captureLocation);
                         dngSaved = true;
                     } catch (Exception dngError) {
                         dngWarning = dngError.getClass().getSimpleName();
@@ -4103,7 +4228,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     frame.previewMidTarget = recipe.previewMidTarget;
                     try {
                         developed = RawDeveloper.develop(frame, captureLook, 0);
-                    } catch (IllegalArgumentException resolutionError) {
+                    } catch (IllegalArgumentException | OutOfMemoryError resolutionError) {
                         Log.w(TAG, "Full-resolution RAW render failed; retrying at a safe display size", resolutionError);
                         developed = RawDeveloper.develop(frame, captureLook, 3000);
                     }
@@ -4135,7 +4260,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 Bitmap quickThumbnail = null;
                 if (!raw || !"DNG only".equals(format) || !dngSaved) {
                     captureJobs.move(renderJob, CaptureJobs.Phase.PUBLISHING);
-                    writeJpeg(developed, baseFileStem + ".jpg", result, orgSub);
+                    writeJpeg(developed, baseFileStem + ".jpg", result, orgSub, true, captureLocation);
                     quickThumbnail = createGalleryThumbnail(developed);
                 }
                 developed.recycle();
@@ -4188,7 +4313,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (captureSession == null || stillCaptureState.isBusy()) {
             return;
         }
-        if (captureJobs.size() >= 5) {
+        if (captureJobs.size() >= 4) {
             showMessage("Developing previous frames…");
             return;
         }
@@ -4526,6 +4651,39 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
+    private static final SimpleDateFormat CAPTURE_STAMP_FMT = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US);
+    private static final SimpleDateFormat MONTH_FOLDER_FMT = new SimpleDateFormat("yyyy-MM", Locale.US);
+    private static final SimpleDateFormat EXIF_STAMP_FMT = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US);
+    private static final SimpleDateFormat GPS_TIME_FMT;
+    private static final SimpleDateFormat GPS_DATE_FMT;
+    static {
+        TimeZone utc = TimeZone.getTimeZone("UTC");
+        GPS_TIME_FMT = new SimpleDateFormat("HH:mm:ss", Locale.US);
+        GPS_TIME_FMT.setTimeZone(utc);
+        GPS_DATE_FMT = new SimpleDateFormat("yyyy:MM:dd", Locale.US);
+        GPS_DATE_FMT.setTimeZone(utc);
+    }
+
+    private static synchronized String formatCaptureStamp() {
+        return CAPTURE_STAMP_FMT.format(new Date());
+    }
+
+    private static synchronized String formatMonthFolder() {
+        return MONTH_FOLDER_FMT.format(new Date());
+    }
+
+    private static synchronized String formatExifTimestamp() {
+        return EXIF_STAMP_FMT.format(new Date());
+    }
+
+    private static synchronized String formatGpsTime(Date date) {
+        return GPS_TIME_FMT.format(date);
+    }
+
+    private static synchronized String formatGpsDate(Date date) {
+        return GPS_DATE_FMT.format(date);
+    }
+
     private void setExifGps(ExifInterface exif, Location loc) {
         if (exif == null || loc == null) return;
         double lat = loc.getLatitude();
@@ -4540,13 +4698,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             exif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE_REF, alt >= 0 ? "0" : "1");
         }
         if (loc.getTime() > 0) {
-            SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss", Locale.US);
-            timeFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
-            SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy:MM:dd", Locale.US);
-            dateFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
             Date date = new Date(loc.getTime());
-            exif.setAttribute(ExifInterface.TAG_GPS_TIMESTAMP, timeFormat.format(date));
-            exif.setAttribute(ExifInterface.TAG_GPS_DATESTAMP, dateFormat.format(date));
+            exif.setAttribute(ExifInterface.TAG_GPS_TIMESTAMP, formatGpsTime(date));
+            exif.setAttribute(ExifInterface.TAG_GPS_DATESTAMP, formatGpsDate(date));
         }
     }
 
@@ -4559,7 +4713,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         return degrees + "/1," + minutes + "/1," + seconds + "/1000";
     }
 
-    private void writeDng(Image image, TotalCaptureResult result, CameraCharacteristics captureCharacteristics, int orientation, String name, String subfolder) throws Exception {
+    private void writeDng(Image image, TotalCaptureResult result, CameraCharacteristics captureCharacteristics, int orientation, String name, String subfolder, Location loc) throws Exception {
         if (result == null || captureCharacteristics == null) throw new IllegalStateException("Missing capture metadata");
         MediaOutput target = createOutput(name, "image/x-adobe-dng", subfolder);
         boolean published = false;
@@ -4567,7 +4721,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         try {
             creator = new DngCreator(captureCharacteristics, result);
             creator.setOrientation(CaptureOrientation.toExif(orientation));
-            Location loc = getCaptureLocation();
             if (loc != null) {
                 creator.setLocation(loc);
             }
@@ -4583,6 +4736,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void writeJpeg(Bitmap bitmap, String name, TotalCaptureResult result, String subfolder) throws Exception {
+        writeJpeg(bitmap, name, result, subfolder, false, null);
+    }
+
+    private void writeJpeg(Bitmap bitmap, String name, TotalCaptureResult result, String subfolder,
+            boolean hasPrefetchedLocation, Location prefetchedLocation) throws Exception {
         MediaOutput target = createOutput(name, "image/jpeg", subfolder);
         boolean published = false;
         File temp = File.createTempFile("lika_export_", ".jpg", getCacheDir());
@@ -4607,8 +4765,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 exif.setAttribute(ExifInterface.TAG_MODEL, Build.MODEL);
                 exif.setAttribute(ExifInterface.TAG_SOFTWARE, "Lika Lens (Cinematic Raw)");
                 exif.setAttribute(ExifInterface.TAG_ORIENTATION, String.valueOf(ExifInterface.ORIENTATION_NORMAL));
-                String timeStamp = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(new Date());
-                exif.setAttribute(ExifInterface.TAG_DATETIME, timeStamp);
+                exif.setAttribute(ExifInterface.TAG_DATETIME, formatExifTimestamp());
 
                 boolean writeExifParams = AppSettings.getBoolean(this, AppSettings.EXIF_PARAMS, true);
                 if (writeExifParams && result != null) {
@@ -4643,7 +4800,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     exif.setAttribute(ExifInterface.TAG_GPS_DATESTAMP, null);
                     exif.setAttribute(ExifInterface.TAG_GPS_PROCESSING_METHOD, null);
                 } else {
-                    Location loc = getCaptureLocation();
+                    Location loc = hasPrefetchedLocation ? prefetchedLocation : getCaptureLocation();
                     if (loc != null) {
                         setExifGps(exif, loc);
                     }
@@ -5085,83 +5242,92 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         applyLiveFilmPreview();
     }
 
+    private final Paint legacyPaint = new Paint();
+    private final ColorMatrix legacyCm = new ColorMatrix();
+    private final ColorMatrix legacyAuxCm = new ColorMatrix();
+    private final ColorMatrix legacyBeforeLutCm = new ColorMatrix();
+    private final float[] legacyMatrixBuf = new float[20];
+    private final float[] legacyBlended = new float[20];
+
+    private void concatLegacyMatrix(float m00, float m01, float m02, float m04,
+            float m10, float m11, float m12, float m14,
+            float m20, float m21, float m22, float m24) {
+        float[] m = legacyMatrixBuf;
+        m[0] = m00; m[1] = m01; m[2] = m02; m[3] = 0f; m[4] = m04;
+        m[5] = m10; m[6] = m11; m[7] = m12; m[8] = 0f; m[9] = m14;
+        m[10] = m20; m[11] = m21; m[12] = m22; m[13] = 0f; m[14] = m24;
+        m[15] = 0f; m[16] = 0f; m[17] = 0f; m[18] = 1f; m[19] = 0f;
+        legacyAuxCm.set(m);
+        legacyCm.postConcat(legacyAuxCm);
+    }
+
     private void applyLiveFilmPreview() {
         if (!activityResumed || textureView == null) return;
-        if (!AppSettings.getBoolean(this, AppSettings.LIVE_FILM_PREVIEW, true)) {
+        if (!prefLiveFilmPreview) {
             liveLookPreview.clear();
             textureView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
             textureView.invalidate();
             return;
         }
         RawDeveloper.Look look = RawDeveloper.Look.fromPreferences(this);
-        if (!liveLookPreview.apply(textureView, look, previewColourMetadata, this::applyLegacyFilmPreview)) applyLegacyFilmPreview();
+        if (!liveLookPreview.apply(textureView, look, previewColourMetadata, () -> applyLegacyFilmPreview(look))) {
+            applyLegacyFilmPreview(look);
+        }
     }
 
     private void applyLegacyFilmPreview() {
-        String brain = AppSettings.brain(this);
-        String activeLut = AppSettings.get(this, AppSettings.LUT_NAME, "None");
-        RawDeveloper.Look look = RawDeveloper.Look.fromPreferences(this);
+        applyLegacyFilmPreview(RawDeveloper.Look.fromPreferences(this));
+    }
+
+    private void applyLegacyFilmPreview(RawDeveloper.Look look) {
+        String brain = look.brain != null ? look.brain : AppSettings.brain(this);
+        String activeLut = look.lutName != null ? look.lutName : "None";
         String pp = look.filmPushPull != null ? look.filmPushPull : "";
         boolean hasPushPull = pp.startsWith("+1") || pp.startsWith("+2") || pp.startsWith("-1");
         if (AppSettings.BRAIN_NEUTRAL_RAW.equals(brain) && "None".equalsIgnoreCase(activeLut)
-                && !isCustomLookActive() && look.whiteBalanceKelvin <= 0 && !hasPushPull) {
+                && !isCustomLookActive(look) && look.whiteBalanceKelvin <= 0 && !hasPushPull) {
             textureView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
             textureView.invalidate();
             return;
         }
 
-        Paint paint = new Paint();
-        ColorMatrix cm = new ColorMatrix();
+        ColorMatrix cm = legacyCm;
+        cm.reset();
         if (brain.startsWith("MONO") || brain.contains("SILVER")) {
             // Panchromatic silver halide luma (Tri-X 400): elevated red/orange response + silver contrast
             float scale = 1.14f;
             float translate = (-0.42f * scale + 0.42f) * 255f - 2f;
             float rW = 0.33f * scale, gW = 0.59f * scale, bW = 0.08f * scale;
-            cm.set(new float[] {
-                rW, gW, bW, 0, translate,
-                rW, gW, bW, 0, translate,
-                rW, gW, bW, 0, translate,
-                0,  0,  0,  1, 0
-            });
+            concatLegacyMatrix(
+                    rW, gW, bW, translate,
+                    rW, gW, bW, translate,
+                    rW, gW, bW, translate);
         } else if (brain.contains("KODACHROME")) {
             cm.setSaturation(1.18f);
-            ColorMatrix warmReversal = new ColorMatrix(new float[] {
-                1.14f, -0.04f, -0.02f, 0, -4f,
-                0.01f,  1.04f,  0.01f, 0, -6f,
-               -0.04f,  0.01f,  1.06f, 0, -10f,
-                0,      0,      0,     1,   0f
-            });
-            cm.postConcat(warmReversal);
+            concatLegacyMatrix(
+                    1.14f, -0.04f, -0.02f, -4f,
+                    0.01f,  1.04f,  0.01f, -6f,
+                   -0.04f,  0.01f,  1.06f, -10f);
         } else if (brain.contains("FUJI") || brain.contains("ETERNA")) {
             cm.setSaturation(0.84f);
-            ColorMatrix fuji = new ColorMatrix(new float[] {
-                0.88f,  0.03f,  0.01f, 0,  8f,
-               -0.02f,  0.92f,  0.02f, 0, 12f,
-               -0.01f,  0.04f,  0.91f, 0, 14f,
-                0,      0,      0,     1,  0f
-            });
-            cm.postConcat(fuji);
+            concatLegacyMatrix(
+                    0.88f,  0.03f,  0.01f,  8f,
+                   -0.02f,  0.92f,  0.02f, 12f,
+                   -0.01f,  0.04f,  0.91f, 14f);
         } else if (brain.contains("BLEACH")) {
             cm.setSaturation(0.30f);
-            ColorMatrix contrast = new ColorMatrix();
             float scale = 1.28f;
             float translate = (-0.42f * scale + 0.42f) * 255f - 8f;
-            contrast.set(new float[] {
-                scale, 0, 0, 0, translate - 3f,
-                0, scale, 0, 0, translate,
-                0, 0, scale, 0, translate + 5f,
-                0, 0, 0, 1, 0
-            });
-            cm.postConcat(contrast);
+            concatLegacyMatrix(
+                    scale, 0f, 0f, translate - 3f,
+                    0f, scale, 0f, translate,
+                    0f, 0f, scale, translate + 5f);
         } else if (!AppSettings.BRAIN_NEUTRAL_RAW.equals(brain)) {
             // LIKA / FILM: Kodak Vision3 500T filmic density with warm midtones and clean shadow gradation
-            ColorMatrix film = new ColorMatrix(new float[] {
-                1.04f, -0.02f, -0.01f, 0,  2f,
-               -0.01f,  1.01f,  0.01f, 0,  0f,
-               -0.02f,  0.03f,  0.98f, 0, -2f,
-                0,      0,      0,     1,  0f
-            });
-            cm.postConcat(film);
+            concatLegacyMatrix(
+                    1.04f, -0.02f, -0.01f,  2f,
+                   -0.01f,  1.01f,  0.01f,  0f,
+                   -0.02f,  0.03f,  0.98f, -2f);
         }
 
         // Incorporate user developer adjustments (exposureEv, contrast, shadows, warmth, saturation, manual Kelvin WB, push/pull)
@@ -5189,9 +5355,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
 
         if (Math.abs(satRatio - 1.0f) > 0.02f && !brain.startsWith("MONO")) {
-            ColorMatrix satMatrix = new ColorMatrix();
-            satMatrix.setSaturation(Math.max(0f, Math.min(1.8f, satRatio)));
-            cm.postConcat(satMatrix);
+            legacyAuxCm.setSaturation(Math.max(0f, Math.min(1.8f, satRatio)));
+            cm.postConcat(legacyAuxCm);
         }
         if (Math.abs(evScale - 1.0f) > 0.01f || Math.abs(contrastRatio - 1.0f) > 0.01f
                 || Math.abs(shadowDelta) > 0.01f || Math.abs(warmthDelta) > 0.01f) {
@@ -5203,87 +5368,63 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             float rOff = pivotOffset + warmthDelta * 7f;
             float gOff = pivotOffset + warmthDelta * 2f;
             float bOff = pivotOffset - warmthDelta * 9f;
-            ColorMatrix gradingAdjust = new ColorMatrix(new float[] {
-                rScale, 0,      0,      0, rOff,
-                0,      gScale, 0,      0, gOff,
-                0,      0,      bScale, 0, bOff,
-                0,      0,      0,      1, 0
-            });
-            cm.postConcat(gradingAdjust);
+            concatLegacyMatrix(
+                    rScale, 0f, 0f, rOff,
+                    0f, gScale, 0f, gOff,
+                    0f, 0f, bScale, bOff);
         }
 
         // Legacy devices retain a matrix approximation; honour the actual LUT strength.
-        ColorMatrix beforeLut = new ColorMatrix(cm);
+        legacyBeforeLutCm.set(cm);
         // Apply active 3D LUT matrix in viewfinder
         if (LutManager.LUT_PORTRA.equalsIgnoreCase(activeLut)) {
-            ColorMatrix portra = new ColorMatrix(new float[] {
-                1.12f,  0.03f, -0.04f, 0,  6f,
-               -0.01f,  1.05f, -0.01f, 0,  3f,
-               -0.06f, -0.03f,  0.94f, 0, -4f,
-                0,      0,      0,     1,  0
-            });
-            cm.postConcat(portra);
+            concatLegacyMatrix(
+                    1.12f,  0.03f, -0.04f,  6f,
+                   -0.01f,  1.05f, -0.01f,  3f,
+                   -0.06f, -0.03f,  0.94f, -4f);
         } else if (LutManager.LUT_FUJI.equalsIgnoreCase(activeLut)) {
-            ColorMatrix fuji = new ColorMatrix(new float[] {
-                0.96f, -0.01f,  0.03f, 0, -2f,
-                0.01f,  1.04f,  0.02f, 0,  5f,
-                0.03f,  0.02f,  1.06f, 0,  8f,
-                0,      0,      0,     1,  0
-            });
-            cm.postConcat(fuji);
+            concatLegacyMatrix(
+                    0.96f, -0.01f,  0.03f, -2f,
+                    0.01f,  1.04f,  0.02f,  5f,
+                    0.03f,  0.02f,  1.06f,  8f);
         } else if (LutManager.LUT_TEAL_ORANGE.equalsIgnoreCase(activeLut)) {
-            ColorMatrix tealOrange = new ColorMatrix(new float[] {
-                1.22f, -0.04f, -0.08f, 0,  8f,
-               -0.02f,  1.02f, -0.04f, 0,  2f,
-               -0.12f,  0.06f,  1.18f, 0, -6f,
-                0,      0,      0,     1,  0
-            });
-            cm.postConcat(tealOrange);
+            concatLegacyMatrix(
+                    1.22f, -0.04f, -0.08f,  8f,
+                   -0.02f,  1.02f, -0.04f,  2f,
+                   -0.12f,  0.06f,  1.18f, -6f);
         } else if (LutManager.LUT_ANSEL_BW.equalsIgnoreCase(activeLut)) {
-            ColorMatrix ansel = new ColorMatrix();
-            ansel.setSaturation(0f);
-            ColorMatrix sc = new ColorMatrix();
+            legacyAuxCm.setSaturation(0f);
+            cm.postConcat(legacyAuxCm);
             float scale = 1.30f;
             float tr = (-0.5f * scale + 0.5f) * 255f;
-            sc.set(new float[] {
-                scale, 0, 0, 0, tr,
-                0, scale, 0, 0, tr,
-                0, 0, scale, 0, tr,
-                0, 0, 0, 1, 0
-            });
-            ansel.postConcat(sc);
-            cm.postConcat(ansel);
+            concatLegacyMatrix(
+                    scale, 0f, 0f, tr,
+                    0f, scale, 0f, tr,
+                    0f, 0f, scale, tr);
         } else if (LutManager.LUT_AMBER_70S.equalsIgnoreCase(activeLut)) {
-            ColorMatrix amber = new ColorMatrix(new float[] {
-                1.20f,  0.04f, -0.04f, 0, 10f,
-                0.02f,  1.06f, -0.02f, 0,  4f,
-               -0.10f, -0.06f,  0.80f, 0, -8f,
-                0,      0,      0,     1,  0
-            });
-            cm.postConcat(amber);
+            concatLegacyMatrix(
+                    1.20f,  0.04f, -0.04f, 10f,
+                    0.02f,  1.06f, -0.02f,  4f,
+                   -0.10f, -0.06f,  0.80f, -8f);
         } else if (LutManager.LUT_BLEACH.equalsIgnoreCase(activeLut)) {
-            ColorMatrix bleach = new ColorMatrix();
-            bleach.setSaturation(0.32f);
-            ColorMatrix sc = new ColorMatrix();
+            legacyAuxCm.setSaturation(0.32f);
+            cm.postConcat(legacyAuxCm);
             float scale = 1.35f;
             float tr = (-0.5f * scale + 0.5f) * 255f;
-            sc.set(new float[] {
-                scale, 0, 0, 0, tr,
-                0, scale, 0, 0, tr,
-                0, 0, scale, 0, tr,
-                0, 0, 0, 1, 0
-            });
-            bleach.postConcat(sc);
-            cm.postConcat(bleach);
+            concatLegacyMatrix(
+                    scale, 0f, 0f, tr,
+                    0f, scale, 0f, tr,
+                    0f, 0f, scale, tr);
         }
 
         float lutMix = Math.max(0f, Math.min(1f, look.lutIntensity));
-        float[] before = beforeLut.getArray(), after = cm.getArray();
-        float[] blended = new float[20];
-        for (int i = 0; i < blended.length; i++) blended[i] = before[i] + (after[i] - before[i]) * lutMix;
-        cm.set(blended);
-        paint.setColorFilter(new ColorMatrixColorFilter(cm));
-        textureView.setLayerType(View.LAYER_TYPE_HARDWARE, paint);
+        float[] before = legacyBeforeLutCm.getArray(), after = cm.getArray();
+        for (int i = 0; i < legacyBlended.length; i++) {
+            legacyBlended[i] = before[i] + (after[i] - before[i]) * lutMix;
+        }
+        cm.set(legacyBlended);
+        legacyPaint.setColorFilter(new ColorMatrixColorFilter(cm));
+        textureView.setLayerType(View.LAYER_TYPE_HARDWARE, legacyPaint);
         textureView.invalidate();
     }
 
@@ -5319,6 +5460,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 || AppSettings.getInt(this, AppSettings.GRAIN, AppSettings.DEFAULT_GRAIN) != AppSettings.DEFAULT_GRAIN
                 || AppSettings.getInt(this, AppSettings.HALATION, AppSettings.DEFAULT_HALATION) != AppSettings.DEFAULT_HALATION
                 || AppSettings.getInt(this, AppSettings.SHARPEN, AppSettings.DEFAULT_SHARPEN) != AppSettings.DEFAULT_SHARPEN;
+    }
+
+    private static boolean isCustomLookActive(RawDeveloper.Look look) {
+        return Math.round(look.exposureEv * 10f) != AppSettings.DEFAULT_EXPOSURE
+                || Math.round(look.warmth * 50f + 50f) != AppSettings.DEFAULT_WARMTH
+                || Math.round(look.contrast * 100f) != AppSettings.DEFAULT_CONTRAST
+                || Math.round(look.saturation * 100f) != AppSettings.DEFAULT_SATURATION
+                || Math.round(look.highlights * 100f) != AppSettings.DEFAULT_HIGHLIGHTS
+                || Math.round(look.shadows * 100f) != AppSettings.DEFAULT_SHADOWS
+                || Math.round(look.grain * 100f) != AppSettings.DEFAULT_GRAIN
+                || Math.round(look.halation * 100f) != AppSettings.DEFAULT_HALATION
+                || Math.round(look.sharpening * 100f) != AppSettings.DEFAULT_SHARPEN;
     }
 
     private void updateEasyButton() {
@@ -5419,11 +5572,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     if (lensFacing == null || lensFacing != CameraCharacteristics.LENS_FACING_BACK) continue;
                     float[] focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
                     if (focal == null || focal.length == 0) continue;
-                    int[] caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
                     StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-                    Size[] rawOutputs = map == null ? null : map.getOutputSizes(ImageFormat.RAW_SENSOR);
-                    boolean raw = caps != null && Arrays.stream(caps).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
-                            && rawOutputs != null && rawOutputs.length > 0;
+                    boolean raw = isRawCapable(c, map);
                     float physical = focal[0] / Math.max(.1f, primaryFocalLength);
                     if (!raw || physical >= .95f) continue;
                     float candidate = Math.abs((float) Math.log(physical / factor));
@@ -5509,7 +5659,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         boolean mustRestart = !id.equals(cameraId);
         forceJpegForWide = jpegWide;
         if (mustRestart) {
-            if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true) && captureButton != null) {
+            if (prefHaptics && captureButton != null) {
                 captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
             }
             requestedZoom = factor;
@@ -5582,11 +5732,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (focal == null || focal.length == 0) continue;
                 float physical = focal[0] / Math.max(.1f, primaryFocalLength);
                 if (physical > factor + .001f || physical < bestPhysical) continue;
-                int[] caps = candidate.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
                 StreamConfigurationMap map = candidate.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-                Size[] rawOutputs = map == null ? null : map.getOutputSizes(ImageFormat.RAW_SENSOR);
-                boolean raw = caps != null && Arrays.stream(caps).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
-                        && rawOutputs != null && rawOutputs.length > 0;
+                boolean raw = isRawCapable(candidate, map);
                 if (keepRaw && !raw) continue;
                 bestId = id;
                 bestPhysical = physical;
@@ -5695,12 +5842,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (facing == null || facing != targetFacing) continue;
                 StreamConfigurationMap map = candidate.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
                 if (map == null) continue;
-                int[] caps = candidate.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
-                Size[] raw = map.getOutputSizes(ImageFormat.RAW_SENSOR);
-                boolean hasRaw = caps != null && Arrays.stream(caps).anyMatch(v -> v == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
-                        && raw != null && raw.length > 0;
-                Size[] sizes = hasRaw ? raw : map.getOutputSizes(ImageFormat.JPEG);
-                long area = sizes == null ? 0 : Arrays.stream(sizes).mapToLong(s -> (long) s.getWidth() * s.getHeight()).max().orElse(0);
+                boolean hasRaw = isRawCapable(candidate, map);
+                Size[] sizes = hasRaw ? map.getOutputSizes(ImageFormat.RAW_SENSOR) : map.getOutputSizes(ImageFormat.JPEG);
+                long area = maxSizeArea(sizes);
                 if ((hasRaw && !bestHasRaw) || (hasRaw == bestHasRaw && area > bestArea)) {
                     bestId = id;
                     bestArea = area;
@@ -6396,6 +6540,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         private final Paint reticlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint sunPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint chPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint bezelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint badgeBg = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint badgeText = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF arcRect = new RectF();
+        private final Rect loupeSrc = new Rect();
+        private final RectF loupeDst = new RectF();
+        private final RectF badgeRect = new RectF();
+        private final Path loupeClipPath = new Path();
+        private float cachedLoupeClipX = -1f;
+        private float cachedLoupeClipY = -1f;
+        private float cachedLoupeClipR = -1f;
 
         FocusReticleOverlay(Activity activity) {
             super(activity);
@@ -6410,6 +6567,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             textPaint.setColor(ACCENT);
             textPaint.setTextSize(dp(10));
             textPaint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+
+            shadowPaint.setColor(0x88000000);
+
+            chPaint.setColor(0x99FFFFFF);
+            chPaint.setStrokeWidth(dp(1f));
+
+            bezelPaint.setColor(ACCENT);
+            bezelPaint.setStyle(Paint.Style.STROKE);
+
+            badgeBg.setColor(0xDD0B0D0E);
+            badgeBg.setStyle(Paint.Style.FILL);
+
+            badgeText.setColor(ACCENT);
+            badgeText.setTextSize(dp(8.5f));
+            badgeText.setTypeface(Typeface.DEFAULT_BOLD);
+            badgeText.setTextAlign(Paint.Align.CENTER);
         }
 
         void showAt(float x, float y, float currentEv) {
@@ -6436,7 +6609,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
 
         void sampleLoupe(float x, float y) {
-            if (!AppSettings.getBoolean(MainActivity.this, AppSettings.OPTICAL_LOUPE, false)) return;
+            if (!prefOpticalLoupe) return;
             long now = SystemClock.elapsedRealtime();
             if (now - lastLoupeSample < 60) return;
             lastLoupeSample = now;
@@ -6449,7 +6622,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 int cropH = dp(44);
                 int left = Math.max(0, Math.min(tvW - cropW, (int) (x - cropW / 2f)));
                 int top = Math.max(0, Math.min(tvH - cropH, (int) (y - cropH / 2f)));
-                Bitmap full = textureView.getBitmap(tvW / 3, tvH / 3);
+                int sampleW = Math.min(tvW, Math.max(120, tvW / 4));
+                int sampleH = Math.min(tvH, Math.max(160, tvH / 4));
+                Bitmap full = textureView.getBitmap(sampleW, sampleH);
                 if (full != null) {
                     int sLeft = Math.max(0, Math.min(full.getWidth() - 32, (left * full.getWidth()) / tvW));
                     int sTop = Math.max(0, Math.min(full.getHeight() - 32, (top * full.getHeight()) / tvH));
@@ -6527,21 +6702,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 sunPaint.setStyle(Paint.Style.FILL);
                 canvas.drawCircle(trackX, sunY, dp(4), sunPaint);
                 sunPaint.setStyle(Paint.Style.STROKE);
+                float r1 = dp(5.5f);
+                float r2 = dp(8.0f);
                 for (int i = 0; i < 6; i++) {
                     double angle = i * Math.PI / 3.0;
-                    float r1 = dp(5.5f);
-                    float r2 = dp(8.0f);
+                    float cosA = (float) Math.cos(angle);
+                    float sinA = (float) Math.sin(angle);
                     canvas.drawLine(
-                            trackX + (float) Math.cos(angle) * r1,
-                            sunY + (float) Math.sin(angle) * r1,
-                            trackX + (float) Math.cos(angle) * r2,
-                            sunY + (float) Math.sin(angle) * r2,
+                            trackX + cosA * r1,
+                            sunY + sinA * r1,
+                            trackX + cosA * r2,
+                            sunY + sinA * r2,
                             sunPaint
                     );
                 }
 
-                String evText = String.format(Locale.US, "%+.1f", evBias);
-                if (Math.abs(evBias) < 0.05f) evText = "0.0";
+                String evText = Math.abs(evBias) < 0.05f ? "0.0" : String.format(Locale.US, "%+.1f", evBias);
                 canvas.drawText(evText, trackX + dp(12), sunY + dp(3.5f), textPaint);
 
                 // Left-side Shadow Depth rail (Contrast / Half-Moon icon — Pixel Dual Exposure style)
@@ -6554,9 +6730,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 float moonY = reticleY - normSh * (trackHeight / 2f);
 
                 sunPaint.setStyle(Paint.Style.STROKE);
-                canvas.drawCircle(leftTrackX, moonY, dp(5.5f), sunPaint);
+                canvas.drawCircle(leftTrackX, moonY, r1, sunPaint);
                 sunPaint.setStyle(Paint.Style.FILL);
-                RectF arcRect = new RectF(leftTrackX - dp(5.5f), moonY - dp(5.5f), leftTrackX + dp(5.5f), moonY + dp(5.5f));
+                arcRect.set(leftTrackX - r1, moonY - r1, leftTrackX + r1, moonY + r1);
                 canvas.drawArc(arcRect, 90f, 180f, true, sunPaint);
 
                 String shText = shadowDepth + "%";
@@ -6565,52 +6741,42 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
 
             // Pro Optical Loupe (5x Magnifier Lens with Leica Gold Ring)
-            if (AppSettings.getBoolean(MainActivity.this, AppSettings.OPTICAL_LOUPE, false)
-                    && loupeBitmap != null && !loupeBitmap.isRecycled()) {
+            if (prefOpticalLoupe && loupeBitmap != null && !loupeBitmap.isRecycled()) {
                 float loupeR = dp(42);
                 float loupeX = Math.max(loupeR + dp(16), Math.min(getWidth() - loupeR - dp(16), reticleX));
                 float loupeY = Math.max(loupeR + dp(72), reticleY - dp(92));
 
-                Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                shadowPaint.setColor(0x88000000);
                 canvas.drawCircle(loupeX, loupeY + dp(3), loupeR + dp(2), shadowPaint);
 
                 canvas.save();
-                Path circlePath = new Path();
-                circlePath.addCircle(loupeX, loupeY, loupeR, Path.Direction.CW);
-                canvas.clipPath(circlePath);
+                if (loupeX != cachedLoupeClipX || loupeY != cachedLoupeClipY || loupeR != cachedLoupeClipR) {
+                    loupeClipPath.rewind();
+                    loupeClipPath.addCircle(loupeX, loupeY, loupeR, Path.Direction.CW);
+                    cachedLoupeClipX = loupeX;
+                    cachedLoupeClipY = loupeY;
+                    cachedLoupeClipR = loupeR;
+                }
+                canvas.clipPath(loupeClipPath);
 
-                Rect src = new Rect(0, 0, loupeBitmap.getWidth(), loupeBitmap.getHeight());
-                RectF dst = new RectF(loupeX - loupeR, loupeY - loupeR, loupeX + loupeR, loupeY + loupeR);
-                canvas.drawBitmap(loupeBitmap, src, dst, null);
+                loupeSrc.set(0, 0, loupeBitmap.getWidth(), loupeBitmap.getHeight());
+                loupeDst.set(loupeX - loupeR, loupeY - loupeR, loupeX + loupeR, loupeY + loupeR);
+                canvas.drawBitmap(loupeBitmap, loupeSrc, loupeDst, null);
 
-                Paint chPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                chPaint.setColor(0x99FFFFFF);
-                chPaint.setStrokeWidth(dp(1f));
-                canvas.drawLine(loupeX - dp(14), loupeY, loupeX + dp(14), loupeY, chPaint);
-                canvas.drawLine(loupeX, loupeY - dp(14), loupeX, loupeY + dp(14), chPaint);
+                float chArm = dp(14);
+                canvas.drawLine(loupeX - chArm, loupeY, loupeX + chArm, loupeY, chPaint);
+                canvas.drawLine(loupeX, loupeY - chArm, loupeX, loupeY + chArm, chPaint);
                 canvas.drawCircle(loupeX, loupeY, dp(2), chPaint);
                 canvas.restore();
 
-                Paint bezelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                bezelPaint.setColor(ACCENT);
-                bezelPaint.setStyle(Paint.Style.STROKE);
                 bezelPaint.setStrokeWidth(dp(2.2f));
                 canvas.drawCircle(loupeX, loupeY, loupeR, bezelPaint);
 
-                Paint badgeBg = new Paint(Paint.ANTI_ALIAS_FLAG);
-                badgeBg.setColor(0xDD0B0D0E);
-                badgeBg.setStyle(Paint.Style.FILL);
-                RectF badgeRect = new RectF(loupeX - dp(26), loupeY - loupeR - dp(13), loupeX + dp(26), loupeY - loupeR + dp(5));
-                canvas.drawRoundRect(badgeRect, dp(4), dp(4), badgeBg);
+                badgeRect.set(loupeX - dp(26), loupeY - loupeR - dp(13), loupeX + dp(26), loupeY - loupeR + dp(5));
+                float badgeRadius = dp(4);
+                canvas.drawRoundRect(badgeRect, badgeRadius, badgeRadius, badgeBg);
                 bezelPaint.setStrokeWidth(dp(1f));
-                canvas.drawRoundRect(badgeRect, dp(4), dp(4), bezelPaint);
+                canvas.drawRoundRect(badgeRect, badgeRadius, badgeRadius, bezelPaint);
 
-                Paint badgeText = new Paint(Paint.ANTI_ALIAS_FLAG);
-                badgeText.setColor(ACCENT);
-                badgeText.setTextSize(dp(8.5f));
-                badgeText.setTypeface(Typeface.DEFAULT_BOLD);
-                badgeText.setTextAlign(Paint.Align.CENTER);
                 canvas.drawText("5× FOCUS", loupeX, loupeY - loupeR - dp(1.5f), badgeText);
             }
         }
@@ -6707,22 +6873,54 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         lease.close();
     }
 
+    private static final float[] GRID_DIV_2X2 = {.5f};
+    private static final float[] GRID_DIV_3X3 = {1f / 3f, 2f / 3f};
+    private static final float[] GRID_DIV_4X4 = {.25f, .5f, .75f};
+    private static final float[] GRID_DIV_GOLDEN = {.382f, .618f};
+    private static final float[] GRID_DIV_NONE = new float[0];
+
     private final class CompositionGrid extends View {
         private final Paint maskPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint gridPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint framePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint aidPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint modePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint levelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path maskPath = new Path();
+        private final Path clipPath = new Path();
+        private final Path sparkPath = new Path();
+        private final RectF cachedFrame = new RectF();
+        private final RectF cachedMaskFrame = new RectF();
+        private float cachedMaskW = -1f;
+        private float cachedMaskH = -1f;
+        private float cachedCornerRadius = -1f;
+        private final int[] drawHistBins = new int[32];
+        private final int[] drawHistR = new int[32];
+        private final int[] drawHistG = new int[32];
+        private final int[] drawHistB = new int[32];
+        private final boolean[] drawZebraCells = new boolean[EXPOSURE_GRID_SIZE * EXPOSURE_GRID_SIZE];
+        private final boolean[] drawPeakingCells = new boolean[EXPOSURE_GRID_SIZE * EXPOSURE_GRID_SIZE];
         final RectF currentHistRect = new RectF();
 
         CompositionGrid(Activity activity) {
             super(activity);
+            float density = activity.getResources().getDisplayMetrics().density;
             maskPaint.setColor(BG);
+            maskPaint.setStyle(Paint.Style.FILL);
             gridPaint.setColor(0xb8f2f3ec);
             gridPaint.setStyle(Paint.Style.STROKE);
-            gridPaint.setStrokeWidth(activity.getResources().getDisplayMetrics().density);
+            gridPaint.setStrokeWidth(density);
             framePaint.setColor(0x18ffffff);
             framePaint.setStyle(Paint.Style.STROKE);
-            framePaint.setStrokeWidth(activity.getResources().getDisplayMetrics().density);
+            framePaint.setStrokeWidth(density);
+
+            modePaint.setColor(0x88D7B574);
+            modePaint.setTextSize(density * 7.5f);
+            modePaint.setTypeface(Typeface.DEFAULT_BOLD);
+            modePaint.setTextAlign(Paint.Align.CENTER);
+
+            levelPaint.setStyle(Paint.Style.STROKE);
+            levelPaint.setStrokeWidth(density * 1.5f);
         }
 
         boolean isHistogramHit(float x, float y) {
@@ -6733,29 +6931,56 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             super.onDraw(canvas);
             float w = getWidth(), h = getHeight();
             if (w <= 0 || h <= 0) return;
-            RectF frame = framingRect(w, h);
+            framingRectInto(w, h, cachedFrame);
+            RectF frame = cachedFrame;
             if (frame.width() <= 0 || frame.height() <= 0) return;
             float density = getResources().getDisplayMetrics().density;
             float cornerRadius = Math.min(density * 24f, Math.min(frame.width(), frame.height()) * 0.5f);
 
+            if (w != cachedMaskW || h != cachedMaskH || cornerRadius != cachedCornerRadius
+                    || !frame.equals(cachedMaskFrame)) {
+                maskPath.rewind();
+                maskPath.setFillType(Path.FillType.EVEN_ODD);
+                maskPath.addRect(0, 0, w, h, Path.Direction.CW);
+                maskPath.addRoundRect(frame, cornerRadius, cornerRadius, Path.Direction.CW);
+                clipPath.rewind();
+                clipPath.addRoundRect(frame, cornerRadius, cornerRadius, Path.Direction.CW);
+                cachedMaskFrame.set(frame);
+                cachedMaskW = w;
+                cachedMaskH = h;
+                cachedCornerRadius = cornerRadius;
+            }
+
             // Mask outside the curved viewfinder card with solid Leica obsidian black
-            Path maskPath = new Path();
-            maskPath.setFillType(Path.FillType.EVEN_ODD);
-            maskPath.addRect(0, 0, w, h, Path.Direction.CW);
-            maskPath.addRoundRect(frame, cornerRadius, cornerRadius, Path.Direction.CW);
-            maskPaint.setColor(BG);
-            maskPaint.setStyle(Paint.Style.FILL);
             canvas.drawPath(maskPath, maskPaint);
 
             // Clip inner aids to the curved viewfinder
-            Path clipPath = new Path();
-            clipPath.addRoundRect(frame, cornerRadius, cornerRadius, Path.Direction.CW);
             canvas.save();
             canvas.clipPath(clipPath);
 
+            final boolean showZebra = prefZebra;
+            final boolean showPeaking = prefFocusPeaking;
+            final boolean showHist = prefHistogram;
+            final boolean shadowClipped;
+            final boolean highlightClipped;
+            synchronized (exposureAidLock) {
+                shadowClipped = liveShadowClipped;
+                highlightClipped = liveHighlightClipped;
+                if (showZebra) {
+                    System.arraycopy(liveZebraCells, 0, drawZebraCells, 0, drawZebraCells.length);
+                }
+                if (showPeaking) {
+                    System.arraycopy(livePeakingCells, 0, drawPeakingCells, 0, drawPeakingCells.length);
+                }
+                if (showHist) {
+                    System.arraycopy(liveHistogramBins, 0, drawHistBins, 0, 32);
+                    System.arraycopy(liveHistR, 0, drawHistR, 0, 32);
+                    System.arraycopy(liveHistG, 0, drawHistG, 0, 32);
+                    System.arraycopy(liveHistB, 0, drawHistB, 0, 32);
+                }
+            }
+
             // Live Zebra Stripes & Focus Peaking Overlays
-            boolean showZebra = AppSettings.getBoolean(MainActivity.this, AppSettings.ZEBRA, false);
-            boolean showPeaking = AppSettings.getBoolean(MainActivity.this, AppSettings.FOCUS_PEAKING, false);
             if (showZebra || showPeaking) {
                 float cellW = frame.width() / 24f;
                 float cellH = frame.height() / 24f;
@@ -6764,14 +6989,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         int idx = gy * 24 + gx;
                         float cellLeft = frame.left + gx * cellW;
                         float cellTop = frame.top + gy * cellH;
-                        if (showZebra && liveZebraCells[idx]) {
+                        if (showZebra && drawZebraCells[idx]) {
                             aidPaint.setStyle(Paint.Style.STROKE);
                             aidPaint.setStrokeWidth(density * 1.1f);
                             aidPaint.setColor(0xBBFF6B57);
                             canvas.drawLine(cellLeft, cellTop + cellH, cellLeft + cellW, cellTop, aidPaint);
                             canvas.drawLine(cellLeft + cellW * 0.4f, cellTop + cellH, cellLeft + cellW, cellTop + cellH * 0.4f, aidPaint);
                         }
-                        if (showPeaking && livePeakingCells[idx]) {
+                        if (showPeaking && drawPeakingCells[idx]) {
                             aidPaint.setStyle(Paint.Style.FILL);
                             aidPaint.setColor(0xCCDFBE7F);
                             canvas.drawCircle(cellLeft + cellW * 0.5f, cellTop + cellH * 0.5f, density * 1.8f, aidPaint);
@@ -6780,12 +7005,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 }
             }
 
-            String style = AppSettings.get(MainActivity.this, AppSettings.GRID_STYLE, "None");
-            float[] divisions = "2×2".equals(style) ? new float[]{.5f}
-                    : "3×3".equals(style) ? new float[]{1f / 3f, 2f / 3f}
-                    : "4×4".equals(style) ? new float[]{.25f, .5f, .75f}
-                    : "Golden ratio".equals(style) ? new float[]{.382f, .618f}
-                    : new float[0];
+            String style = prefGridStyle;
+            float[] divisions = "2×2".equals(style) ? GRID_DIV_2X2
+                    : "3×3".equals(style) ? GRID_DIV_3X3
+                    : "4×4".equals(style) ? GRID_DIV_4X4
+                    : "Golden ratio".equals(style) ? GRID_DIV_GOLDEN
+                    : GRID_DIV_NONE;
             for (float division : divisions) {
                 float x = frame.left + frame.width() * division;
                 float y = frame.top + frame.height() * division;
@@ -6794,7 +7019,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
 
             // Live RGB / Luminance Histogram Overlay & Clipping LEDs
-            if (AppSettings.getBoolean(MainActivity.this, AppSettings.HISTOGRAM, false)) {
+            if (showHist) {
                 float histW = density * 92f;
                 float histH = density * 44f;
                 float histRight = frame.right - density * 12f;
@@ -6814,18 +7039,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
                 // Clipping LEDs at top corners
                 aidPaint.setStyle(Paint.Style.FILL);
-                aidPaint.setColor(liveShadowClipped ? 0xFFFFB03A : 0x2289948E);
+                aidPaint.setColor(shadowClipped ? 0xFFFFB03A : 0x2289948E);
                 canvas.drawCircle(histLeft + density * 8f, histTop + density * 7f, density * 2.2f, aidPaint);
-                aidPaint.setColor(liveHighlightClipped ? 0xFFFF3B30 : 0x2289948E);
+                aidPaint.setColor(highlightClipped ? 0xFFFF3B30 : 0x2289948E);
                 canvas.drawCircle(histRight - density * 8f, histTop + density * 7f, density * 2.2f, aidPaint);
 
-                String mode = AppSettings.get(MainActivity.this, AppSettings.HISTOGRAM_MODE, "Luminance");
-
-                Paint modePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                modePaint.setColor(0x88D7B574);
+                String mode = prefHistogramMode;
                 modePaint.setTextSize(density * 7.5f);
-                modePaint.setTypeface(Typeface.DEFAULT_BOLD);
-                modePaint.setTextAlign(Paint.Align.CENTER);
                 String tag = "RGB Parade".equals(mode) ? "RGB" : "Compact".equals(mode) ? "MINI" : "LUMA";
                 canvas.drawText(tag, currentHistRect.centerX(), histTop + density * 8.5f, modePaint);
 
@@ -6834,15 +7054,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
                 int maxBin = 1;
                 for (int i = 0; i < 32; i++) {
-                    if (liveHistogramBins[i] > maxBin) maxBin = liveHistogramBins[i];
-                    if (liveHistR[i] > maxBin) maxBin = liveHistR[i];
-                    if (liveHistG[i] > maxBin) maxBin = liveHistG[i];
-                    if (liveHistB[i] > maxBin) maxBin = liveHistB[i];
+                    if (drawHistBins[i] > maxBin) maxBin = drawHistBins[i];
+                    if (drawHistR[i] > maxBin) maxBin = drawHistR[i];
+                    if (drawHistG[i] > maxBin) maxBin = drawHistG[i];
+                    if (drawHistB[i] > maxBin) maxBin = drawHistB[i];
                 }
 
                 if ("RGB Parade".equals(mode)) {
                     for (int channel = 0; channel < 3; channel++) {
-                        int[] bins = channel == 0 ? liveHistR : channel == 1 ? liveHistG : liveHistB;
+                        int[] bins = channel == 0 ? drawHistR : channel == 1 ? drawHistG : drawHistB;
                         int col = channel == 0 ? 0x99FF5544 : channel == 1 ? 0x9944DD66 : 0x994499FF;
                         aidPaint.setStyle(Paint.Style.FILL);
                         aidPaint.setColor(col);
@@ -6854,29 +7074,29 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         }
                     }
                 } else if ("Compact".equals(mode)) {
-                    Path spark = new Path();
-                    spark.moveTo(histLeft + density * 4f, histBottom - density * 4f);
+                    sparkPath.rewind();
+                    sparkPath.moveTo(histLeft + density * 4f, histBottom - density * 4f);
                     for (int i = 0; i < 32; i++) {
-                        float norm = (float) liveHistogramBins[i] / maxBin;
+                        float norm = (float) drawHistBins[i] / maxBin;
                         float bh = norm * maxBarH;
                         float bx = histLeft + density * 4f + i * barW + barW * 0.5f;
-                        spark.lineTo(bx, histBottom - density * 4f - bh);
+                        sparkPath.lineTo(bx, histBottom - density * 4f - bh);
                     }
-                    spark.lineTo(histRight - density * 4f, histBottom - density * 4f);
+                    sparkPath.lineTo(histRight - density * 4f, histBottom - density * 4f);
                     aidPaint.setStyle(Paint.Style.FILL);
                     aidPaint.setColor(0x33D7B574);
-                    canvas.drawPath(spark, aidPaint);
+                    canvas.drawPath(sparkPath, aidPaint);
                     aidPaint.setStyle(Paint.Style.STROKE);
                     aidPaint.setStrokeWidth(density * 1.2f);
                     aidPaint.setColor(ACCENT);
-                    canvas.drawPath(spark, aidPaint);
+                    canvas.drawPath(sparkPath, aidPaint);
                 } else {
                     aidPaint.setStyle(Paint.Style.FILL);
                     for (int i = 0; i < 32; i++) {
-                        float norm = (float) liveHistogramBins[i] / maxBin;
+                        float norm = (float) drawHistBins[i] / maxBin;
                         float bh = Math.max(density * 1.2f, norm * maxBarH);
                         float bx = histLeft + density * 4f + i * barW;
-                        aidPaint.setColor(i >= 30 ? 0xDDFF4444 : (i == 0 && liveShadowClipped) ? 0xDDFFA030 : 0xCCD7B574);
+                        aidPaint.setColor(i >= 30 ? 0xDDFF4444 : (i == 0 && shadowClipped) ? 0xDDFFA030 : 0xCCD7B574);
                         canvas.drawRect(bx, histBottom - density * 4f - bh, bx + Math.max(1f, barW - density * 0.6f), histBottom - density * 4f, aidPaint);
                     }
                 }
@@ -6884,16 +7104,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 currentHistRect.setEmpty();
             }
 
-            boolean showLevel = AppSettings.getBoolean(MainActivity.this, AppSettings.VISUAL_LEVEL, true);
-            if (showLevel) {
+            if (prefVisualLevel) {
                 float cx = frame.centerX();
                 float cy = frame.centerY();
-                String sens = AppSettings.get(MainActivity.this, AppSettings.HORIZON_SENSITIVITY, "Normal (±1.0°)");
-                float deadband = sens.contains("0.5") ? 0.5f : 1.0f;
-                String horizonMode = AppSettings.get(MainActivity.this, AppSettings.HORIZON_MODE, "Smart (near level only)");
-                boolean smartNearOnly = horizonMode.startsWith("Smart");
+                String sens = prefHorizonSensitivity;
+                float deadband = sens != null && sens.contains("0.5") ? 0.5f : 1.0f;
+                String horizonMode = prefHorizonMode;
+                boolean smartNearOnly = horizonMode == null || horizonMode.startsWith("Smart");
 
-                Paint levelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
                 levelPaint.setStyle(Paint.Style.STROKE);
                 levelPaint.setStrokeWidth(density * 1.5f);
 
@@ -6956,9 +7174,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
             canvas.restore();
 
-            framePaint.setColor(0x18ffffff);
-            framePaint.setStyle(Paint.Style.STROKE);
-            framePaint.setStrokeWidth(density * 1.0f);
             canvas.drawRoundRect(frame, cornerRadius, cornerRadius, framePaint);
         }
     }

@@ -26,8 +26,10 @@ import android.widget.Toast;
 import android.util.Log;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -37,11 +39,23 @@ public class PhotoEditorActivity extends Activity {
     static final String EXTRA_KEY = "scope_archive_key";
     private static final int BG = 0xff0b0d0e;
     private static final int ACCENT = 0xffd7b574;
+    private static final int PREVIEW_SCRUB_MAX_DIM = 720;
+    private static final int PREVIEW_SETTLED_MAX_DIM = 1600;
+    private static final int LOOK_THUMB_MAX_DIM = 220;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "lika-editor-worker");
+        t.setDaemon(true);
+        return t;
+    });
     private final List<LookRecipeControl> controls = new ArrayList<>();
+    private final Map<String, Bitmap> lookThumbCache = new HashMap<>();
+    private final List<ImageView> activeLookThumbViews = new ArrayList<>();
     private RawArchive.Frame frame;
     private RawDeveloper.Look look;
+    private volatile RawDeveloper.LinearSceneCache scrubCache;
+    private volatile RawDeveloper.LinearSceneCache settledCache;
+    private volatile RawDeveloper.LinearSceneCache thumbSceneCache;
     private String archiveKey;
     private Uri photoUri;
     private ImageView preview;
@@ -93,9 +107,7 @@ public class PhotoEditorActivity extends Activity {
     }
 
     private void hapticClick(View v) {
-        if (v != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
-            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-        }
+        UiKit.hapticClick(this, v);
     }
 
     private LinearLayout tabBar;
@@ -617,17 +629,24 @@ public class PhotoEditorActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CODE_PICK_LUT && resultCode == RESULT_OK && data != null && data.getData() != null) {
-            Uri uri = data.getData();
-            String importedName = LutManager.importLut(this, uri);
-            if (importedName != null) {
-                look.lutName = importedName;
-                look.lutIntensity = 1.0f;
-                Toast.makeText(this, "Imported 3D LUT: " + importedName, Toast.LENGTH_SHORT).show();
-                populateControls();
-                queuePreview();
-            } else {
-                Toast.makeText(this, "Could not import LUT. Ensure file is a valid .cube format.", Toast.LENGTH_LONG).show();
-            }
+            final Uri uri = data.getData();
+            final android.content.Context appContext = getApplicationContext();
+            worker.execute(() -> {
+                String importedName = LutManager.importLut(appContext, uri);
+                mainHandler.post(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    if (importedName != null) {
+                        recordEdit();
+                        look.lutName = importedName;
+                        look.lutIntensity = 1.0f;
+                        Toast.makeText(this, "Imported 3D LUT: " + importedName, Toast.LENGTH_SHORT).show();
+                        populateControls();
+                        queuePreview();
+                    } else {
+                        Toast.makeText(this, "Could not import LUT. Ensure file is a valid .cube format.", Toast.LENGTH_LONG).show();
+                    }
+                });
+            });
         }
     }
 
@@ -799,15 +818,32 @@ public class PhotoEditorActivity extends Activity {
         controlsList.addView(card, cardLp);
     }
 
+    private void clearLookThumbCache() {
+        for (ImageView iv : activeLookThumbViews) {
+            if (iv != null) iv.setImageDrawable(null);
+        }
+        activeLookThumbViews.clear();
+        for (Bitmap bmp : lookThumbCache.values()) {
+            if (bmp != null && !bmp.isRecycled()) bmp.recycle();
+        }
+        lookThumbCache.clear();
+    }
+
+    private String thumbCacheKey(String brainName) {
+        String aspect = look.aspectRatio != null ? look.aspectRatio : (frame != null ? frame.aspectRatio : "4:3");
+        return brainName + "|" + aspect + "|" + look.flipHorizontal;
+    }
+
     private void loadSource() {
         final long loadTicket = sourceJob.begin(JobState.Phase.LOADING);
         final RawDeveloper.Look loadLook = look.copy();
         saveButton.setEnabled(false);
         updateInputAvailability();
         status.setText("READING SENSOR ORIGINAL");
+        final android.content.Context appContext = getApplicationContext();
         worker.execute(() -> {
             try {
-                RawArchive.Frame loaded = RawArchive.read(this, archiveKey);
+                RawArchive.Frame loaded = RawArchive.read(appContext, archiveKey);
                 RawDeveloper.Look neutralLook = new RawDeveloper.Look();
                 neutralLook.brain = AppSettings.BRAIN_NEUTRAL_RAW;
                 neutralLook.toneCurve = "Linear Response";
@@ -833,16 +869,28 @@ public class PhotoEditorActivity extends Activity {
                 neutralLook.frameBorder = "None";
                 neutralLook.aspectRatio = loadLook.aspectRatio != null ? loadLook.aspectRatio : loaded.aspectRatio;
                 neutralLook.flipHorizontal = loadLook.flipHorizontal;
-                Bitmap bitmap = RawDeveloper.develop(loaded, loadLook, 1400);
-                int targetW = bitmap != null ? bitmap.getWidth() : 1400;
-                int targetH = bitmap != null ? bitmap.getHeight() : 1400;
-                int targetDim = Math.max(targetW, targetH);
-                Bitmap neutralBmp = RawDeveloper.develop(loaded, neutralLook, targetDim);
-                if (neutralBmp != null && bitmap != null && (neutralBmp.getWidth() != targetW || neutralBmp.getHeight() != targetH)) {
-                    Bitmap scaled = Bitmap.createScaledBitmap(neutralBmp, targetW, targetH, true);
-                    if (scaled != neutralBmp) {
-                        neutralBmp.recycle();
-                        neutralBmp = scaled;
+                neutralLook.opticalCorrection = loadLook.opticalCorrection;
+
+                RawDeveloper.LinearSceneCache scene = RawDeveloper.prepareLinearScene(loaded, loadLook, PREVIEW_SETTLED_MAX_DIM);
+                Bitmap bitmap = scene != null
+                        ? RawDeveloper.developFromLinear(scene, loadLook)
+                        : RawDeveloper.develop(loaded, loadLook, PREVIEW_SETTLED_MAX_DIM);
+                if (scene != null) settledCache = scene;
+
+                Bitmap neutralBmp;
+                if (scene != null && scene.matches(loaded, neutralLook, PREVIEW_SETTLED_MAX_DIM)) {
+                    neutralBmp = RawDeveloper.developFromLinear(scene, neutralLook);
+                } else {
+                    int targetW = bitmap != null ? bitmap.getWidth() : PREVIEW_SETTLED_MAX_DIM;
+                    int targetH = bitmap != null ? bitmap.getHeight() : PREVIEW_SETTLED_MAX_DIM;
+                    int targetDim = Math.max(targetW, targetH);
+                    neutralBmp = RawDeveloper.develop(loaded, neutralLook, targetDim);
+                    if (neutralBmp != null && bitmap != null && (neutralBmp.getWidth() != targetW || neutralBmp.getHeight() != targetH)) {
+                        Bitmap scaled = Bitmap.createScaledBitmap(neutralBmp, targetW, targetH, true);
+                        if (scaled != neutralBmp) {
+                            neutralBmp.recycle();
+                            neutralBmp = scaled;
+                        }
                     }
                 }
                 final Bitmap finalNeutralBmp = neutralBmp;
@@ -855,6 +903,9 @@ public class PhotoEditorActivity extends Activity {
                     sourceJob.move(loadTicket, JobState.Phase.READY);
                     saveButton.setEnabled(true);
                     frame = loaded;
+                    scrubCache = null;
+                    thumbSceneCache = null;
+                    clearLookThumbCache();
                     rawOriginalBitmap = finalNeutralBmp;
                     setPreview(bitmap);
                     populateControls();
@@ -895,11 +946,19 @@ public class PhotoEditorActivity extends Activity {
         long generation = previewTicket;
         RawDeveloper.Look snapshot = look.copy();
         RawArchive.Frame source = frame;
-        int maxDim = editGesture == EditGesture.SCRUBBING ? 720 : 1600;
+        int maxDim = editGesture == EditGesture.SCRUBBING ? PREVIEW_SCRUB_MAX_DIM : PREVIEW_SETTLED_MAX_DIM;
         worker.execute(() -> {
             if (!previewJob.accepts(generation)) return;
             try {
-                Bitmap bitmap = RawDeveloper.develop(source, snapshot, maxDim);
+                RawDeveloper.LinearSceneCache cache = maxDim == PREVIEW_SCRUB_MAX_DIM ? scrubCache : settledCache;
+                if (cache == null || !cache.matches(source, snapshot, maxDim)) {
+                    cache = RawDeveloper.prepareLinearScene(source, snapshot, maxDim);
+                    if (maxDim == PREVIEW_SCRUB_MAX_DIM) scrubCache = cache;
+                    else settledCache = cache;
+                }
+                Bitmap bitmap = cache != null
+                        ? RawDeveloper.developFromLinear(cache, snapshot)
+                        : RawDeveloper.develop(source, snapshot, maxDim);
                 mainHandler.post(() -> {
                     if (!previewJob.accepts(generation) || isFinishing() || isDestroyed()) { if (bitmap != null) bitmap.recycle(); return; }
                     previewJob.move(generation, bitmap == null ? JobState.Phase.FAILED : JobState.Phase.READY);
@@ -1028,11 +1087,17 @@ public class PhotoEditorActivity extends Activity {
         menu.show();
     }
     private void addLooksControls() {
+        activeLookThumbViews.clear();
         HorizontalScrollView strip = new HorizontalScrollView(this);
         strip.setHorizontalScrollBarEnabled(false);
         LinearLayout looks = new LinearLayout(this);
         strip.addView(looks); controlsList.addView(strip);
         final int generation = thumbnailGeneration;
+        final List<String> missingNames = new ArrayList<>();
+        final List<String> missingKeys = new ArrayList<>();
+        final List<ImageView> missingViews = new ArrayList<>();
+        final List<RawDeveloper.Look> missingRecipes = new ArrayList<>();
+
         for (String name : AppSettings.BRAIN_CHOICES) {
             LinearLayout tile = new LinearLayout(this);
             tile.setOrientation(LinearLayout.VERTICAL);
@@ -1041,6 +1106,7 @@ public class PhotoEditorActivity extends Activity {
             tile.setBackground(round(0xff121617, 12, active ? ACCENT : 0xff293031, dp(active ? 2 : 1)));
             ImageView thumb = new ImageView(this);
             thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            activeLookThumbViews.add(thumb);
             tile.addView(thumb, new LinearLayout.LayoutParams(dp(88), dp(78)));
             TextView label = text(name.replace(" / ", " "), 10, active ? ACCENT : 0xffe8ece5, true);
             label.setMaxLines(2); label.setGravity(Gravity.CENTER);
@@ -1050,19 +1116,58 @@ public class PhotoEditorActivity extends Activity {
             tile.setContentDescription(name + (active ? ", selected" : ""));
             tile.setOnClickListener(v -> { hapticClick(v); applyBrainPreset(name); });
             if (frame != null) {
-                RawArchive.Frame source = frame;
-                RawDeveloper.Look recipe = presetLook(name);
-                worker.execute(() -> {
-                    if (generation != thumbnailGeneration) return;
-                    Bitmap bitmap;
-                    try { bitmap = RawDeveloper.develop(source, recipe, 220); }
-                    catch (Exception e) { Log.w(TAG, "Could not render look thumbnail", e); return; }
-                    mainHandler.post(() -> {
-                        if (generation != thumbnailGeneration || isFinishing()) { if (bitmap != null) bitmap.recycle(); return; }
-                        thumb.setImageBitmap(bitmap);
-                    });
-                });
+                String cacheKey = thumbCacheKey(name);
+                Bitmap cached = lookThumbCache.get(cacheKey);
+                if (cached != null && !cached.isRecycled()) {
+                    thumb.setImageBitmap(cached);
+                } else {
+                    missingNames.add(name);
+                    missingKeys.add(cacheKey);
+                    missingViews.add(thumb);
+                    missingRecipes.add(presetLook(name));
+                }
             }
+        }
+        if (frame != null && !missingNames.isEmpty()) {
+            final RawArchive.Frame source = frame;
+            worker.execute(() -> {
+                if (generation != thumbnailGeneration) return;
+                for (int i = 0; i < missingNames.size(); i++) {
+                    if (generation != thumbnailGeneration) return;
+                    RawDeveloper.Look recipe = missingRecipes.get(i);
+                    String cacheKey = missingKeys.get(i);
+                    ImageView targetView = missingViews.get(i);
+                    Bitmap bitmap;
+                    try {
+                        RawDeveloper.LinearSceneCache scene = thumbSceneCache;
+                        if (scene == null || !scene.matches(source, recipe, LOOK_THUMB_MAX_DIM)) {
+                            RawDeveloper.LinearSceneCache prepared = RawDeveloper.prepareLinearScene(source, recipe, LOOK_THUMB_MAX_DIM);
+                            if (recipe.whiteBalanceKelvin == look.whiteBalanceKelvin) thumbSceneCache = prepared;
+                            scene = prepared;
+                        }
+                        bitmap = scene != null
+                                ? RawDeveloper.developFromLinear(scene, recipe)
+                                : RawDeveloper.develop(source, recipe, LOOK_THUMB_MAX_DIM);
+                    } catch (Exception e) {
+                        Log.w(TAG, "Could not render look thumbnail", e);
+                        continue;
+                    }
+                    final Bitmap rendered = bitmap;
+                    mainHandler.post(() -> {
+                        if (isFinishing() || isDestroyed()) {
+                            if (rendered != null && !rendered.isRecycled()) rendered.recycle();
+                            return;
+                        }
+                        if (rendered != null) {
+                            Bitmap prev = lookThumbCache.put(cacheKey, rendered);
+                            if (prev != null && prev != rendered && !prev.isRecycled()) prev.recycle();
+                            if (generation == thumbnailGeneration) {
+                                targetView.setImageBitmap(rendered);
+                            }
+                        }
+                    });
+                }
+            });
         }
         for (int slot = 1; slot <= 3; slot++) {
             String name = AppSettings.getCustomRecipeName(this, slot);
@@ -1084,27 +1189,17 @@ public class PhotoEditorActivity extends Activity {
     }
 
     private TextView text(String value, float size, int color, boolean bold) {
-        TextView view = new TextView(this);
-        view.setText(value); view.setTextSize(size); view.setTextColor(color);
-        if (bold) view.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
-        view.setGravity(Gravity.CENTER_VERTICAL);
-        return view;
+        return UiKit.text(this, value, size, color, bold);
     }
 
     private TextView pill(String label, boolean active) {
-        TextView view = text(label, 8, active ? ACCENT : 0xffd8ded7, true);
-        view.setGravity(Gravity.CENTER);
-        view.setBackground(round(active ? 0xff1d1d1a : 0xff202626, 18,
-                active ? ACCENT : 0xff39413e, dp(1)));
-        return view;
+        return UiKit.pill(this, label, active);
     }
 
     private GradientDrawable round(int color, int radius, int strokeColor, int strokeWidth) {
-        GradientDrawable d = new GradientDrawable(); d.setColor(color); d.setCornerRadius(dp(radius));
-        if (strokeWidth > 0) d.setStroke(strokeWidth, strokeColor);
-        return d;
+        return UiKit.round(this, color, radius, strokeColor, strokeWidth);
     }
-    private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private int dp(float value) { return UiKit.dp(this, value); }
 
     private void showSaveRecipeDialog() {
         String[] options = new String[3];
@@ -1146,6 +1241,11 @@ public class PhotoEditorActivity extends Activity {
         thumbnailGeneration++;
         mainHandler.removeCallbacksAndMessages(null);
         worker.shutdown();
+        if (preview != null) preview.setImageDrawable(null);
+        clearLookThumbCache();
+        scrubCache = null;
+        settledCache = null;
+        thumbSceneCache = null;
         if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
             rawOriginalBitmap.recycle();
             rawOriginalBitmap = null;

@@ -1,10 +1,13 @@
 package com.scope.camera;
 
 import android.app.Activity;
+import android.graphics.Bitmap;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.LruCache;
 import android.view.Gravity;
-import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -15,6 +18,9 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Builds the controls, filmstrip selector, speed/resolution/loop pills,
@@ -41,6 +47,15 @@ public final class GifStudioControlsBuilder {
 
     private final Activity activity;
     private final Listener listener;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final ExecutorService thumbWorker = Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "GifFilmstripThumbs");
+        t.setDaemon(true);
+        return t;
+    });
+    private final AtomicInteger filmstripGeneration = new AtomicInteger();
+    private final LruCache<Uri, Bitmap> thumbCache = new LruCache<>(48);
+    private volatile boolean destroyed;
 
     public LinearLayout photoControlsGroup;
     public LinearLayout videoControlsGroup;
@@ -201,6 +216,8 @@ public final class GifStudioControlsBuilder {
 
     public void refreshFilmstripUi(List<Uri> photoUris) {
         if (filmstripLayout == null) return;
+        final int gen = filmstripGeneration.incrementAndGet();
+        clearFilmstripDrawables();
         filmstripLayout.removeAllViews();
 
         if (photoUris.isEmpty()) {
@@ -210,9 +227,10 @@ public final class GifStudioControlsBuilder {
             return;
         }
 
+        final int thumbPx = dp(64);
         for (int i = 0; i < photoUris.size(); i++) {
             final int index = i;
-            Uri uri = photoUris.get(i);
+            final Uri uri = photoUris.get(i);
 
             FrameLayout tile = new FrameLayout(activity);
             tile.setBackground(round(SURFACE, 8, BORDER, dp(1)));
@@ -220,9 +238,24 @@ public final class GifStudioControlsBuilder {
 
             ImageView iv = new ImageView(activity);
             iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            android.graphics.Bitmap thumb = GifMediaHelper.decodeSampledBitmap(activity, uri, dp(64), dp(64));
-            if (thumb != null) iv.setImageBitmap(thumb);
-            tile.addView(iv, new FrameLayout.LayoutParams(dp(64), dp(64)));
+            iv.setTag(uri);
+            Bitmap cached = thumbCache.get(uri);
+            if (cached != null && !cached.isRecycled()) {
+                iv.setImageBitmap(cached);
+            } else {
+                thumbWorker.execute(() -> {
+                    if (destroyed || filmstripGeneration.get() != gen) return;
+                    Bitmap decoded = GifMediaHelper.decodeSampledBitmap(activity.getApplicationContext(), uri, thumbPx, thumbPx);
+                    if (decoded == null) return;
+                    thumbCache.put(uri, decoded);
+                    mainHandler.post(() -> {
+                        if (!destroyed && filmstripGeneration.get() == gen && uri.equals(iv.getTag())) {
+                            iv.setImageBitmap(decoded);
+                        }
+                    });
+                });
+            }
+            tile.addView(iv, new FrameLayout.LayoutParams(thumbPx, thumbPx));
 
             // Index tag
             TextView tag = text(String.valueOf(index + 1), 7, ACCENT, true);
@@ -240,10 +273,35 @@ public final class GifStudioControlsBuilder {
             });
             tile.addView(del, new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP | Gravity.RIGHT));
 
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(64), dp(64));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(thumbPx, thumbPx);
             lp.rightMargin = dp(8);
             filmstripLayout.addView(tile, lp);
         }
+    }
+
+    private void clearFilmstripDrawables() {
+        if (filmstripLayout == null) return;
+        for (int i = 0; i < filmstripLayout.getChildCount(); i++) {
+            View child = filmstripLayout.getChildAt(i);
+            if (child instanceof ViewGroup) {
+                ViewGroup group = (ViewGroup) child;
+                for (int j = 0; j < group.getChildCount(); j++) {
+                    View inner = group.getChildAt(j);
+                    if (inner instanceof ImageView) {
+                        ((ImageView) inner).setImageDrawable(null);
+                    }
+                }
+            }
+        }
+    }
+
+    public void destroy() {
+        destroyed = true;
+        filmstripGeneration.incrementAndGet();
+        mainHandler.removeCallbacksAndMessages(null);
+        clearFilmstripDrawables();
+        thumbCache.evictAll();
+        thumbWorker.shutdownNow();
     }
 
     private void buildVideoRangeControls(LinearLayout parent, int videoDurationSec) {
@@ -368,29 +426,20 @@ public final class GifStudioControlsBuilder {
     }
 
     public TextView text(String s, int sp, int color, boolean bold) {
-        TextView tv = new TextView(activity);
-        tv.setText(s);
-        tv.setTextSize(sp);
-        tv.setTextColor(color);
+        TextView tv = UiKit.text(activity, s, sp, color, bold);
         tv.setTypeface(android.graphics.Typeface.MONOSPACE, bold ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
         return tv;
     }
 
     public GradientDrawable round(int fill, int radiusDp, int strokeColor, int strokeWidthPx) {
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(fill);
-        gd.setCornerRadius(dp(radiusDp));
-        if (strokeWidthPx > 0) gd.setStroke(strokeWidthPx, strokeColor);
-        return gd;
+        return UiKit.round(activity, fill, radiusDp, strokeColor, strokeWidthPx);
     }
 
     public int dp(int v) {
-        return Math.round(v * activity.getResources().getDisplayMetrics().density);
+        return UiKit.dp(activity, v);
     }
 
     private void hapticClick(View v) {
-        if (v != null && AppSettings.getBoolean(activity, AppSettings.HAPTICS, true)) {
-            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-        }
+        UiKit.hapticClick(activity, v);
     }
 }

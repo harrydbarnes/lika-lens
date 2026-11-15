@@ -155,4 +155,43 @@ public class GifEncoderTest {
         assertFalse("Cannot add frames after finish", encoder.addFrame(8, 8, new int[64]));
         assertFalse("Cannot finish twice", encoder.finish());
     }
+
+    @Test
+    public void testDeferredSetSizeAndFrameBufferReuse() {
+        // Defer setSize(): start(baos) before any setSize(), letting first addFrame set LSD size
+        ByteArrayOutputStream deferredOut = new ByteArrayOutputStream();
+        GifEncoder deferred = new GifEncoder();
+        assertTrue(deferred.start(deferredOut));
+
+        int w1 = 40;
+        int h1 = 30;
+        int[] frameA = new int[w1 * h1];
+        int[] frameB = new int[w1 * h1];
+        for (int i = 0; i < frameA.length; i++) {
+            frameA[i] = 0xFFCC4422;
+            frameB[i] = 0xFF2244CC;
+        }
+        assertTrue(deferred.addFrame(w1, h1, frameA));
+        assertTrue(deferred.addFrame(w1, h1, frameB));
+        assertTrue(deferred.finish());
+
+        byte[] gif = deferredOut.toByteArray();
+        assertEquals("GIF89a", new String(gif, 0, 6, StandardCharsets.US_ASCII));
+        assertEquals(w1, (gif[6] & 0xFF) | ((gif[7] & 0xFF) << 8));
+        assertEquals(h1, (gif[8] & 0xFF) | ((gif[9] & 0xFF) << 8));
+        assertEquals(0x3B, gif[gif.length - 1] & 0xFF);
+
+        // Reuse internal indexedPixelBuf across growing and shrinking frame dimensions
+        ByteArrayOutputStream multiSizeOut = new ByteArrayOutputStream();
+        GifEncoder reuse = new GifEncoder();
+        reuse.setSize(28, 20);
+        assertTrue(reuse.start(multiSizeOut));
+        assertTrue(reuse.addFrame(12, 12, new int[12 * 12]));
+        assertTrue(reuse.addFrame(28, 20, new int[28 * 20]));
+        assertTrue(reuse.addFrame(10, 10, new int[10 * 10]));
+        assertTrue(reuse.finish());
+        assertEquals(3, reuse.getFrameCount());
+        byte[] reuseBytes = multiSizeOut.toByteArray();
+        assertEquals(0x3B, reuseBytes[reuseBytes.length - 1] & 0xFF);
+    }
 }

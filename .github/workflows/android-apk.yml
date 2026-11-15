@@ -58,14 +58,14 @@ jobs:
       - name: Run unit tests
         run: gradle --no-daemon --stacktrace testDebugUnitTest
 
-      - name: Assemble debug APK
-        run: gradle --no-daemon --stacktrace assembleDebug
+      - name: Assemble release APK
+        run: gradle --no-daemon --stacktrace assembleRelease
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: lika-lens-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -132,7 +132,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          APK_SRC=$(ls app/build/outputs/apk/debug/*.apk | head -n 1)
+          APK_SRC=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
           APK_DEST="lika-lens-${TAG}.apk"
           cp "$APK_SRC" "$APK_DEST"
 

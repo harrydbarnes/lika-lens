@@ -52,7 +52,14 @@ public class PreviewLookLutTest {
         }
         assertNotEquals(colours[0], colours[1]);
         assertNotEquals(colours[1], colours[2]);
-        assertNotEquals(PreviewLookLut.build(look).pixels[index], PreviewLookLut.build(look,warm).pixels[index]);
+        PreviewLookLut withoutWarmMeta = PreviewLookLut.build(look);
+        PreviewLookLut withWarmMeta = PreviewLookLut.build(look, warm);
+        assertFalse(java.util.Arrays.equals(withoutWarmMeta.pixels, withWarmMeta.pixels));
+
+        RawDeveloper.Look filmLook = new RawDeveloper.Look();
+        int neutralIndex = 16 + PreviewLookLut.SIZE * (16 + PreviewLookLut.SIZE * 16);
+        assertNotEquals(PreviewLookLut.build(filmLook).pixels[neutralIndex],
+                PreviewLookLut.build(filmLook, warm).pixels[neutralIndex]);
     }
 
     @Test public void whitePointIsPreservedAcrossBrainsInDisplayPreview() {

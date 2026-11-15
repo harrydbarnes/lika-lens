@@ -7,6 +7,7 @@ import android.net.Uri;
 import android.provider.OpenableColumns;
 import android.util.Log;
 
+import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
@@ -185,7 +186,16 @@ final class LutManager {
             }
         });
 
-        Bitmap out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        Bitmap out = null;
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O && src.getColorSpace() != null) {
+            try {
+                out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888, src.hasAlpha(), src.getColorSpace());
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        if (out == null) {
+            out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        }
         out.setPixels(pixels, 0, width, 0, 0, width, height);
         return out;
     }
@@ -287,6 +297,53 @@ final class LutManager {
         return get(null, name);
     }
 
+    /** Returns a cached built-in LUT at the requested cube resolution (e.g., 17 for GIFs). */
+    public static Lut3D getBuiltIn(String name, int size) {
+        if (name == null || name.trim().isEmpty() || LUT_NONE.equalsIgnoreCase(name)) return null;
+        if (!isBuiltIn(name)) return null;
+        if (size == 33) return get(null, name);
+        String key = name + "#" + size;
+        Lut3D cached = sCache.get(key);
+        if (cached != null) return cached;
+        Lut3D generated = generateBuiltIn(name, size);
+        if (generated != null) sCache.put(key, generated);
+        return generated;
+    }
+
+    /** Reads only the LUT_3D_SIZE / LUT_1D_SIZE header from a custom .cube file without parsing all triplets. */
+    public static int readCubeSize(Context context, String name) {
+        if (name == null || LUT_NONE.equalsIgnoreCase(name)) return 0;
+        if (isBuiltIn(name)) return 33;
+        Lut3D cached = sCache.get(name);
+        if (cached != null) return cached.size;
+        File dir = getLutsDir(context);
+        if (dir == null || !dir.exists()) return 0;
+        File file = new File(dir, name.endsWith(".cube") ? name : (name + ".cube"));
+        if (!file.exists() || !file.isFile()) return 0;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+            String line;
+            int checked = 0;
+            while ((line = reader.readLine()) != null && checked < 64) {
+                checked++;
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                if (line.startsWith("LUT_3D_SIZE")) {
+                    int sp = indexOfWhitespace(line, 11);
+                    if (sp >= 0) {
+                        int valStart = skipWhitespace(line, sp);
+                        int valEnd = indexOfWhitespace(line, valStart);
+                        if (valEnd < 0) valEnd = line.length();
+                        return Integer.parseInt(line.substring(valStart, valEnd));
+                    }
+                } else if (line.startsWith("LUT_1D_SIZE")) {
+                    return 17;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return 0;
+    }
+
     public static Lut3D get(Context context, String name) {
         if (name == null || name.trim().isEmpty() || LUT_NONE.equalsIgnoreCase(name)) {
             return null;
@@ -308,7 +365,7 @@ final class LutManager {
         if (dir != null && dir.exists()) {
             File file = new File(dir, name.endsWith(".cube") ? name : (name + ".cube"));
             if (file.exists() && file.isFile()) {
-                try (InputStream in = new FileInputStream(file)) {
+                try (InputStream in = new BufferedInputStream(new FileInputStream(file), 16384)) {
                     Lut3D custom = parseCube(in, name);
                     if (custom != null) {
                         sCache.put(name, custom);
@@ -349,26 +406,36 @@ final class LutManager {
 
         String baseName = sanitizeLutName(displayName);
 
+        File dir = getLutsDir(context);
+        File tmp = new File(dir, baseName + ".cube.tmp");
         try (InputStream in = context.getContentResolver().openInputStream(uri)) {
             if (in == null) return null;
-            Lut3D parsed = parseCube(in, baseName);
-            if (parsed == null) return null;
-
-            File dest = new File(getLutsDir(context), baseName + ".cube");
-            try (InputStream copyIn = context.getContentResolver().openInputStream(uri);
-                 FileOutputStream out = new FileOutputStream(dest)) {
-                if (copyIn != null) {
-                    byte[] buf = new byte[8192];
-                    int len;
-                    while ((len = copyIn.read(buf)) > 0) {
-                        out.write(buf, 0, len);
-                    }
+            try (FileOutputStream out = new FileOutputStream(tmp)) {
+                byte[] buf = new byte[16384];
+                int len;
+                while ((len = in.read(buf)) > 0) {
+                    out.write(buf, 0, len);
                 }
+            }
+            Lut3D parsed;
+            try (InputStream parseIn = new BufferedInputStream(new FileInputStream(tmp), 16384)) {
+                parsed = parseCube(parseIn, baseName);
+            }
+            if (parsed == null) {
+                tmp.delete();
+                return null;
+            }
+            File dest = new File(dir, baseName + ".cube");
+            if (dest.exists()) dest.delete();
+            if (!tmp.renameTo(dest)) {
+                tmp.delete();
+                return null;
             }
             sCache.put(baseName, parsed);
             LiveLookPreview.clearCache();
             return baseName;
         } catch (Exception e) {
+            tmp.delete();
             return null;
         }
     }
@@ -385,71 +452,138 @@ final class LutManager {
         return false;
     }
 
+    private static int skipWhitespace(String s, int pos) {
+        int len = s.length();
+        while (pos < len && s.charAt(pos) <= ' ') pos++;
+        return pos;
+    }
+
+    private static int indexOfWhitespace(String s, int pos) {
+        int len = s.length();
+        while (pos < len) {
+            if (s.charAt(pos) <= ' ') return pos;
+            pos++;
+        }
+        return -1;
+    }
+
     public static Lut3D parseCube(InputStream is, String name) throws IOException {
-        BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+        BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8), 32768);
         String line;
         int size3d = 0;
         int size1d = 0;
         String title = name;
 
-        List<float[]> rawData = new ArrayList<>();
+        float[] preallocTable = null;
+        int preallocCapacity = 0;
+        float[] flatData = new float[256 * 3];
+        int tripletCount = 0;
+
         while ((line = reader.readLine()) != null) {
-            line = line.trim();
-            if (line.isEmpty() || line.startsWith("#")) continue;
-            if (line.startsWith("TITLE")) {
-                int q1 = line.indexOf('"');
-                int q2 = line.lastIndexOf('"');
-                if (q1 >= 0 && q2 > q1) title = line.substring(q1 + 1, q2);
-                else {
-                    String[] parts = line.split("\\s+", 2);
-                    if (parts.length > 1) title = parts[1].trim();
-                }
-            } else if (line.startsWith("LUT_3D_SIZE")) {
-                String[] parts = line.split("\\s+");
-                if (parts.length > 1) size3d = Integer.parseInt(parts[1].trim());
-            } else if (line.startsWith("LUT_1D_SIZE")) {
-                String[] parts = line.split("\\s+");
-                if (parts.length > 1) size1d = Integer.parseInt(parts[1].trim());
-            } else if (line.startsWith("DOMAIN_MIN") || line.startsWith("DOMAIN_MAX") || line.startsWith("LUT_3D_INPUT_RANGE")) {
-                // Supported header lines ignored for normalized sRGB domain [0, 1]
-            } else {
-                String[] parts = line.split("\\s+");
-                if (parts.length >= 3) {
-                    try {
-                        float r = Float.parseFloat(parts[0]);
-                        float g = Float.parseFloat(parts[1]);
-                        float b = Float.parseFloat(parts[2]);
-                        rawData.add(new float[]{r, g, b});
-                    } catch (NumberFormatException e) {
-                        Log.w(TAG, "Malformed RGB triplet in CUBE: " + line, e);
+            int start = skipWhitespace(line, 0);
+            int end = line.length();
+            while (end > start && line.charAt(end - 1) <= ' ') end--;
+            if (start >= end || line.charAt(start) == '#') continue;
+
+            char first = line.charAt(start);
+            if (first == 'T' && line.startsWith("TITLE", start)) {
+                int q1 = line.indexOf('"', start);
+                int q2 = line.lastIndexOf('"', end - 1);
+                if (q1 >= 0 && q2 > q1) {
+                    title = line.substring(q1 + 1, q2);
+                } else {
+                    int sp = indexOfWhitespace(line, start + 5);
+                    if (sp >= 0) {
+                        int ts = skipWhitespace(line, sp);
+                        if (ts < end) title = line.substring(ts, end);
                     }
+                }
+            } else if (first == 'L' && line.startsWith("LUT_3D_SIZE", start)) {
+                int sp = indexOfWhitespace(line, start + 11);
+                if (sp >= 0) {
+                    int vs = skipWhitespace(line, sp);
+                    int ve = indexOfWhitespace(line, vs);
+                    if (ve < 0 || ve > end) ve = end;
+                    if (vs < ve) {
+                        size3d = Integer.parseInt(line.substring(vs, ve));
+                        if (size3d > 0 && size3d <= 129 && preallocTable == null && tripletCount == 0) {
+                            preallocCapacity = size3d * size3d * size3d;
+                            preallocTable = new float[preallocCapacity * 3];
+                        }
+                    }
+                }
+            } else if (first == 'L' && line.startsWith("LUT_1D_SIZE", start)) {
+                int sp = indexOfWhitespace(line, start + 11);
+                if (sp >= 0) {
+                    int vs = skipWhitespace(line, sp);
+                    int ve = indexOfWhitespace(line, vs);
+                    if (ve < 0 || ve > end) ve = end;
+                    if (vs < ve) size1d = Integer.parseInt(line.substring(vs, ve));
+                }
+            } else if (first == 'D' && (line.startsWith("DOMAIN_MIN", start) || line.startsWith("DOMAIN_MAX", start))) {
+                // Supported header lines ignored for normalized sRGB domain [0, 1]
+            } else if (first == 'L' && line.startsWith("LUT_3D_INPUT_RANGE", start)) {
+                // Supported header line ignored
+            } else {
+                int p0s = start;
+                int p0e = indexOfWhitespace(line, p0s);
+                if (p0e < 0 || p0e >= end) continue;
+                int p1s = skipWhitespace(line, p0e);
+                int p1e = indexOfWhitespace(line, p1s);
+                if (p1e < 0 || p1e >= end) continue;
+                int p2s = skipWhitespace(line, p1e);
+                int p2e = indexOfWhitespace(line, p2s);
+                if (p2e < 0 || p2e > end) p2e = end;
+                if (p2s >= p2e) continue;
+                try {
+                    float r = Float.parseFloat(line.substring(p0s, p0e));
+                    float g = Float.parseFloat(line.substring(p1s, p1e));
+                    float b = Float.parseFloat(line.substring(p2s, p2e));
+                    if (preallocTable != null) {
+                        if (tripletCount < preallocCapacity) {
+                            int idx = tripletCount * 3;
+                            preallocTable[idx] = r;
+                            preallocTable[idx + 1] = g;
+                            preallocTable[idx + 2] = b;
+                            tripletCount++;
+                        }
+                    } else {
+                        int need = (tripletCount + 1) * 3;
+                        if (need > flatData.length) {
+                            flatData = Arrays.copyOf(flatData, Math.max(need, flatData.length * 2));
+                        }
+                        int idx = tripletCount * 3;
+                        flatData[idx] = r;
+                        flatData[idx + 1] = g;
+                        flatData[idx + 2] = b;
+                        tripletCount++;
+                    }
+                } catch (NumberFormatException e) {
+                    Log.w(TAG, "Malformed RGB triplet in CUBE: " + line, e);
                 }
             }
         }
 
-        if (size3d > 0 && !rawData.isEmpty()) {
+        if (size3d > 0 && tripletCount > 0) {
+            if (preallocTable != null) {
+                return new Lut3D(name, title, size3d, preallocTable, true);
+            }
             int expected = size3d * size3d * size3d;
             float[] table = new float[expected * 3];
-            int count = Math.min(rawData.size(), expected);
-            for (int i = 0; i < count; i++) {
-                float[] rgb = rawData.get(i);
-                table[i * 3] = rgb[0];
-                table[i * 3 + 1] = rgb[1];
-                table[i * 3 + 2] = rgb[2];
-            }
+            System.arraycopy(flatData, 0, table, 0, Math.min(tripletCount, expected) * 3);
             return new Lut3D(name, title, size3d, table, true);
-        } else if (size1d > 0 && !rawData.isEmpty()) {
+        } else if (size1d > 0 && tripletCount > 0) {
             int size = 17;
             float[] table = new float[size * size * size * 3];
             for (int b = 0; b < size; b++) {
                 float inB = b / (size - 1f);
-                float outB = sample1D(rawData, inB, 2);
+                float outB = sample1D(flatData, tripletCount, inB, 2);
                 for (int g = 0; g < size; g++) {
                     float inG = g / (size - 1f);
-                    float outG = sample1D(rawData, inG, 1);
+                    float outG = sample1D(flatData, tripletCount, inG, 1);
                     for (int r = 0; r < size; r++) {
                         float inR = r / (size - 1f);
-                        float outR = sample1D(rawData, inR, 0);
+                        float outR = sample1D(flatData, tripletCount, inR, 0);
                         int idx = (r + size * (g + size * b)) * 3;
                         table[idx] = outR;
                         table[idx + 1] = outG;
@@ -462,15 +596,13 @@ final class LutManager {
         throw new IOException("Invalid or unsupported CUBE format");
     }
 
-    private static float sample1D(List<float[]> rawData, float inVal, int channel) {
-        if (rawData == null || rawData.isEmpty()) return inVal;
-        int n = rawData.size();
-        float f = Math.max(0f, Math.min(1f, inVal)) * (n - 1);
+    private static float sample1D(float[] flatData, int count, float inVal, int channel) {
+        if (flatData == null || count <= 0) return inVal;
+        float f = Math.max(0f, Math.min(1f, inVal)) * (count - 1);
         int i0 = (int) f;
-        int i1 = Math.min(i0 + 1, n - 1);
+        int i1 = Math.min(i0 + 1, count - 1);
         float d = f - i0;
-        int ch = Math.min(channel, rawData.get(i0).length - 1);
-        return rawData.get(i0)[ch] * (1f - d) + rawData.get(i1)[ch] * d;
+        return flatData[i0 * 3 + channel] * (1f - d) + flatData[i1 * 3 + channel] * d;
     }
 
     static Lut3D generateBuiltIn(String name, int size) {

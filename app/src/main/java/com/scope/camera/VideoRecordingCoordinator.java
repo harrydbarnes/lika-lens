@@ -160,19 +160,23 @@ public final class VideoRecordingCoordinator {
             boolean muxerStarted = false;
 
             // Read orientation hint from first segment
+            MediaMetadataRetriever retriever = new MediaMetadataRetriever();
             try {
-                MediaMetadataRetriever retriever = new MediaMetadataRetriever();
                 retriever.setDataSource(segments.get(0).getAbsolutePath());
                 String rot = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
                 if (rot != null) {
                     muxer.setOrientationHint(Integer.parseInt(rot));
                 }
-                retriever.release();
             } catch (Throwable t) {
                 Log.w(TAG, "Failed to read orientation hint from video segment", t);
+            } finally {
+                try {
+                    retriever.release();
+                } catch (Throwable ignored) { }
             }
 
             // Discover tracks from first valid segment
+            long fallbackStepUs = 33_333L;
             for (File seg : segments) {
                 if (seg == null || !seg.exists() || seg.length() == 0) continue;
                 MediaExtractor extractor = new MediaExtractor();
@@ -184,6 +188,10 @@ public final class VideoRecordingCoordinator {
                         if (mime == null) continue;
                         if (mime.startsWith("video/") && outVideoTrack < 0) {
                             outVideoTrack = muxer.addTrack(fmt);
+                            if (fmt.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                                int fps = fmt.getInteger(MediaFormat.KEY_FRAME_RATE);
+                                if (fps > 0) fallbackStepUs = 1_000_000L / fps;
+                            }
                         } else if (mime.startsWith("audio/") && outAudioTrack < 0) {
                             outAudioTrack = muxer.addTrack(fmt);
                         }
@@ -218,9 +226,11 @@ public final class VideoRecordingCoordinator {
                     }
 
                     long maxSegPtsUs = 0L;
+                    long lastVideoDeltaUs = fallbackStepUs;
                     if (segVideoTrack >= 0) {
                         extractor.selectTrack(segVideoTrack);
                         long firstVideoPts = -1L;
+                        long prevRelPts = -1L;
                         while (true) {
                             buffer.clear();
                             int sampleSize = extractor.readSampleData(buffer, 0);
@@ -228,6 +238,10 @@ public final class VideoRecordingCoordinator {
                             long rawPts = extractor.getSampleTime();
                             if (firstVideoPts < 0) firstVideoPts = Math.max(0L, rawPts);
                             long relPts = Math.max(0L, rawPts - firstVideoPts);
+                            if (prevRelPts >= 0 && relPts > prevRelPts) {
+                                lastVideoDeltaUs = relPts - prevRelPts;
+                            }
+                            prevRelPts = relPts;
                             info.offset = 0;
                             info.size = sampleSize;
                             info.presentationTimeUs = timelineOffsetUs + relPts;
@@ -260,7 +274,7 @@ public final class VideoRecordingCoordinator {
                         extractor.unselectTrack(segAudioTrack);
                     }
 
-                    timelineOffsetUs += maxSegPtsUs + 33_333L;
+                    timelineOffsetUs += maxSegPtsUs + Math.max(1_000L, lastVideoDeltaUs);
                 } finally {
                     extractor.release();
                 }

@@ -144,4 +144,55 @@ public class LutManagerTest {
             // Success
         }
     }
+
+    @Test
+    public void testParseCubeHandlesTabsCrlfAndTrailingSpaces() throws IOException {
+        String cubeData = "  # Comment with leading space\r\n" +
+                "\tTITLE\tUnquoted_Title  \r\n" +
+                "LUT_3D_SIZE\t2  \r\n" +
+                "LUT_3D_INPUT_RANGE 0.0 1.0\r\n" +
+                "  0.0\t0.0   0.0  \r\n" +
+                "1.0 0.0 0.0\t\r\n" +
+                "0.0\t1.0\t0.0\r\n" +
+                "1.0 1.0 0.0\r\n" +
+                "0.0 0.0 1.0\r\n" +
+                "1.0 0.0 1.0\r\n" +
+                "0.0 1.0 1.0\r\n" +
+                "1.0 1.0 1.0  \r\n";
+
+        ByteArrayInputStream is = new ByteArrayInputStream(cubeData.getBytes(StandardCharsets.UTF_8));
+        LutManager.Lut3D lut = LutManager.parseCube(is, "Fallback");
+        assertNotNull(lut);
+        assertEquals(2, lut.size);
+        assertEquals("Unquoted_Title", lut.title);
+        assertEquals(0xff000000, lut.applyToRgb(0f, 0f, 0f, 1f));
+        assertEquals(0xffffffff, lut.applyToRgb(1f, 1f, 1f, 1f));
+        assertEquals(0xff00ff00, lut.applyToRgb(0f, 1f, 0f, 1f));
+    }
+
+    @Test
+    public void testGetBuiltInCachesBySizeAndRejectsNoneOrUnknown() {
+        LutManager.Lut3D first17 = LutManager.getBuiltIn(LutManager.LUT_PORTRA, 17);
+        LutManager.Lut3D second17 = LutManager.getBuiltIn(LutManager.LUT_PORTRA, 17);
+        assertNotNull(first17);
+        assertEquals(17, first17.size);
+        org.junit.Assert.assertSame("Repeated getBuiltIn(17) should reuse cached instance", first17, second17);
+
+        LutManager.Lut3D full33 = LutManager.getBuiltIn(LutManager.LUT_PORTRA, 33);
+        assertNotNull(full33);
+        assertEquals(33, full33.size);
+        org.junit.Assert.assertSame(full33, LutManager.get(LutManager.LUT_PORTRA));
+
+        org.junit.Assert.assertNull(LutManager.getBuiltIn(LutManager.LUT_NONE, 17));
+        org.junit.Assert.assertNull(LutManager.getBuiltIn("Nonexistent LUT", 17));
+        org.junit.Assert.assertNull(LutManager.getBuiltIn(null, 17));
+    }
+
+    @Test
+    public void testReadCubeSizeHandlesBuiltInNoneAndNullContext() {
+        assertEquals(33, LutManager.readCubeSize(null, LutManager.LUT_TEAL_ORANGE));
+        assertEquals(0, LutManager.readCubeSize(null, LutManager.LUT_NONE));
+        assertEquals(0, LutManager.readCubeSize(null, null));
+        assertEquals(0, LutManager.readCubeSize(null, "custom_without_dir"));
+    }
 }

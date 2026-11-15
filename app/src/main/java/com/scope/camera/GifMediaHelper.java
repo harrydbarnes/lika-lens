@@ -181,11 +181,33 @@ public final class GifMediaHelper {
     }
 
     public static Bitmap decodeSampledBitmap(Context context, Uri uri, int reqW, int reqH) {
+        int targetMax = Math.max(1, Math.max(reqW, reqH));
         try (InputStream is = context.getContentResolver().openInputStream(uri)) {
             if (is == null) return null;
             BitmapFactory.Options opts = new BitmapFactory.Options();
-            opts.inSampleSize = 4;
-            return BitmapFactory.decodeStream(is, null, opts);
+            opts.inJustDecodeBounds = true;
+            BitmapFactory.decodeStream(is, null, opts);
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) return null;
+
+            int sample = 1;
+            int targetW = reqW > 0 ? reqW : targetMax;
+            int targetH = reqH > 0 ? reqH : targetMax;
+            while ((opts.outWidth / (sample * 2)) >= targetW && (opts.outHeight / (sample * 2)) >= targetH) {
+                sample *= 2;
+            }
+
+            opts.inJustDecodeBounds = false;
+            opts.inSampleSize = sample;
+            try (InputStream is2 = context.getContentResolver().openInputStream(uri)) {
+                if (is2 == null) return null;
+                Bitmap bmp = BitmapFactory.decodeStream(is2, null, opts);
+                if (bmp == null) return null;
+                int orientation = getExifOrientation(context, uri);
+                if (orientation != 0) {
+                    bmp = rotateBitmap(bmp, orientation);
+                }
+                return bmp;
+            }
         } catch (Throwable t) {
             Log.w(TAG, "Failed to decode sampled preview: " + uri, t);
             return null;
@@ -225,7 +247,7 @@ public final class GifMediaHelper {
             }
 
             if (!"NONE".equals(lutProfile)) {
-                LutManager.Lut3D lut = LutManager.generateBuiltIn(lutProfile, 17);
+                LutManager.Lut3D lut = LutManager.getBuiltIn(lutProfile, 17);
                 for (int i = 0; i < loaded.size(); i++) {
                     if(!current.getAsBoolean()) break;
                     Bitmap orig = loaded.get(i);
@@ -238,7 +260,8 @@ public final class GifMediaHelper {
             }
 
             if (current.getAsBoolean() && bounceMode && loaded.size() > 2) {
-                List<Bitmap> bounced = new ArrayList<>(loaded);
+                List<Bitmap> bounced = new ArrayList<>(loaded.size() * 2 - 2);
+                bounced.addAll(loaded);
                 for (int i = loaded.size() - 2; i > 0; i--) {
                     bounced.add(loaded.get(i));
                 }

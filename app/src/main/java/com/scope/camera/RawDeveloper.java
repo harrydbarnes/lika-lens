@@ -10,6 +10,7 @@ import android.graphics.Typeface;
 import android.hardware.camera2.CameraCharacteristics;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Locale;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -18,6 +19,7 @@ import org.json.JSONObject;
 final class RawDeveloper {
     private static final int MAX_RENDER_PIXELS = 50_000_000;
     private static final int[] SRGB_LUT = buildSrgbLut();
+    private static final float[] SRGB_FLOAT_LUT = buildSrgbFloatLut();
     private RawDeveloper() { }
 
     static final class Look {
@@ -482,56 +484,286 @@ final class RawDeveloper {
         return 1.0f;
     }
 
-    /** maxDimension=0 renders at the sensor's available resolution, within the safety pixel budget. */
-    static Bitmap develop(RawArchive.Frame frame, Look look, int maxDimension) {
-        if (frame == null || (frame.rawSamples == null && frame.captureBuffer == null)) return null;
-        if (look == null) look = new Look();
+    /** Cached scene-linear RGB buffer before user EV & tone/colour grading for fast editor scrubbing. */
+    static final class LinearSceneCache {
+        final String frameKey;
+        final RawArchive.Frame frame;
+        final int maxDimension;
+        final String aspect;
+        final boolean flipHorizontal;
+        final int whiteBalanceKelvin;
+        final boolean easyMode;
+        final boolean opticalCorrection;
+        final int outW;
+        final int outH;
+        final float[] baseRgb;
+        final float autoSceneGain;
+        final int seed;
+
+        LinearSceneCache(RawArchive.Frame frame, int maxDimension, String aspect,
+                         boolean flipHorizontal, int whiteBalanceKelvin, boolean easyMode,
+                         boolean opticalCorrection, int outW, int outH,
+                         float[] baseRgb, float autoSceneGain, int seed) {
+            this.frameKey = frame.key;
+            this.frame = frame;
+            this.maxDimension = maxDimension;
+            this.aspect = aspect;
+            this.flipHorizontal = flipHorizontal;
+            this.whiteBalanceKelvin = whiteBalanceKelvin;
+            this.easyMode = easyMode;
+            this.opticalCorrection = opticalCorrection;
+            this.outW = outW;
+            this.outH = outH;
+            this.baseRgb = baseRgb;
+            this.autoSceneGain = autoSceneGain;
+            this.seed = seed;
+        }
+
+        boolean matches(RawArchive.Frame candidate, Look look, int targetMaxDim) {
+            if (candidate == null || look == null || candidate != this.frame) return false;
+            String candidateAspect = look.aspectRatio != null ? look.aspectRatio : candidate.aspectRatio;
+            boolean opt = look.opticalCorrection && candidate.lsmGains != null && candidate.lsmCols > 1 && candidate.lsmRows > 1;
+            return this.maxDimension == targetMaxDim
+                    && this.flipHorizontal == look.flipHorizontal
+                    && this.whiteBalanceKelvin == look.whiteBalanceKelvin
+                    && this.easyMode == look.easyMode
+                    && this.opticalCorrection == opt
+                    && java.util.Objects.equals(this.aspect, candidateAspect)
+                    && java.util.Objects.equals(this.frameKey, candidate.key);
+        }
+    }
+
+    private static short[] extractRawShorts(RawArchive.Frame frame, ByteBuffer raw) {
         int width = frame.width, height = frame.height;
-        int orientation = normalizeOrientation(frame.orientation);
-        int displayWidth = orientation == 90 || orientation == 270 ? height : width;
-        int displayHeight = orientation == 90 || orientation == 270 ? width : height;
-        String aspect = look.aspectRatio != null ? look.aspectRatio : frame.aspectRatio;
-        float[] crop = cropRect(displayWidth, displayHeight, aspect);
-        float cropWidth = crop[2], cropHeight = crop[3];
-        long cropPixels = Math.max(1L, (long) (cropWidth * cropHeight));
-        int step = maxDimension > 0
-                ? Math.max(1, (int) Math.ceil(Math.max(cropWidth, cropHeight) / maxDimension))
-                : Math.max(1, (int) Math.ceil(Math.sqrt(cropPixels / (double) renderPixelBudget(frame))));
-        int outW = Math.max(1, (int) Math.ceil(cropWidth / step));
-        int outH = Math.max(1, (int) Math.ceil(cropHeight / step));
-        ByteBuffer raw = frame.rawBuffer();
         short[] rawShorts = new short[width * height];
-        if (frame.rawSamples != null) {
+        int totalBytes = width * height * 2;
+        if (frame.rawSamples != null && raw.limit() >= totalBytes) {
             raw.position(0);
             raw.asShortBuffer().get(rawShorts);
         } else {
             int rowStride = frame.rowStride;
             int pixelStride = frame.pixelStride;
-            for (int y = 0; y < height; y++) {
-                int rowStart = y * rowStride;
-                int dstRow = y * width;
-                for (int x = 0; x < width; x++) {
-                    rawShorts[dstRow + x] = raw.getShort(rowStart + x * pixelStride);
+            if (pixelStride == 2 && rowStride == width * 2 && raw.limit() >= totalBytes) {
+                raw.position(0);
+                raw.asShortBuffer().get(rawShorts);
+            } else if (pixelStride == 2 && raw.limit() >= (height - 1) * rowStride + width * 2) {
+                ByteOrder order = raw.order();
+                for (int y = 0; y < height; y++) {
+                    raw.position(y * rowStride);
+                    ByteBuffer slice = raw.slice().order(order);
+                    slice.limit(width * 2);
+                    slice.asShortBuffer().get(rawShorts, y * width, width);
+                }
+            } else {
+                for (int y = 0; y < height; y++) {
+                    int rowStart = y * rowStride;
+                    int dstRow = y * width;
+                    for (int x = 0; x < width; x++) {
+                        int off = rowStart + x * pixelStride;
+                        rawShorts[dstRow + x] = (off >= 0 && off + 1 < raw.limit()) ? raw.getShort(off) : 0;
+                    }
                 }
             }
         }
-        float[] cameraToXyz = profileFor(frame, look.whiteBalanceKelvin);
-        float rawWhite = frame.dynamicWhiteLevel > 0 ? frame.dynamicWhiteLevel : frame.staticWhiteLevel;
-        float white = rawWhite <= 0 ? 65535f : rawWhite;
-        float[] gains = whiteBalanceGains(frame, look.whiteBalanceKelvin);
-        boolean applyLsm = look.opticalCorrection && frame.lsmGains != null && frame.lsmCols > 1 && frame.lsmRows > 1;
-        float autoSceneGain = computeSceneExposureGain(rawShorts, frame, white, gains, cameraToXyz,
+        return rawShorts;
+    }
+
+    static LinearSceneCache prepareLinearScene(RawArchive.Frame frame, Look look, int maxDimension) {
+        if (frame == null || (frame.rawSamples == null && frame.captureBuffer == null)) return null;
+        if (look == null) look = new Look();
+        final int width = frame.width, height = frame.height;
+        final int orientation = normalizeOrientation(frame.orientation);
+        final int displayWidth = orientation == 90 || orientation == 270 ? height : width;
+        final int displayHeight = orientation == 90 || orientation == 270 ? width : height;
+        final String aspect = look.aspectRatio != null ? look.aspectRatio : frame.aspectRatio;
+        final float[] crop = cropRect(displayWidth, displayHeight, aspect);
+        final float cropWidth = crop[2], cropHeight = crop[3];
+        long cropPixels = Math.max(1L, (long) (cropWidth * cropHeight));
+        final int step = maxDimension > 0
+                ? Math.max(1, (int) Math.ceil(Math.max(cropWidth, cropHeight) / maxDimension))
+                : Math.max(1, (int) Math.ceil(Math.sqrt(cropPixels / (double) renderPixelBudget(frame))));
+        final int outW = Math.max(1, (int) Math.ceil(cropWidth / step));
+        final int outH = Math.max(1, (int) Math.ceil(cropHeight / step));
+
+        final short[] rawShorts = extractRawShorts(frame, frame.rawBuffer());
+        final float[] cameraToXyz = profileFor(frame, look.whiteBalanceKelvin);
+        final float rawWhite = frame.dynamicWhiteLevel > 0 ? frame.dynamicWhiteLevel : frame.staticWhiteLevel;
+        final float white = rawWhite <= 0 ? 65535f : rawWhite;
+        final float[] gains = whiteBalanceGains(frame, look.whiteBalanceKelvin);
+        final boolean applyLsm = look.opticalCorrection && frame.lsmGains != null && frame.lsmCols > 1 && frame.lsmRows > 1;
+        final float autoSceneGain = computeSceneExposureGain(rawShorts, frame, white, gains, cameraToXyz,
                 crop, orientation, applyLsm, look);
-        float exposureScale = (float) Math.pow(2.0, look.exposureEv) * autoSceneGain;
-        int[] allPixels = new int[outW * outH];
+        final boolean hasCct = frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9;
+        final float[] cct = frame.colorCorrectionTransform;
+        final boolean flipH = look.flipHorizontal;
+        final boolean useQuad = step >= 2 && width >= 2 && height >= 2;
+        final float[] baseRgb = new float[outW * outH * 3];
+        final float gainR = gains[0] * autoSceneGain;
+        final float gainG = (gains[1] + gains[2]) * 0.5f * autoSceneGain;
+        final float gainB = gains[3] * autoSceneGain;
+
+        java.util.stream.IntStream.range(0, outH).parallel().forEach(oy -> {
+            float dy = Math.min(crop[1] + cropHeight - .5f, crop[1] + (oy + .5f) * cropHeight / outH);
+            int rowBase = oy * outW * 3;
+            float[] rgb = new float[3];
+            float[] lsm = applyLsm ? new float[4] : null;
+            for (int ox = 0; ox < outW; ox++) {
+                float effectiveOx = flipH ? (outW - 1 - ox) : ox;
+                float dx = Math.min(crop[0] + cropWidth - .5f, crop[0] + (effectiveOx + .5f) * cropWidth / outW);
+                int sx, sy;
+                switch (orientation) {
+                    case 90: sx = Math.min(width - 1, (int) dy); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dx)); break;
+                    case 180: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dx)); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dy)); break;
+                    case 270: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dy)); sy = Math.min(height - 1, (int) dx); break;
+                    default: sx = Math.min(width - 1, (int) dx); sy = Math.min(height - 1, (int) dy); break;
+                }
+                if (useQuad) sampleQuad(rawShorts, frame, white, sx, sy, rgb);
+                else demosaicPixel(rawShorts, frame, white, sx, sy, rgb);
+                float r = rgb[0], g = rgb[1], b = rgb[2];
+                if (applyLsm) {
+                    sampleLsm(frame, sx, sy, lsm);
+                    float sig = Math.max(r, Math.max(g, b));
+                    float lsmWeight = smoothstep(0.003f, 0.030f, sig);
+                    r *= 1f + (lsm[0] - 1f) * lsmWeight;
+                    g *= 1f + ((lsm[1] + lsm[2]) * 0.5f - 1f) * lsmWeight;
+                    b *= 1f + (lsm[3] - 1f) * lsmWeight;
+                }
+                r *= gainR;
+                g *= gainG;
+                b *= gainB;
+                float lr, lg, lb;
+                if (hasCct) {
+                    lr = cct[0] * r + cct[1] * g + cct[2] * b;
+                    lg = cct[3] * r + cct[4] * g + cct[5] * b;
+                    lb = cct[6] * r + cct[7] * g + cct[8] * b;
+                } else {
+                    float x = cameraToXyz[0] * r + cameraToXyz[1] * g + cameraToXyz[2] * b;
+                    float y = cameraToXyz[3] * r + cameraToXyz[4] * g + cameraToXyz[5] * b;
+                    float z = cameraToXyz[6] * r + cameraToXyz[7] * g + cameraToXyz[8] * b;
+                    lr = 3.1339f * x - 1.6169f * y - .4906f * z;
+                    lg = -.9785f * x + 1.9160f * y + .0333f * z;
+                    lb = .0720f * x - .2290f * y + 1.4057f * z;
+                }
+                int idx = rowBase + ox * 3;
+                baseRgb[idx] = lr;
+                baseRgb[idx + 1] = lg;
+                baseRgb[idx + 2] = lb;
+            }
+        });
+
         int seed = frame.key == null ? width * 31 + height : frame.key.hashCode();
-        LutManager.Lut3D lut = (look.lutName != null && !look.lutName.equals("None") && look.lutIntensity > 0.001f)
+        return new LinearSceneCache(frame, maxDimension, aspect, flipH, look.whiteBalanceKelvin,
+                look.easyMode, applyLsm, outW, outH, baseRgb, autoSceneGain, seed);
+    }
+
+    static int[] developFromLinearPixels(LinearSceneCache scene, Look look) {
+        if (scene == null) return null;
+        if (look == null) look = new Look();
+        final int outW = scene.outW, outH = scene.outH;
+        final float[] baseRgb = scene.baseRgb;
+        final float evScale = (float) Math.pow(2.0, look.exposureEv);
+        final float exposureScale = evScale * scene.autoSceneGain;
+        final LutManager.Lut3D lut = (look.lutName != null && !look.lutName.equals("None") && look.lutIntensity > 0.001f)
+                ? LutManager.get(look.lutName) : null;
+        final PreparedLook prep = new PreparedLook(look, scene.frame, lut);
+        final int lgW = look.easyMode && !scene.frame.manualExposure ? Math.min(48, Math.max(4, outW)) : 0;
+        final int lgH = look.easyMode && !scene.frame.manualExposure ? Math.min(36, Math.max(4, outH)) : 0;
+        final float[] localGainGrid = lgW > 0
+                ? buildLocalToneGainGridFromLinear(baseRgb, outW, outH, evScale, exposureScale, scene.frame, lgW, lgH, prep.brainId)
+                : null;
+        final int[] allPixels = new int[outW * outH];
+        final float vigAmount = look.vignette;
+
+        java.util.stream.IntStream.range(0, outH).parallel().forEach(oy -> {
+            int rowOffset = oy * outW;
+            int rgbRowBase = rowOffset * 3;
+            float ny = outH <= 1 ? 0f : oy / (float) (outH - 1) * 2f - 1f;
+            float nySq = ny * ny;
+            for (int ox = 0; ox < outW; ox++) {
+                int rIdx = rgbRowBase + ox * 3;
+                float lr = baseRgb[rIdx] * evScale;
+                float lg = baseRgb[rIdx + 1] * evScale;
+                float lb = baseRgb[rIdx + 2] * evScale;
+                if (localGainGrid != null) {
+                    float lgain = sampleLocalGain(localGainGrid, lgW, lgH, ox, oy, outW, outH);
+                    if (lgain > 1.0f) {
+                        float pixY = Math.max(0f, .2126f * Math.max(0f, lr) + .7152f * Math.max(0f, lg) + .0722f * Math.max(0f, lb));
+                        float signalGate = smoothstep(0.0020f, 0.012f, pixY);
+                        lgain = 1.0f + (lgain - 1.0f) * signalGate;
+                    }
+                    lr *= lgain;
+                    lg *= lgain;
+                    lb *= lgain;
+                }
+                int color = renderPreparedLook(lr, lg, lb, prep, ox, oy, scene.seed);
+                if (vigAmount > 0f) {
+                    float nx = outW <= 1 ? 0f : ox / (float) (outW - 1) * 2f - 1f;
+                    float falloff = Math.max(.72f, 1f - vigAmount * .18f * (nx * nx + nySq));
+                    color = scaleColor(color, falloff);
+                }
+                allPixels[rowOffset + ox] = color;
+            }
+        });
+
+        float effectiveChromaNr = look.chromaNr;
+        if (look.easyMode && scene.frame.sensitivityIso >= 400 && effectiveChromaNr < 0.25f) {
+            effectiveChromaNr = Math.max(effectiveChromaNr,
+                    .25f + .15f * (1f - shadowRecoveryConfidence(scene.frame.sensitivityIso)));
+        }
+        applyPostGradeEffects(allPixels, outW, outH, look, prep, scene.frame, scene.seed, effectiveChromaNr);
+        return allPixels;
+    }
+
+    static Bitmap developFromLinear(LinearSceneCache scene, Look look) {
+        if (scene == null) return null;
+        if (look == null) look = new Look();
+        int[] pixels = developFromLinearPixels(scene, look);
+        return finishBitmap(pixels, scene.outW, scene.outH, look, scene.frame);
+    }
+
+    static int[] developPixels(RawArchive.Frame frame, Look look, int maxDimension) {
+        return developPixels(frame, look, maxDimension, null);
+    }
+
+    static int[] developPixels(RawArchive.Frame frame, Look look, int maxDimension, int[] outSize) {
+        if (frame == null || (frame.rawSamples == null && frame.captureBuffer == null)) return null;
+        if (look == null) look = new Look();
+        final int width = frame.width, height = frame.height;
+        final int orientation = normalizeOrientation(frame.orientation);
+        final int displayWidth = orientation == 90 || orientation == 270 ? height : width;
+        final int displayHeight = orientation == 90 || orientation == 270 ? width : height;
+        final String aspect = look.aspectRatio != null ? look.aspectRatio : frame.aspectRatio;
+        final float[] crop = cropRect(displayWidth, displayHeight, aspect);
+        final float cropWidth = crop[2], cropHeight = crop[3];
+        long cropPixels = Math.max(1L, (long) (cropWidth * cropHeight));
+        final int step = maxDimension > 0
+                ? Math.max(1, (int) Math.ceil(Math.max(cropWidth, cropHeight) / maxDimension))
+                : Math.max(1, (int) Math.ceil(Math.sqrt(cropPixels / (double) renderPixelBudget(frame))));
+        final int outW = Math.max(1, (int) Math.ceil(cropWidth / step));
+        final int outH = Math.max(1, (int) Math.ceil(cropHeight / step));
+        if (outSize != null && outSize.length >= 2) {
+            outSize[0] = outW;
+            outSize[1] = outH;
+        }
+        final short[] rawShorts = extractRawShorts(frame, frame.rawBuffer());
+        final float[] cameraToXyz = profileFor(frame, look.whiteBalanceKelvin);
+        final float rawWhite = frame.dynamicWhiteLevel > 0 ? frame.dynamicWhiteLevel : frame.staticWhiteLevel;
+        final float white = rawWhite <= 0 ? 65535f : rawWhite;
+        final float[] gains = whiteBalanceGains(frame, look.whiteBalanceKelvin);
+        final boolean applyLsm = look.opticalCorrection && frame.lsmGains != null && frame.lsmCols > 1 && frame.lsmRows > 1;
+        final float autoSceneGain = computeSceneExposureGain(rawShorts, frame, white, gains, cameraToXyz,
+                crop, orientation, applyLsm, look);
+        final float exposureScale = (float) Math.pow(2.0, look.exposureEv) * autoSceneGain;
+        final int[] allPixels = new int[outW * outH];
+        final int seed = frame.key == null ? width * 31 + height : frame.key.hashCode();
+        final LutManager.Lut3D lut = (look.lutName != null && !look.lutName.equals("None") && look.lutIntensity > 0.001f)
                 ? LutManager.get(look.lutName) : null;
         final PreparedLook prep = new PreparedLook(look, frame, lut);
         final boolean hasCct = frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9;
         final float[] cct = frame.colorCorrectionTransform;
         final boolean flipH = look.flipHorizontal;
         final float vigAmount = look.vignette;
+        final boolean useQuad = step >= 2 && width >= 2 && height >= 2;
         final int lgW = look.easyMode && !frame.manualExposure ? Math.min(48, Math.max(4, outW)) : 0;
         final int lgH = look.easyMode && !frame.manualExposure ? Math.min(36, Math.max(4, outH)) : 0;
         final float[] localGainGrid = lgW > 0
@@ -539,6 +771,9 @@ final class RawDeveloper {
                         exposureScale, crop, cropWidth, cropHeight, orientation, applyLsm, flipH,
                         outW, outH, lgW, lgH, prep.brainId)
                 : null;
+        final float gainR = gains[0] * exposureScale;
+        final float gainG = (gains[1] + gains[2]) * 0.5f * exposureScale;
+        final float gainB = gains[3] * exposureScale;
 
         java.util.stream.IntStream.range(0, outH).parallel().forEach(oy -> {
             float dy = Math.min(crop[1] + cropHeight - .5f,
@@ -546,6 +781,8 @@ final class RawDeveloper {
             int rowOffset = oy * outW;
             float ny = outH <= 1 ? 0f : oy / (float) (outH - 1) * 2f - 1f;
             float nySq = ny * ny;
+            float[] rgb = new float[3];
+            float[] lsm = applyLsm ? new float[4] : null;
             for (int ox = 0; ox < outW; ox++) {
                 float effectiveOx = flipH ? (outW - 1 - ox) : ox;
                 float dx = Math.min(crop[0] + cropWidth - .5f,
@@ -557,20 +794,20 @@ final class RawDeveloper {
                     case 270: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dy)); sy = Math.min(height - 1, (int) dx); break;
                     default: sx = Math.min(width - 1, (int) dx); sy = Math.min(height - 1, (int) dy); break;
                 }
-                float r = interpolate(rawShorts, frame, white, sx, sy, 0);
-                float g = interpolate(rawShorts, frame, white, sx, sy, 1);
-                float b = interpolate(rawShorts, frame, white, sx, sy, 2);
+                if (useQuad) sampleQuad(rawShorts, frame, white, sx, sy, rgb);
+                else demosaicPixel(rawShorts, frame, white, sx, sy, rgb);
+                float r = rgb[0], g = rgb[1], b = rgb[2];
                 if (applyLsm) {
-                    float[] lsm = sampleLsm(frame, sx, sy);
+                    sampleLsm(frame, sx, sy, lsm);
                     float sig = Math.max(r, Math.max(g, b));
                     float lsmWeight = smoothstep(0.003f, 0.030f, sig);
                     r *= 1f + (lsm[0] - 1f) * lsmWeight;
                     g *= 1f + ((lsm[1] + lsm[2]) * 0.5f - 1f) * lsmWeight;
                     b *= 1f + (lsm[3] - 1f) * lsmWeight;
                 }
-                r *= gains[0] * exposureScale;
-                g *= (gains[1] + gains[2]) * .5f * exposureScale;
-                b *= gains[3] * exposureScale;
+                r *= gainR;
+                g *= gainG;
+                b *= gainB;
 
                 float lr, lg, lb;
                 if (hasCct) {
@@ -612,19 +849,51 @@ final class RawDeveloper {
             effectiveChromaNr = Math.max(effectiveChromaNr,
                     .25f + .15f * (1f - shadowRecoveryConfidence(frame.sensitivityIso)));
         }
-        if (effectiveChromaNr > 0f) applyChromaDenoise(allPixels, outW, outH, effectiveChromaNr);
-        if (look.halation > 0f) applyHalation(allPixels, outW, outH, look.halation, aspect);
-        if (look.sharpening > 0f) applySharpen(allPixels, outW, outH, Math.min(.14f, look.sharpening * .14f));
+        applyPostGradeEffects(allPixels, outW, outH, look, prep, frame, seed, effectiveChromaNr);
+        return allPixels;
+    }
 
-        applyFilmGrain(allPixels, outW, outH, prep, seed);
-        Bitmap bitmap = createColorSpaceAwareBitmap(allPixels, outW, outH, look);
-        if (look.frameBorder != null && !look.frameBorder.startsWith("None")) {
+    /** maxDimension=0 renders at the sensor's available resolution, within the safety pixel budget. */
+    static Bitmap develop(RawArchive.Frame frame, Look look, int maxDimension) {
+        if (frame == null || (frame.rawSamples == null && frame.captureBuffer == null)) return null;
+        if (look == null) look = new Look();
+        int[] outSize = new int[2];
+        int[] allPixels = developPixels(frame, look, maxDimension, outSize);
+        if (allPixels == null) return null;
+        return finishBitmap(allPixels, outSize[0], outSize[1], look, frame);
+    }
+
+    private static void applyPostGradeEffects(int[] pixels, int outW, int outH, Look look,
+                                              PreparedLook prep, RawArchive.Frame frame, int seed,
+                                              float effectiveChromaNr) {
+        if (effectiveChromaNr > 0f) applyChromaDenoise(pixels, outW, outH, effectiveChromaNr);
+        if (look.halation > 0f) applyHalation(pixels, outW, outH, look.halation, look.aspectRatio != null ? look.aspectRatio : (frame != null ? frame.aspectRatio : null));
+        if (look.sharpening > 0f) applySharpen(pixels, outW, outH, Math.min(.14f, look.sharpening * .14f));
+        applyFilmGrain(pixels, outW, outH, prep, seed);
+    }
+
+    private static Bitmap finishBitmap(int[] pixels, int outW, int outH, Look look, RawArchive.Frame frame) {
+        boolean hasBorder = look.frameBorder != null && !look.frameBorder.startsWith("None");
+        Bitmap bitmap = createColorSpaceAwareBitmap(pixels, outW, outH, look, !hasBorder);
+        if (hasBorder) {
+            int[] pad = borderPadding(outW, outH, look);
             bitmap = applyFrameBorder(bitmap, look, frame);
+            if (look.ultraHdr && android.os.Build.VERSION.SDK_INT >= 34 && bitmap != null) {
+                attachUltraHdrGainmap(bitmap, pixels, outW, outH, look,
+                        pad[0], pad[1], outW + pad[0] * 2, outH + pad[1] + pad[2]);
+            }
         }
         return bitmap;
     }
 
-    private static Bitmap createColorSpaceAwareBitmap(int[] pixels, int w, int h, Look look) {
+    private static Bitmap finishPixels(int[] pixels, int outW, int outH, Look look,
+                                       PreparedLook prep, RawArchive.Frame frame, int seed,
+                                       float effectiveChromaNr) {
+        applyPostGradeEffects(pixels, outW, outH, look, prep, frame, seed, effectiveChromaNr);
+        return finishBitmap(pixels, outW, outH, look, frame);
+    }
+
+    private static Bitmap createColorSpaceAwareBitmap(int[] pixels, int w, int h, Look look, boolean attachHdr) {
         String colorSpace = look != null ? look.colorSpace : null;
         Bitmap bmp = null;
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O
@@ -641,8 +910,8 @@ final class RawDeveloper {
         if (bmp == null) {
             bmp = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888);
         }
-        if (look != null && look.ultraHdr && android.os.Build.VERSION.SDK_INT >= 34) {
-            attachUltraHdrGainmap(bmp, pixels, w, h, look);
+        if (attachHdr && look != null && look.ultraHdr && android.os.Build.VERSION.SDK_INT >= 34) {
+            attachUltraHdrGainmap(bmp, pixels, w, h, look, 0, 0, w, h);
         }
         return bmp;
     }
@@ -651,20 +920,27 @@ final class RawDeveloper {
      * Generates and attaches an ISO 21496-1 Ultra HDR Gainmap on Android 14+ (API 34+) so bright
      * film highlights and warm halation blooms radiate with true optical HDR headroom on OLED displays.
      */
-    private static void attachUltraHdrGainmap(Bitmap bmp, int[] pixels, int w, int h, Look look) {
+    private static void attachUltraHdrGainmap(Bitmap bmp, int[] pixels, int w, int h, Look look,
+                                              int padLeft, int padTop, int targetW, int targetH) {
         if (bmp == null || pixels == null || w < 8 || h < 8) return;
         if (android.os.Build.VERSION.SDK_INT < 34) return;
         try {
-            int gw = Math.max(4, w / 4);
-            int gh = Math.max(4, h / 4);
+            int gw = Math.max(4, targetW / 4);
+            int gh = Math.max(4, targetH / 4);
             byte[] gainBytes = new byte[gw * gh];
+            int photoGw = Math.max(1, (w * gw + targetW / 2) / targetW);
+            int photoGh = Math.max(1, (h * gh + targetH / 2) / targetH);
+            int gx0 = Math.max(0, (padLeft * gw + targetW / 2) / targetW);
+            int gy0 = Math.max(0, (padTop * gh + targetH / 2) / targetH);
+            int gxEnd = Math.min(gw, gx0 + photoGw);
+            int gyEnd = Math.min(gh, gy0 + photoGh);
             float halBoost = 1.0f + clamp(look.halation, 0f, 1f) * 0.45f;
-            for (int gy = 0; gy < gh; gy++) {
-                int sy = Math.min(h - 1, (gy * h) / gh);
+            for (int gy = gy0; gy < gyEnd; gy++) {
+                int sy = Math.min(h - 1, ((gy - gy0) * h) / Math.max(1, photoGh));
                 int rowOff = sy * w;
                 int gRowOff = gy * gw;
-                for (int gx = 0; gx < gw; gx++) {
-                    int sx = Math.min(w - 1, (gx * w) / gw);
+                for (int gx = gx0; gx < gxEnd; gx++) {
+                    int sx = Math.min(w - 1, ((gx - gx0) * w) / Math.max(1, photoGw));
                     int c = pixels[rowOff + sx];
                     int r = (c >> 16) & 0xFF;
                     int g = (c >> 8) & 0xFF;
@@ -710,10 +986,20 @@ final class RawDeveloper {
 
     public static Bitmap developJpeg(byte[] bytes, Look look, int fallbackOrientation) {
         if (bytes == null || bytes.length == 0) return null;
-        Bitmap source = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        int maxSide = 3000;
+        BitmapFactory.Options opts = new BitmapFactory.Options();
+        opts.inJustDecodeBounds = true;
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.length, opts);
+        int sampleSize = 1;
+        int rawMax = Math.max(opts.outWidth, opts.outHeight);
+        while (rawMax / (sampleSize * 2) >= maxSide) {
+            sampleSize *= 2;
+        }
+        BitmapFactory.Options decodeOpts = new BitmapFactory.Options();
+        decodeOpts.inSampleSize = sampleSize;
+        Bitmap source = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, decodeOpts);
         if (source == null) return null;
         source = CaptureOrientation.orientJpeg(source, bytes, fallbackOrientation);
-        int maxSide = 3000;
         float scale = Math.min(1f, maxSide / (float) Math.max(source.getWidth(), source.getHeight()));
         Bitmap bitmap = scale < 1 ? Bitmap.createScaledBitmap(source,
                 Math.max(1, Math.round(source.getWidth() * scale)), Math.max(1, Math.round(source.getHeight() * scale)), true) : source;
@@ -729,8 +1015,8 @@ final class RawDeveloper {
         if (bitmap == null) return null;
         if (look == null) look = new Look();
 
-        int w = bitmap.getWidth(), h = bitmap.getHeight();
-        int[] pixels = new int[w * h];
+        final int w = bitmap.getWidth(), h = bitmap.getHeight();
+        final int[] pixels = new int[w * h];
         bitmap.getPixels(pixels, 0, w, 0, 0, w, h);
         if (recycleSource && !bitmap.isRecycled()) {
             bitmap.recycle();
@@ -739,15 +1025,20 @@ final class RawDeveloper {
         final PreparedLook prep = prepareDisplayLook(look);
         final boolean flipH = look.flipHorizontal;
         final float vigAmount = look.vignette;
-        final int[] srcPixels = flipH ? pixels.clone() : pixels;
 
         java.util.stream.IntStream.range(0, h).parallel().forEach(y -> {
             int rowOffset = y * w;
+            if (flipH) {
+                for (int x = 0, rx = w - 1; x < rx; x++, rx--) {
+                    int tmp = pixels[rowOffset + x];
+                    pixels[rowOffset + x] = pixels[rowOffset + rx];
+                    pixels[rowOffset + rx] = tmp;
+                }
+            }
             float ny = h <= 1 ? 0f : y / (float) (h - 1) * 2f - 1f;
             float nySq = ny * ny;
             for (int x = 0; x < w; x++) {
-                int srcX = flipH ? (w - 1 - x) : x;
-                int c = srcPixels[rowOffset + srcX];
+                int c = pixels[rowOffset + x];
                 int rendered = renderDisplayRgb(((c >> 16) & 0xff) / 255f,
                         ((c >> 8) & 0xff) / 255f, (c & 0xff) / 255f, prep);
                 if (vigAmount > 0f) {
@@ -761,16 +1052,7 @@ final class RawDeveloper {
 
         float effectiveJpegChromaNr = look.chromaNr;
         if (look.easyMode && effectiveJpegChromaNr < 0.15f) effectiveJpegChromaNr = 0.15f;
-        if (effectiveJpegChromaNr > 0f) applyChromaDenoise(pixels, w, h, effectiveJpegChromaNr);
-        if (look.halation > 0f) applyHalation(pixels, w, h, look.halation, look.aspectRatio);
-        if (look.sharpening > 0f) applySharpen(pixels, w, h, Math.min(.14f, look.sharpening * .14f));
-
-        applyFilmGrain(pixels, w, h, prep, 0x53434f50);
-        Bitmap result = createColorSpaceAwareBitmap(pixels, w, h, look);
-        if (look.frameBorder != null && !look.frameBorder.startsWith("None")) {
-            result = applyFrameBorder(result, look, null);
-        }
-        return result;
+        return finishPixels(pixels, w, h, look, prep, null, 0x53434f50, effectiveJpegChromaNr);
     }
 
     static PreparedLook prepareDisplayLook(Look look) {
@@ -862,21 +1144,32 @@ final class RawDeveloper {
     static void applyFilmGrain(int[] pixels, int w, int h, PreparedLook prep, int seed) {
         if (prep.grainAmount <= 0f) return;
         // Anchor grain to a 3000-pixel reference long edge, independent of output resolution.
-        float coordinateScale = 3000f / Math.max(w, h);
-        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
-            int c = pixels[y * w + x];
-            int r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
-            float lightness = (.2126f * r + .7152f * g + .0722f * b) / 255f;
-            float fine = grainNoise(x * coordinateScale / prep.grainScale,
-                    y * coordinateScale / prep.grainScale, seed);
-            float coarse = grainNoise(x * coordinateScale / prep.coarseDiv,
-                    y * coordinateScale / prep.coarseDiv, seed ^ 0x51ed270b);
-            float texture = (fine * prep.fineWeight + coarse * prep.coarseWeight)
-                    * prep.grainAmount * 13f * smoothstep(.025f, .11f, lightness);
-            if (!prep.uniformGrain) texture *= .38f + .62f * 4f * lightness * (1f - lightness);
-            pixels[y * w + x] = 0xff000000 | (clamp255(r + texture) << 16)
-                    | (clamp255(g + texture) << 8) | clamp255(b + texture);
-        }
+        final float coordinateScale = 3000f / Math.max(w, h);
+        final float invFine = coordinateScale / prep.grainScale;
+        final float invCoarse = coordinateScale / prep.coarseDiv;
+        final int seedCoarse = seed ^ 0x51ed270b;
+        final float grainScaleAmt = prep.grainAmount * 13f;
+        final float fineW = prep.fineWeight;
+        final float coarseW = prep.coarseWeight;
+        final boolean uniform = prep.uniformGrain;
+
+        java.util.stream.IntStream.range(0, h).parallel().forEach(y -> {
+            int rowOff = y * w;
+            float fyFine = y * invFine;
+            float fyCoarse = y * invCoarse;
+            for (int x = 0; x < w; x++) {
+                int c = pixels[rowOff + x];
+                int r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
+                float lightness = (.2126f * r + .7152f * g + .0722f * b) * 0.003921569f;
+                float fine = grainNoise(x * invFine, fyFine, seed);
+                float coarse = grainNoise(x * invCoarse, fyCoarse, seedCoarse);
+                float texture = (fine * fineW + coarse * coarseW)
+                        * grainScaleAmt * smoothstep(.025f, .11f, lightness);
+                if (!uniform) texture *= .38f + .62f * 4f * lightness * (1f - lightness);
+                pixels[rowOff + x] = 0xff000000 | (clamp255(r + texture) << 16)
+                        | (clamp255(g + texture) << 8) | clamp255(b + texture);
+            }
+        });
     }
 
     private static float grainNoise(float x, float y, int seed) {
@@ -887,14 +1180,13 @@ final class RawDeveloper {
         return top * (1f - dy) + bottom * dy;
     }
 
-    private static float[] sampleLsm(RawArchive.Frame frame, int sx, int sy) {
+    private static void sampleLsm(RawArchive.Frame frame, int sx, int sy, float[] out) {
         float gx = clamp(sx / (float) Math.max(1, frame.width - 1), 0f, 1f) * (frame.lsmCols - 1);
         float gy = clamp(sy / (float) Math.max(1, frame.height - 1), 0f, 1f) * (frame.lsmRows - 1);
         int x0 = (int) gx, y0 = (int) gy;
         int x1 = Math.min(frame.lsmCols - 1, x0 + 1);
         int y1 = Math.min(frame.lsmRows - 1, y0 + 1);
         float tx = gx - x0, ty = gy - y0;
-        float[] out = new float[4];
         int i00 = (y0 * frame.lsmCols + x0) * 4;
         int i10 = (y0 * frame.lsmCols + x1) * 4;
         int i01 = (y1 * frame.lsmCols + x0) * 4;
@@ -904,17 +1196,12 @@ final class RawDeveloper {
             float bot = frame.lsmGains[i01 + c] * (1f - tx) + frame.lsmGains[i11 + c] * tx;
             out[c] = clamp(top * (1f - ty) + bot * ty, 0.5f, 3.5f);
         }
-        return out;
     }
 
-    static Bitmap applyFrameBorder(Bitmap src, Look look, RawArchive.Frame frame) {
-        if (src == null || look == null || look.frameBorder == null || look.frameBorder.startsWith("None")) return src;
-        int w = src.getWidth(), h = src.getHeight();
+    private static int[] borderPadding(int w, int h, Look look) {
         String border = look.frameBorder;
-        boolean museum = border.startsWith("Museum");
         boolean mediumFormat = border.contains("Medium Format");
         boolean cinemascope = border.contains("Cinemascope");
-
         int padSide, padTop, padBottom;
         if (mediumFormat) {
             padSide = Math.max(26, Math.round(Math.min(w, h) * 0.075f));
@@ -934,10 +1221,32 @@ final class RawDeveloper {
             padTop = padSide;
             padBottom = Math.max(36, Math.round(Math.min(w, h) * 0.115f));
         }
+        return new int[]{padSide, padTop, padBottom};
+    }
+
+    static Bitmap applyFrameBorder(Bitmap src, Look look, RawArchive.Frame frame) {
+        if (src == null || look == null || look.frameBorder == null || look.frameBorder.startsWith("None")) return src;
+        int w = src.getWidth(), h = src.getHeight();
+        String border = look.frameBorder;
+        boolean museum = border.startsWith("Museum");
+        boolean mediumFormat = border.contains("Medium Format");
+        boolean cinemascope = border.contains("Cinemascope");
+
+        int[] pad = borderPadding(w, h, look);
+        int padSide = pad[0], padTop = pad[1], padBottom = pad[2];
 
         int outW = w + padSide * 2;
         int outH = h + padTop + padBottom;
-        Bitmap bordered = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
+        Bitmap bordered = null;
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O && src.getColorSpace() != null) {
+            try {
+                bordered = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888, false, src.getColorSpace());
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        if (bordered == null) {
+            bordered = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
+        }
         Canvas canvas = new Canvas(bordered);
         int bgColor = museum ? 0xFFF7F5EF : cinemascope ? 0xFF000000 : mediumFormat ? 0xFF060708 : 0xFF0A0C0D;
         canvas.drawColor(bgColor);
@@ -1024,49 +1333,76 @@ final class RawDeveloper {
         return Math.max(16, Math.round(dp * (baseDim / 1000f)));
     }
 
-    private static float interpolate(short[] raw, RawArchive.Frame frame, float white,
-                                     int x, int y, int wanted) {
-        int site = colorAt(x, y, frame.cfa);
-        if (site == wanted) return rawValue(raw, frame, white, x, y);
-        if (wanted == 1 && site != 1) {
-            float gh = directionalGreen(raw, frame, white, x, y, true);
-            float gv = directionalGreen(raw, frame, white, x, y, false);
-            if (x == 0 || x == frame.width - 1 || y == 0 || y == frame.height - 1) return (gh + gv) * .5f;
-            float ghGradient = Math.abs(rawValue(raw, frame, white, x - 1, y) - rawValue(raw, frame, white, x + 1, y));
-            float gvGradient = Math.abs(rawValue(raw, frame, white, x, y - 1) - rawValue(raw, frame, white, x, y + 1));
-            return ghGradient <= gvGradient ? gh : gv;
+    /** Fast downscaled 2x2 Bayer quad sampler: reads each quad directly, averaging G1+G2 for zero aliasing. */
+    private static void sampleQuad(short[] raw, RawArchive.Frame frame, float white,
+                                   int sx, int sy, float[] rgbOut) {
+        int qx = Math.min(frame.width - 2, sx & ~1);
+        int qy = Math.min(frame.height - 2, sy & ~1);
+        if (qx < 0) qx = 0;
+        if (qy < 0) qy = 0;
+        float v00 = rawValue(raw, frame, white, qx, qy);
+        float v10 = rawValue(raw, frame, white, qx + 1, qy);
+        float v01 = rawValue(raw, frame, white, qx, qy + 1);
+        float v11 = rawValue(raw, frame, white, qx + 1, qy + 1);
+        switch (frame.cfa) {
+            case CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GRBG:
+                rgbOut[0] = v10; rgbOut[1] = 0.5f * (v00 + v11); rgbOut[2] = v01; break;
+            case CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GBRG:
+                rgbOut[0] = v01; rgbOut[1] = 0.5f * (v00 + v11); rgbOut[2] = v10; break;
+            case CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_BGGR:
+                rgbOut[0] = v11; rgbOut[1] = 0.5f * (v10 + v01); rgbOut[2] = v00; break;
+            default: // RGGB
+                rgbOut[0] = v00; rgbOut[1] = 0.5f * (v10 + v01); rgbOut[2] = v11; break;
         }
-        float sum = 0f, weights = 0f;
-        for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
-            int nx = x + dx, ny = y + dy;
-            if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= frame.width || ny >= frame.height
-                    || colorAt(nx, ny, frame.cfa) != wanted) continue;
-            float distanceWeight = (dx == 0 || dy == 0) ? 1f : .72f;
-            sum += rawValue(raw, frame, white, nx, ny) * distanceWeight;
-            weights += distanceWeight;
-        }
-        if (weights > 0f) return sum / weights;
-        return rawValue(raw, frame, white, x, y);
     }
 
-    private static float directionalGreen(short[] raw, RawArchive.Frame frame, float white,
-                                           int x, int y, boolean horizontal) {
-        float sum = 0f;
-        int count = 0;
-        for (int direction = -1; direction <= 1; direction += 2) {
-            int nx = horizontal ? x + direction : x;
-            int ny = horizontal ? y : y + direction;
-            if (nx >= 0 && ny >= 0 && nx < frame.width && ny < frame.height
-                    && colorAt(nx, ny, frame.cfa) == 1) {
-                sum += rawValue(raw, frame, white, nx, ny);
-                count++;
+    /** Single-pass edge-directed color-difference Bayer demosaicing inside a 3x3 window. */
+    private static void demosaicPixel(short[] raw, RawArchive.Frame frame, float white,
+                                      int x, int y, float[] rgbOut) {
+        int w = frame.width, h = frame.height;
+        int xm = x > 0 ? x - 1 : 0;
+        int xp = x + 1 < w ? x + 1 : w - 1;
+        int ym = y > 0 ? y - 1 : 0;
+        int yp = y + 1 < h ? y + 1 : h - 1;
+        float c00 = rawValue(raw, frame, white, xm, ym);
+        float c10 = rawValue(raw, frame, white, x, ym);
+        float c20 = rawValue(raw, frame, white, xp, ym);
+        float c01 = rawValue(raw, frame, white, xm, y);
+        float c11 = rawValue(raw, frame, white, x, y);
+        float c21 = rawValue(raw, frame, white, xp, y);
+        float c02 = rawValue(raw, frame, white, xm, yp);
+        float c12 = rawValue(raw, frame, white, x, yp);
+        float c22 = rawValue(raw, frame, white, xp, yp);
+
+        int site = colorAt(x, y, frame.cfa);
+        if (site == 1) {
+            float g = c11;
+            float gh = Math.max(0f, g + 0.5f * ((c01 - 0.5f * (c00 + c02)) + (c21 - 0.5f * (c20 + c22))));
+            float gv = Math.max(0f, g + 0.5f * ((c10 - 0.5f * (c00 + c20)) + (c12 - 0.5f * (c02 + c22))));
+            boolean horizIsRed = colorAt(x + 1 < w ? x + 1 : x - 1, y, frame.cfa) == 0;
+            rgbOut[0] = horizIsRed ? gh : gv;
+            rgbOut[1] = g;
+            rgbOut[2] = horizIsRed ? gv : gh;
+        } else {
+            float dh = Math.abs(c01 - c21);
+            float dv = Math.abs(c10 - c12);
+            float wh = 1f / (1f + dh * dh * 256f);
+            float wv = 1f / (1f + dv * dv * 256f);
+            float g = (wh * 0.5f * (c01 + c21) + wv * 0.5f * (c10 + c12)) / (wh + wv);
+            float opp = Math.max(0f, g + 0.25f * (c00 + c20 + c02 + c22) - 0.25f * (c01 + c21 + c10 + c12));
+            if (site == 0) {
+                rgbOut[0] = c11;
+                rgbOut[1] = g;
+                rgbOut[2] = opp;
+            } else {
+                rgbOut[0] = opp;
+                rgbOut[1] = g;
+                rgbOut[2] = c11;
             }
         }
-        return count == 0 ? rawValue(raw, frame, white, x, y) : sum / count;
     }
 
     private static float rawValue(short[] raw, RawArchive.Frame frame, float white, int x, int y) {
-        if (x < 0 || y < 0 || x >= frame.width || y >= frame.height) return 0f;
         int sample = raw[y * frame.width + x] & 0xffff;
         float black = frame.blackLevels[(y & 1) * 2 + (x & 1)];
         float norm = (sample - black) / Math.max(1f, white - black);
@@ -1188,6 +1524,10 @@ final class RawDeveloper {
         int allCount = 0, midCount = 0;
         boolean hasCct = frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9;
         float[] cct = frame.colorCorrectionTransform;
+        float[] rgb = new float[3];
+        float[] lsm = applyLsm ? new float[4] : null;
+        boolean useQuad = width >= 2 && height >= 2;
+        float g0 = gains[0] * boostScale, gg = (gains[1] + gains[2]) * 0.5f * boostScale, g3 = gains[3] * boostScale;
 
         for (int gy = 0; gy < gridY; gy++) {
             float dy = Math.min(cropY + cropH - .5f, cropY + (gy + .5f) * cropH / gridY);
@@ -1203,20 +1543,20 @@ final class RawDeveloper {
                     case 270: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dy)); sy = Math.min(height - 1, (int) dx); break;
                     default: sx = Math.min(width - 1, (int) dx); sy = Math.min(height - 1, (int) dy); break;
                 }
-                float r = interpolate(rawShorts, frame, white, sx, sy, 0);
-                float g = interpolate(rawShorts, frame, white, sx, sy, 1);
-                float b = interpolate(rawShorts, frame, white, sx, sy, 2);
+                if (useQuad) sampleQuad(rawShorts, frame, white, sx, sy, rgb);
+                else demosaicPixel(rawShorts, frame, white, sx, sy, rgb);
+                float r = rgb[0], g = rgb[1], b = rgb[2];
                 if (applyLsm) {
-                    float[] lsm = sampleLsm(frame, sx, sy);
+                    sampleLsm(frame, sx, sy, lsm);
                     float sig = Math.max(r, Math.max(g, b));
                     float lsmWeight = smoothstep(0.003f, 0.030f, sig);
                     r *= 1f + (lsm[0] - 1f) * lsmWeight;
                     g *= 1f + ((lsm[1] + lsm[2]) * 0.5f - 1f) * lsmWeight;
                     b *= 1f + (lsm[3] - 1f) * lsmWeight;
                 }
-                r *= gains[0] * boostScale;
-                g *= (gains[1] + gains[2]) * .5f * boostScale;
-                b *= gains[3] * boostScale;
+                r *= g0;
+                g *= gg;
+                b *= g3;
 
                 float lr, lg, lb;
                 if (hasCct) {
@@ -1273,6 +1613,9 @@ final class RawDeveloper {
         if (lgW <= 0 || lgH <= 0 || rawShorts == null || frame == null) return null;
         int width = frame.width, height = frame.height;
         float[] logY = new float[lgW * lgH];
+        float[] rgb = new float[3];
+        float[] lsm = applyLsm ? new float[4] : null;
+        float g0 = gains[0] * exposureScale, gg = (gains[1] + gains[2]) * 0.5f * exposureScale, g3 = gains[3] * exposureScale;
         for (int gy = 0; gy < lgH; gy++) {
             float oy = (gy + 0.5f) * outH / lgH;
             float dy = Math.min(crop[1] + cropHeight - .5f, crop[1] + (oy + .5f) * cropHeight / outH);
@@ -1288,20 +1631,19 @@ final class RawDeveloper {
                     case 270: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dy)); sy = Math.min(height - 1, (int) dx); break;
                     default: sx = Math.min(width - 1, (int) dx); sy = Math.min(height - 1, (int) dy); break;
                 }
-                float r = interpolate(rawShorts, frame, white, sx, sy, 0);
-                float g = interpolate(rawShorts, frame, white, sx, sy, 1);
-                float b = interpolate(rawShorts, frame, white, sx, sy, 2);
+                demosaicPixel(rawShorts, frame, white, sx, sy, rgb);
+                float r = rgb[0], g = rgb[1], b = rgb[2];
                 if (applyLsm) {
-                    float[] lsm = sampleLsm(frame, sx, sy);
+                    sampleLsm(frame, sx, sy, lsm);
                     float sig = Math.max(r, Math.max(g, b));
                     float lsmWeight = smoothstep(0.003f, 0.030f, sig);
                     r *= 1f + (lsm[0] - 1f) * lsmWeight;
                     g *= 1f + ((lsm[1] + lsm[2]) * 0.5f - 1f) * lsmWeight;
                     b *= 1f + (lsm[3] - 1f) * lsmWeight;
                 }
-                r *= gains[0] * exposureScale;
-                g *= (gains[1] + gains[2]) * .5f * exposureScale;
-                b *= gains[3] * exposureScale;
+                r *= g0;
+                g *= gg;
+                b *= g3;
 
                 float lr, lg, lb;
                 if (hasCct) {
@@ -1320,6 +1662,33 @@ final class RawDeveloper {
                 logY[rowOff + gx] = (float) Math.log(luma + 0.005f);
             }
         }
+        return finishLocalToneGrid(logY, lgW, lgH, frame, exposureScale, brainId);
+    }
+
+    private static float[] buildLocalToneGainGridFromLinear(
+            float[] baseRgb, int outW, int outH, float evScale, float exposureScale,
+            RawArchive.Frame frame, int lgW, int lgH, int brainId) {
+        if (lgW <= 0 || lgH <= 0 || baseRgb == null || frame == null) return null;
+        float[] logY = new float[lgW * lgH];
+        for (int gy = 0; gy < lgH; gy++) {
+            int oy = Math.min(outH - 1, (int) ((gy + 0.5f) * outH / lgH));
+            int rowOff = gy * lgW;
+            int srcRow = oy * outW;
+            for (int gx = 0; gx < lgW; gx++) {
+                int ox = Math.min(outW - 1, (int) ((gx + 0.5f) * outW / lgW));
+                int idx = (srcRow + ox) * 3;
+                float lr = baseRgb[idx] * evScale;
+                float lg = baseRgb[idx + 1] * evScale;
+                float lb = baseRgb[idx + 2] * evScale;
+                float luma = Math.max(0f, .2126f * Math.max(0f, lr) + .7152f * Math.max(0f, lg) + .0722f * Math.max(0f, lb));
+                logY[rowOff + gx] = (float) Math.log(luma + 0.005f);
+            }
+        }
+        return finishLocalToneGrid(logY, lgW, lgH, frame, exposureScale, brainId);
+    }
+
+    private static float[] finishLocalToneGrid(float[] logY, int lgW, int lgH,
+                                               RawArchive.Frame frame, float exposureScale, int brainId) {
         float[] tmp = new float[logY.length];
         blur(logY, tmp, lgW, lgH, true);
         blur(tmp, logY, lgW, lgH, false);
@@ -1329,6 +1698,9 @@ final class RawDeveloper {
         float brainRecoveryScale = brainId == BRAIN_ID_BLEACH ? 0.45f
                 : brainId == BRAIN_ID_KODACHROME ? 0.70f : 1.0f;
         float[] gainGrid = new float[logY.length];
+        float exposureIntent = (float) Math.pow(2.0, Math.min(0f, frame.aeCompensationEv));
+        float shadowConf = shadowRecoveryConfidence(frame.sensitivityIso);
+        float invExp = 1f / Math.max(1f, exposureScale);
         for (int i = 0; i < logY.length; i++) {
             float avgY = Math.max(0f, (float) Math.exp(logY[i]) - 0.005f);
             if (avgY > 0.42f) {
@@ -1337,10 +1709,9 @@ final class RawDeveloper {
                 gainGrid[i] = compressed / avgY;
             } else {
                 float shadowNeed = smoothstep(0.20f, 0.015f, avgY);
-                float signalConfidence = smoothstep(.002f, .008f, avgY / Math.max(1f, exposureScale));
-                float exposureIntent = (float) Math.pow(2.0, Math.min(0f, frame.aeCompensationEv));
+                float signalConfidence = smoothstep(.002f, .008f, avgY * invExp);
                 gainGrid[i] = 1.0f + .85f * brainRecoveryScale * shadowNeed * signalConfidence
-                        * shadowRecoveryConfidence(frame.sensitivityIso) * exposureIntent;
+                        * shadowConf * exposureIntent;
             }
         }
         return gainGrid;
@@ -1472,7 +1843,10 @@ final class RawDeveloper {
         // theta = atan2(bb, a). Skin tones cluster between ~0.45 and ~1.35 radians (~26° to 77°),
         // which lies strictly in Quadrant I (a > 0 && bb > 0) with tan(0.45)=0.483 <= bb/a <= tan(1.35)=4.455.
         float skinFactor = 0f;
-        if (rawChroma > 0.015f && a > 0f && bb > 0f) {
+        boolean needSkinFactor = (prep.applySmartVibrance && brainId != BRAIN_ID_MONO
+                && brainId != BRAIN_ID_BLEACH && brainId != BRAIN_ID_NEUTRAL)
+                || prep.applySkinProtection;
+        if (needSkinFactor && rawChroma > 0.015f && a > 0f && bb > 0f) {
             float ratioBA = bb / a;
             if (ratioBA >= 0.483f && ratioBA <= 4.455f) {
                 float hueAngle = (float) Math.atan2(bb, a);
@@ -1606,10 +1980,7 @@ final class RawDeveloper {
         }
 
         if (prep.lut != null) {
-            float sR = toSrgb(outR) / 255f;
-            float sG = toSrgb(outG) / 255f;
-            float sB = toSrgb(outB) / 255f;
-            return prep.lut.applyToRgb(sR, sG, sB, prep.lutIntensity);
+            return prep.lut.applyToRgb(toSrgbFloat(outR), toSrgbFloat(outG), toSrgbFloat(outB), prep.lutIntensity);
         }
         return (0xFF << 24) | ((toSrgb(outR) & 0xFF) << 16) | ((toSrgb(outG) & 0xFF) << 8) | (toSrgb(outB) & 0xFF);
     }
@@ -1638,11 +2009,25 @@ final class RawDeveloper {
             System.arraycopy(temp, 0, glow, 0, glow.length);
         }
         float strength = clamp(amount, 0f, 1f) * 1.6f;
+        float invScale = 1f / scale;
+        float maxGx = sw - 1f, maxGy = sh - 1f;
         java.util.stream.IntStream.range(0, h).parallel().forEach(y -> {
             int rowOffset = y * w;
-            int gy = Math.min(sh - 1, y / scale) * sw;
+            float gyf = Math.min(maxGy, y * invScale);
+            int gy0 = (int) gyf;
+            int gy1 = Math.min(sh - 1, gy0 + 1);
+            float ty = gyf - gy0;
+            float wy0 = 1f - ty;
+            int gRow0 = gy0 * sw;
+            int gRow1 = gy1 * sw;
             for (int x = 0; x < w; x++) {
-                float halo = glow[gy + Math.min(sw - 1, x / scale)] * strength;
+                float gxf = Math.min(maxGx, x * invScale);
+                int gx0 = (int) gxf;
+                int gx1 = Math.min(sw - 1, gx0 + 1);
+                float tx = gxf - gx0;
+                float top = glow[gRow0 + gx0] * (1f - tx) + glow[gRow0 + gx1] * tx;
+                float bot = glow[gRow1 + gx0] * (1f - tx) + glow[gRow1 + gx1] * tx;
+                float halo = (top * wy0 + bot * ty) * strength;
                 int c = pixels[rowOffset + x];
                 int r = (c >> 16) & 0xff;
                 int g = (c >> 8) & 0xff;
@@ -1655,102 +2040,207 @@ final class RawDeveloper {
 
     private static void applyChromaDenoise(int[] pixels, int w, int h, float amount) {
         if (pixels == null || w < 3 || h < 3 || amount <= 0f) return;
-        float strength = clamp(amount, 0f, 1f) * .72f;
-        int[] original = pixels.clone();
-        java.util.stream.IntStream.range(1, h - 1).parallel().forEach(y -> {
-            int rowOffset = y * w;
-            int prevOffset = (y - 1) * w;
-            int nextOffset = (y + 1) * w;
-            for (int x = 1; x < w - 1; x++) {
-                int c = original[rowOffset + x];
-                int left = original[rowOffset + x - 1];
-                int right = original[rowOffset + x + 1];
-                int up = original[prevOffset + x];
-                int down = original[nextOffset + x];
+        final float strength = clamp(amount, 0f, 1f) * .72f;
+        final int interiorRows = h - 2;
+        final int numStrips = interiorRows < 32 ? 1
+                : Math.min(Runtime.getRuntime().availableProcessors() * 2, Math.max(1, interiorRows / 32));
+        final int rowsPerStrip = (interiorRows + numStrips - 1) / numStrips;
+        final int[][] seamBefore = new int[numStrips][w];
+        final int[][] seamAfter = new int[numStrips][w];
+        for (int s = 0; s < numStrips; s++) {
+            int yStart = 1 + s * rowsPerStrip;
+            if (yStart > h - 2) break;
+            int yEnd = Math.min(h - 2, yStart + rowsPerStrip - 1);
+            System.arraycopy(pixels, (yStart - 1) * w, seamBefore[s], 0, w);
+            System.arraycopy(pixels, (yEnd + 1) * w, seamAfter[s], 0, w);
+        }
+        java.util.stream.IntStream stripStream = java.util.stream.IntStream.range(0, numStrips);
+        if (numStrips > 1) stripStream = stripStream.parallel();
+        stripStream.forEach(s -> {
+            int yStart = 1 + s * rowsPerStrip;
+            if (yStart > h - 2) return;
+            int yEnd = Math.min(h - 2, yStart + rowsPerStrip - 1);
+            int[] prevRow = seamBefore[s].clone();
+            int[] currRow = new int[w];
+            System.arraycopy(pixels, yStart * w, currRow, 0, w);
+            int[] nextRow = new int[w];
+            if (yStart == yEnd) {
+                System.arraycopy(seamAfter[s], 0, nextRow, 0, w);
+            } else {
+                System.arraycopy(pixels, (yStart + 1) * w, nextRow, 0, w);
+            }
+            for (int y = yStart; y <= yEnd; y++) {
+                int rowOffset = y * w;
+                for (int x = 1; x < w - 1; x++) {
+                    int c = currRow[x];
+                    int left = currRow[x - 1];
+                    int right = currRow[x + 1];
+                    int up = prevRow[x];
+                    int down = nextRow[x];
 
-                float r = ((c >> 16) & 0xff) * 0.00392157f;
-                float g = ((c >> 8) & 0xff) * 0.00392157f;
-                float b = (c & 0xff) * 0.00392157f;
-                float luma = .2126f * r + .7152f * g + .0722f * b;
-                float cr = r - luma, cg = g - luma, cb = b - luma;
+                    float r = ((c >> 16) & 0xff) * 0.00392157f;
+                    float g = ((c >> 8) & 0xff) * 0.00392157f;
+                    float b = (c & 0xff) * 0.00392157f;
+                    float luma = .2126f * r + .7152f * g + .0722f * b;
+                    float cr = r - luma, cg = g - luma, cb = b - luma;
 
-                float nr = ((left >> 16) & 0xff) * 0.00392157f;
-                float ng = ((left >> 8) & 0xff) * 0.00392157f;
-                float nb = (left & 0xff) * 0.00392157f;
-                float nl = .2126f * nr + .7152f * ng + .0722f * nb;
-                float mr = nr - nl, mg = ng - nl, mb = nb - nl, neighbourLuma = nl;
+                    float nr = ((left >> 16) & 0xff) * 0.00392157f;
+                    float ng = ((left >> 8) & 0xff) * 0.00392157f;
+                    float nb = (left & 0xff) * 0.00392157f;
+                    float nl = .2126f * nr + .7152f * ng + .0722f * nb;
+                    float mr = nr - nl, mg = ng - nl, mb = nb - nl, neighbourLuma = nl;
 
-                nr = ((right >> 16) & 0xff) * 0.00392157f;
-                ng = ((right >> 8) & 0xff) * 0.00392157f;
-                nb = (right & 0xff) * 0.00392157f;
-                nl = .2126f * nr + .7152f * ng + .0722f * nb;
-                mr += nr - nl; mg += ng - nl; mb += nb - nl; neighbourLuma += nl;
+                    nr = ((right >> 16) & 0xff) * 0.00392157f;
+                    ng = ((right >> 8) & 0xff) * 0.00392157f;
+                    nb = (right & 0xff) * 0.00392157f;
+                    nl = .2126f * nr + .7152f * ng + .0722f * nb;
+                    mr += nr - nl; mg += ng - nl; mb += nb - nl; neighbourLuma += nl;
 
-                nr = ((up >> 16) & 0xff) * 0.00392157f;
-                ng = ((up >> 8) & 0xff) * 0.00392157f;
-                nb = (up & 0xff) * 0.00392157f;
-                nl = .2126f * nr + .7152f * ng + .0722f * nb;
-                mr += nr - nl; mg += ng - nl; mb += nb - nl; neighbourLuma += nl;
+                    nr = ((up >> 16) & 0xff) * 0.00392157f;
+                    ng = ((up >> 8) & 0xff) * 0.00392157f;
+                    nb = (up & 0xff) * 0.00392157f;
+                    nl = .2126f * nr + .7152f * ng + .0722f * nb;
+                    mr += nr - nl; mg += ng - nl; mb += nb - nl; neighbourLuma += nl;
 
-                nr = ((down >> 16) & 0xff) * 0.00392157f;
-                ng = ((down >> 8) & 0xff) * 0.00392157f;
-                nb = (down & 0xff) * 0.00392157f;
-                nl = .2126f * nr + .7152f * ng + .0722f * nb;
-                mr += nr - nl; mg += ng - nl; mb += nb - nl; neighbourLuma += nl;
+                    nr = ((down >> 16) & 0xff) * 0.00392157f;
+                    ng = ((down >> 8) & 0xff) * 0.00392157f;
+                    nb = (down & 0xff) * 0.00392157f;
+                    nl = .2126f * nr + .7152f * ng + .0722f * nb;
+                    mr += nr - nl; mg += ng - nl; mb += nb - nl; neighbourLuma += nl;
 
-                mr *= .25f; mg *= .25f; mb *= .25f; neighbourLuma *= .25f;
-                float gradient = Math.abs(luma - neighbourLuma);
-                float blend = strength * Math.max(0f, 1f - gradient * 5f);
-                float resultR = luma + cr * (1f - blend) + mr * blend;
-                float resultG = luma + cg * (1f - blend) + mg * blend;
-                float resultB = luma + cb * (1f - blend) + mb * blend;
+                    mr *= .25f; mg *= .25f; mb *= .25f; neighbourLuma *= .25f;
+                    float gradient = Math.abs(luma - neighbourLuma);
+                    float blend = strength * Math.max(0f, 1f - gradient * 5f);
+                    float resultR = luma + cr * (1f - blend) + mr * blend;
+                    float resultG = luma + cg * (1f - blend) + mg * blend;
+                    float resultB = luma + cb * (1f - blend) + mb * blend;
 
-                pixels[rowOffset + x] = 0xff000000 | (clamp255(resultR * 255f) << 16)
-                        | (clamp255(resultG * 255f) << 8) | clamp255(resultB * 255f);
+                    pixels[rowOffset + x] = 0xff000000 | (clamp255(resultR * 255f) << 16)
+                            | (clamp255(resultG * 255f) << 8) | clamp255(resultB * 255f);
+                }
+                if (y < yEnd) {
+                    int[] reuse = prevRow;
+                    prevRow = currRow;
+                    currRow = nextRow;
+                    nextRow = reuse;
+                    if (y + 1 == yEnd) {
+                        System.arraycopy(seamAfter[s], 0, nextRow, 0, w);
+                    } else {
+                        System.arraycopy(pixels, (y + 2) * w, nextRow, 0, w);
+                    }
+                }
             }
         });
     }
 
     private static void blur(float[] src, float[] dst, int w, int h, boolean horizontal) {
         final int radius = 2;
-        final float invCount = 1f / (2 * radius + 1);
-        java.util.stream.IntStream.range(0, h).parallel().forEach(y -> {
-            int rowOffset = y * w;
-            for (int x = 0; x < w; x++) {
-                float sum = 0f;
-                for (int d = -radius; d <= radius; d++) {
-                    int sx = horizontal ? clampIndex(x + d, w) : x;
-                    int sy = horizontal ? y : clampIndex(y + d, h);
-                    sum += src[sy * w + sx];
+        final float invCount = 0.2f;
+        java.util.stream.IntStream rows = java.util.stream.IntStream.range(0, h);
+        if (h >= 64 && w * h >= 4096) rows = rows.parallel();
+        if (horizontal) {
+            rows.forEach(y -> {
+                int rowOffset = y * w;
+                int leftEnd = Math.min(w, radius);
+                for (int x = 0; x < leftEnd; x++) {
+                    float sum = 0f;
+                    for (int d = -radius; d <= radius; d++) sum += src[rowOffset + clampIndex(x + d, w)];
+                    dst[rowOffset + x] = sum * invCount;
                 }
-                dst[rowOffset + x] = sum * invCount;
-            }
-        });
+                int rightStart = Math.max(leftEnd, w - radius);
+                for (int x = leftEnd; x < rightStart; x++) {
+                    int p = rowOffset + x;
+                    dst[p] = (src[p - 2] + src[p - 1] + src[p] + src[p + 1] + src[p + 2]) * invCount;
+                }
+                for (int x = rightStart; x < w; x++) {
+                    float sum = 0f;
+                    for (int d = -radius; d <= radius; d++) sum += src[rowOffset + clampIndex(x + d, w)];
+                    dst[rowOffset + x] = sum * invCount;
+                }
+            });
+        } else {
+            final int w2 = w * 2;
+            rows.forEach(y -> {
+                int rowOffset = y * w;
+                if (y >= radius && y < h - radius) {
+                    for (int x = 0; x < w; x++) {
+                        int p = rowOffset + x;
+                        dst[p] = (src[p - w2] + src[p - w] + src[p] + src[p + w] + src[p + w2]) * invCount;
+                    }
+                } else {
+                    int ym2 = clampIndex(y - 2, h) * w;
+                    int ym1 = clampIndex(y - 1, h) * w;
+                    int y0 = y * w;
+                    int yp1 = clampIndex(y + 1, h) * w;
+                    int yp2 = clampIndex(y + 2, h) * w;
+                    for (int x = 0; x < w; x++) {
+                        dst[rowOffset + x] = (src[ym2 + x] + src[ym1 + x] + src[y0 + x] + src[yp1 + x] + src[yp2 + x]) * invCount;
+                    }
+                }
+            });
+        }
     }
 
     private static void applySharpen(int[] pixels, int w, int h, float amount) {
         if (pixels == null || w < 3 || h < 3 || amount <= 0f) return;
-        int[] original = pixels.clone();
-        float weight = 1f + 4f * amount;
-        java.util.stream.IntStream.range(1, h - 1).parallel().forEach(y -> {
-            int rowOffset = y * w;
-            int prevOffset = (y - 1) * w;
-            int nextOffset = (y + 1) * w;
-            for (int x = 1; x < w - 1; x++) {
-                int c = original[rowOffset + x];
-                int left = original[rowOffset + x - 1];
-                int right = original[rowOffset + x + 1];
-                int up = original[prevOffset + x];
-                int down = original[nextOffset + x];
+        final float weight = 1f + 4f * amount;
+        final int interiorRows = h - 2;
+        final int numStrips = interiorRows < 32 ? 1
+                : Math.min(Runtime.getRuntime().availableProcessors() * 2, Math.max(1, interiorRows / 32));
+        final int rowsPerStrip = (interiorRows + numStrips - 1) / numStrips;
+        final int[][] seamBefore = new int[numStrips][w];
+        final int[][] seamAfter = new int[numStrips][w];
+        for (int s = 0; s < numStrips; s++) {
+            int yStart = 1 + s * rowsPerStrip;
+            if (yStart > h - 2) break;
+            int yEnd = Math.min(h - 2, yStart + rowsPerStrip - 1);
+            System.arraycopy(pixels, (yStart - 1) * w, seamBefore[s], 0, w);
+            System.arraycopy(pixels, (yEnd + 1) * w, seamAfter[s], 0, w);
+        }
+        java.util.stream.IntStream stripStream = java.util.stream.IntStream.range(0, numStrips);
+        if (numStrips > 1) stripStream = stripStream.parallel();
+        stripStream.forEach(s -> {
+            int yStart = 1 + s * rowsPerStrip;
+            if (yStart > h - 2) return;
+            int yEnd = Math.min(h - 2, yStart + rowsPerStrip - 1);
+            int[] prevRow = seamBefore[s].clone();
+            int[] currRow = new int[w];
+            System.arraycopy(pixels, yStart * w, currRow, 0, w);
+            int[] nextRow = new int[w];
+            if (yStart == yEnd) {
+                System.arraycopy(seamAfter[s], 0, nextRow, 0, w);
+            } else {
+                System.arraycopy(pixels, (yStart + 1) * w, nextRow, 0, w);
+            }
+            for (int y = yStart; y <= yEnd; y++) {
+                int rowOffset = y * w;
+                for (int x = 1; x < w - 1; x++) {
+                    int c = currRow[x];
+                    int left = currRow[x - 1];
+                    int right = currRow[x + 1];
+                    int up = prevRow[x];
+                    int down = nextRow[x];
 
-                float r = ((c >> 16) & 0xff) * weight - amount * (
-                        ((left >> 16) & 0xff) + ((right >> 16) & 0xff) + ((up >> 16) & 0xff) + ((down >> 16) & 0xff));
-                float g = ((c >> 8) & 0xff) * weight - amount * (
-                        ((left >> 8) & 0xff) + ((right >> 8) & 0xff) + ((up >> 8) & 0xff) + ((down >> 8) & 0xff));
-                float b = (c & 0xff) * weight - amount * (
-                        (left & 0xff) + (right & 0xff) + (up & 0xff) + (down & 0xff));
+                    float r = ((c >> 16) & 0xff) * weight - amount * (
+                            ((left >> 16) & 0xff) + ((right >> 16) & 0xff) + ((up >> 16) & 0xff) + ((down >> 16) & 0xff));
+                    float g = ((c >> 8) & 0xff) * weight - amount * (
+                            ((left >> 8) & 0xff) + ((right >> 8) & 0xff) + ((up >> 8) & 0xff) + ((down >> 8) & 0xff));
+                    float b = (c & 0xff) * weight - amount * (
+                            (left & 0xff) + (right & 0xff) + (up & 0xff) + (down & 0xff));
 
-                pixels[rowOffset + x] = 0xff000000 | (clamp255(r) << 16) | (clamp255(g) << 8) | clamp255(b);
+                    pixels[rowOffset + x] = 0xff000000 | (clamp255(r) << 16) | (clamp255(g) << 8) | clamp255(b);
+                }
+                if (y < yEnd) {
+                    int[] reuse = prevRow;
+                    prevRow = currRow;
+                    currRow = nextRow;
+                    nextRow = reuse;
+                    if (y + 1 == yEnd) {
+                        System.arraycopy(seamAfter[s], 0, nextRow, 0, w);
+                    } else {
+                        System.arraycopy(pixels, (y + 2) * w, nextRow, 0, w);
+                    }
+                }
             }
         });
     }
@@ -1795,6 +2285,16 @@ final class RawDeveloper {
         return lut;
     }
 
+    private static float[] buildSrgbFloatLut() {
+        float[] lut = new float[65536];
+        for (int i = 0; i < lut.length; i++) {
+            float linear = i / 65535f;
+            lut[i] = linear <= .0031308f ? linear * 12.92f
+                    : 1.055f * (float) Math.pow(linear, 1f / 2.4f) - .055f;
+        }
+        return lut;
+    }
+
     private static int scaleColor(int color, float scale) {
         int r = clamp255(((color >> 16) & 0xFF) * scale);
         int g = clamp255(((color >> 8) & 0xFF) * scale);
@@ -1815,6 +2315,10 @@ final class RawDeveloper {
     private static int toSrgb(float linear) {
         int index = Math.max(0, Math.min(65535, Math.round(clamp(linear, 0f, 1f) * 65535f)));
         return SRGB_LUT[index];
+    }
+    private static float toSrgbFloat(float linear) {
+        int index = Math.max(0, Math.min(65535, Math.round(clamp(linear, 0f, 1f) * 65535f)));
+        return SRGB_FLOAT_LUT[index];
     }
     private static float srgbToLinear(float encoded) {
         return encoded <= .04045f ? encoded / 12.92f : (float) Math.pow((encoded + .055f) / 1.055f, 2.4);

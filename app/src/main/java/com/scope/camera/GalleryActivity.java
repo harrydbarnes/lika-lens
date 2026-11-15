@@ -1,17 +1,18 @@
 package com.scope.camera;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.util.LruCache;
 import android.view.Gravity;
-import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.widget.FrameLayout;
-import android.app.AlertDialog;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -21,9 +22,15 @@ import android.widget.Toast;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Date-grouped grid of Lika Lens renders with Android's document picker for imports. */
 public class GalleryActivity extends Activity {
@@ -36,6 +43,16 @@ public class GalleryActivity extends Activity {
     private TextView selectionActionButton;
     private final JobState exportJob = new JobState();
     private final android.os.Handler mainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final ExecutorService loadExecutor = Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "lika-gallery-loader");
+        t.setDaemon(true);
+        return t;
+    });
+    private final AtomicInteger loadGeneration = new AtomicInteger();
+    private final SimpleDateFormat dayFormat = new SimpleDateFormat("EEEE, d MMMM", Locale.getDefault());
+    private final List<TileHolder> visibleTiles = new ArrayList<>();
+    private volatile List<PhotoRepository.Photo> cachedAllPhotos = Collections.emptyList();
+    private LruCache<String, Bitmap> thumbCache;
     private ScrollView scroll;
     private int savedScrollY;
 
@@ -45,8 +62,38 @@ public class GalleryActivity extends Activity {
     private LinearLayout selectionBar;
     private TextView selectionCountView;
 
+    private static final class TileHolder {
+        final FrameLayout tile;
+        final TextView seqBadge;
+        final Uri uri;
+
+        TileHolder(FrameLayout tile, TextView seqBadge, Uri uri) {
+            this.tile = tile;
+            this.seqBadge = seqBadge;
+            this.uri = uri;
+        }
+    }
+
+    private static final class FilteredEntry {
+        final PhotoRepository.Photo photo;
+        final String dayLabel;
+
+        FilteredEntry(PhotoRepository.Photo photo, String dayLabel) {
+            this.photo = photo;
+            this.dayLabel = dayLabel;
+        }
+    }
+
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        int maxKb = (int) (Runtime.getRuntime().maxMemory() / 1024L);
+        int cacheKb = Math.max(8 * 1024, maxKb / 8);
+        thumbCache = new LruCache<String, Bitmap>(cacheKb) {
+            @Override
+            protected int sizeOf(String key, Bitmap value) {
+                return Math.max(1, value.getByteCount() / 1024);
+            }
+        };
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         build();
@@ -72,9 +119,7 @@ public class GalleryActivity extends Activity {
     }
 
     private void hapticClick(View v) {
-        if (v != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
-            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-        }
+        UiKit.hapticClick(this, v);
     }
 
     private void build() {
@@ -177,46 +222,71 @@ public class GalleryActivity extends Activity {
 
     private void loadPhotos() {
         if (list == null) return;
+        final int generation = loadGeneration.incrementAndGet();
+        final String filter = activeFilter;
+        final Context appContext = getApplicationContext();
+        final Locale locale = Locale.getDefault();
+        loadExecutor.execute(() -> {
+            if (generation != loadGeneration.get()) return;
+            List<PhotoRepository.Photo> allPhotos = PhotoRepository.all(appContext);
+            cachedAllPhotos = allPhotos;
+            List<FilteredEntry> filtered = new ArrayList<>();
+            Date dateBuf = new Date();
+            for (PhotoRepository.Photo photo : allPhotos) {
+                if (generation != loadGeneration.get()) return;
+                String key = PhotoRepository.archiveKey(photo.name);
+                if ("All".equals(filter)
+                        || ("RAW".equals(filter) && RawArchive.exists(appContext, key))
+                        || ("Edited".equals(filter) && PhotoEditStore.hasEdits(appContext, key))
+                        || ("GIFs".equals(filter) && photo.isGif)) {
+                    String day;
+                    synchronized (dayFormat) {
+                        dateBuf.setTime(photo.timestampMillis);
+                        day = dayFormat.format(dateBuf).toUpperCase(locale);
+                    }
+                    filtered.add(new FilteredEntry(photo, day));
+                }
+            }
+            mainHandler.post(() -> {
+                if (generation != loadGeneration.get() || isFinishing() || isDestroyed() || list == null) return;
+                renderPhotoGrid(filtered, filter, generation);
+            });
+        });
+    }
+
+    private void renderPhotoGrid(List<FilteredEntry> entries, String filter, int generation) {
+        visibleTiles.clear();
         list.removeAllViews();
         list.setPadding(list.getPaddingLeft(), dp(3), list.getPaddingRight(), dp((selectionMode == SelectionMode.SELECTING) ? 110 : 25));
-        List<PhotoRepository.Photo> allPhotos = PhotoRepository.all(this);
-        List<PhotoRepository.Photo> photos = new ArrayList<>();
-        for (PhotoRepository.Photo photo : allPhotos) {
-            String key = PhotoRepository.archiveKey(photo.name);
-            if ("All".equals(activeFilter)
-                    || ("RAW".equals(activeFilter) && RawArchive.exists(this, key))
-                    || ("Edited".equals(activeFilter) && PhotoEditStore.hasEdits(this, key))
-                    || ("GIFs".equals(activeFilter) && photo.isGif)) photos.add(photo);
-        }
-        countView.setText(String.format(Locale.US, "%02d %s", photos.size(), photos.size() == 1 ? "PHOTO" : "PHOTOS"));
-        if (photos.isEmpty()) {
+        countView.setText(String.format(Locale.US, "%02d %s", entries.size(), entries.size() == 1 ? "PHOTO" : "PHOTOS"));
+        if (entries.isEmpty()) {
             LinearLayout empty = new LinearLayout(this);
             empty.setOrientation(LinearLayout.VERTICAL);
             empty.setGravity(Gravity.CENTER);
             empty.setPadding(dp(28), dp(82), dp(28), dp(40));
-            TextView title = text("All".equals(activeFilter) ? "NO PHOTOS YET" : ("GIFs".equals(activeFilter) ? "NO GIFS YET" : "NO " + activeFilter.toUpperCase(Locale.US) + " PHOTOS"), 13, 0xffd8ded6, true);
+            TextView title = text("All".equals(filter) ? "NO PHOTOS YET" : ("GIFs".equals(filter) ? "NO GIFS YET" : "NO " + filter.toUpperCase(Locale.US) + " PHOTOS"), 13, 0xffd8ded6, true);
             title.setGravity(Gravity.CENTER);
             empty.addView(title);
-            TextView hint = text("All".equals(activeFilter) ? "Capture a photo or tap Import to start your library." : "Choose All to see the rest of your library.", 12, 0xff89948e, false);
+            TextView hint = text("All".equals(filter) ? "Capture a photo or tap Import to start your library." : "Choose All to see the rest of your library.", 12, 0xff89948e, false);
             hint.setGravity(Gravity.CENTER);
             hint.setPadding(0, dp(10), 0, 0);
             empty.addView(hint);
             list.addView(empty);
-            scroll.post(() -> scroll.scrollTo(0, savedScrollY));
+            if (scroll != null) scroll.post(() -> scroll.scrollTo(0, savedScrollY));
             return;
         }
 
         WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
         int columns = WindowMetricsHelper.calculateGalleryColumns(windowInfo.widthDp);
         int rowHeight = columns >= 5 ? dp(130) : dp(112);
+        int thumbTargetPx = rowHeight;
         String currentDay = "";
         LinearLayout row = null;
-        for (PhotoRepository.Photo photo : photos) {
-            String day = new SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(new Date(photo.timestampMillis));
-            if (!day.equals(currentDay)) {
+        for (FilteredEntry entry : entries) {
+            if (!entry.dayLabel.equals(currentDay)) {
                 completeRow(row, columns);
-                currentDay = day;
-                TextView heading = text(day.toUpperCase(Locale.getDefault()), 11, 0xffbbc1ba, true);
+                currentDay = entry.dayLabel;
+                TextView heading = text(currentDay, 11, 0xffbbc1ba, true);
                 heading.setLetterSpacing(.12f);
                 LinearLayout.LayoutParams headingLp = new LinearLayout.LayoutParams(-1, dp(30));
                 headingLp.topMargin = dp(4);
@@ -230,10 +300,10 @@ public class GalleryActivity extends Activity {
                 rowLp.bottomMargin = dp(3);
                 list.addView(row, rowLp);
             }
-            addPhotoTile(row, photo);
+            addPhotoTile(row, entry.photo, thumbTargetPx, generation);
         }
         completeRow(row, columns);
-        scroll.post(() -> scroll.scrollTo(0, savedScrollY));
+        if (scroll != null) scroll.post(() -> scroll.scrollTo(0, savedScrollY));
     }
 
     @Override
@@ -247,17 +317,38 @@ public class GalleryActivity extends Activity {
         loadPhotos();
     }
 
-    private void addPhotoTile(LinearLayout row, PhotoRepository.Photo photo) {
+    private void addPhotoTile(LinearLayout row, PhotoRepository.Photo photo, int thumbTargetPx, int generation) {
         FrameLayout tile = new FrameLayout(this);
-        boolean isSelected = (selectionMode == SelectionMode.SELECTING) && selectedUris.contains(photo.uri);
+        boolean selecting = selectionMode == SelectionMode.SELECTING;
+        int seqIdx = selecting ? selectedUris.indexOf(photo.uri) : -1;
+        boolean isSelected = seqIdx >= 0;
         tile.setBackground(round(0xff202626, 9, isSelected ? 0xffd7b574 : 0xff293031, isSelected ? dp(2) : dp(1)));
         tile.setClipToOutline(true);
 
         ImageView image = new ImageView(this);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        Bitmap thumbnail = decodeThumbnail(photo.uri);
-        if (thumbnail != null) image.setImageBitmap(thumbnail);
+        image.setTag(photo.uri);
         tile.addView(image, new FrameLayout.LayoutParams(-1, -1));
+
+        String cacheKey = photo.uri.toString();
+        Bitmap cached = thumbCache != null ? thumbCache.get(cacheKey) : null;
+        if (cached != null && !cached.isRecycled()) {
+            image.setImageBitmap(cached);
+        } else {
+            final Context appContext = getApplicationContext();
+            loadExecutor.execute(() -> {
+                if (generation != loadGeneration.get()) return;
+                Bitmap decoded = decodeThumbnail(appContext, photo.uri, thumbTargetPx);
+                if (decoded == null) return;
+                if (thumbCache != null) thumbCache.put(cacheKey, decoded);
+                mainHandler.post(() -> {
+                    if (generation != loadGeneration.get() || isFinishing() || isDestroyed()) return;
+                    if (photo.uri.equals(image.getTag())) {
+                        image.setImageBitmap(decoded);
+                    }
+                });
+            });
+        }
 
         if (photo.isGif) {
             TextView gifBadge = text("GIF", 7, 0xffd7b574, true);
@@ -268,15 +359,15 @@ public class GalleryActivity extends Activity {
             tile.addView(gifBadge, gLp);
         }
 
-        if ((selectionMode == SelectionMode.SELECTING) && isSelected) {
-            int seqNum = selectedUris.indexOf(photo.uri) + 1;
-            TextView numBadge = text(String.valueOf(seqNum), 8, 0xff0b0d0e, true);
-            numBadge.setBackground(round(0xffd7b574, 8, 0xffd7b574, 0));
-            numBadge.setGravity(Gravity.CENTER);
-            FrameLayout.LayoutParams nLp = new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP | Gravity.LEFT);
-            nLp.setMargins(dp(4), dp(4), 0, 0);
-            tile.addView(numBadge, nLp);
-        }
+        TextView numBadge = text(isSelected ? String.valueOf(seqIdx + 1) : "", 8, 0xff0b0d0e, true);
+        numBadge.setBackground(round(0xffd7b574, 8, 0xffd7b574, 0));
+        numBadge.setGravity(Gravity.CENTER);
+        numBadge.setVisibility(isSelected ? View.VISIBLE : View.GONE);
+        FrameLayout.LayoutParams nLp = new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP | Gravity.LEFT);
+        nLp.setMargins(dp(4), dp(4), 0, 0);
+        tile.addView(numBadge, nLp);
+
+        visibleTiles.add(new TileHolder(tile, numBadge, photo.uri));
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
         lp.rightMargin = dp(3);
@@ -290,8 +381,7 @@ public class GalleryActivity extends Activity {
                 } else {
                     selectedUris.add(photo.uri);
                 }
-                updateSelectionBar();
-                loadPhotos();
+                refreshSelectionStates();
             } else {
                 openPhoto(photo);
             }
@@ -302,12 +392,36 @@ public class GalleryActivity extends Activity {
             if (!(selectionMode == SelectionMode.SELECTING)) {
                 selectionMode = SelectionMode.SELECTING;
                 selectedUris.add(photo.uri);
-                updateSelectionBar();
-                loadPhotos();
+                refreshSelectionStates();
                 Toast.makeText(this, "Photo selected. Tap more photos, then choose Actions.", Toast.LENGTH_SHORT).show();
             }
             return true;
         });
+    }
+
+    private void refreshSelectionStates() {
+        boolean selecting = selectionMode == SelectionMode.SELECTING;
+        Map<Uri, Integer> orderMap = new HashMap<>(selectedUris.size() * 2);
+        for (int i = 0; i < selectedUris.size(); i++) {
+            orderMap.put(selectedUris.get(i), i + 1);
+        }
+        int pad2 = dp(2);
+        int pad1 = dp(1);
+        for (TileHolder h : visibleTiles) {
+            Integer order = selecting ? orderMap.get(h.uri) : null;
+            boolean selected = order != null;
+            h.tile.setBackground(round(0xff202626, 9, selected ? 0xffd7b574 : 0xff293031, selected ? pad2 : pad1));
+            if (selected) {
+                h.seqBadge.setText(String.valueOf(order));
+                h.seqBadge.setVisibility(View.VISIBLE);
+            } else {
+                h.seqBadge.setVisibility(View.GONE);
+            }
+        }
+        if (list != null) {
+            list.setPadding(list.getPaddingLeft(), dp(3), list.getPaddingRight(), dp(selecting ? 110 : 25));
+        }
+        updateSelectionBar();
     }
 
     private void handleGifButtonClick() {
@@ -325,16 +439,14 @@ public class GalleryActivity extends Activity {
     private void enterSelectionMode() {
         selectionMode = SelectionMode.SELECTING;
         selectedUris.clear();
-        updateSelectionBar();
-        loadPhotos();
+        refreshSelectionStates();
         Toast.makeText(this, "Select photos, then choose Actions", Toast.LENGTH_SHORT).show();
     }
 
     private void exitSelectionMode() {
         selectionMode = SelectionMode.BROWSING;
         selectedUris.clear();
-        updateSelectionBar();
-        loadPhotos();
+        refreshSelectionStates();
     }
 
     private String exportStatusLabel = "SAVING COPIES…";
@@ -345,8 +457,9 @@ public class GalleryActivity extends Activity {
             selectionActionButton.setEnabled(!selectedUris.isEmpty() && !exportJob.isBusy());
             selectionActionButton.setAlpha(selectionActionButton.isEnabled() ? 1f : 0.45f);
         }
-        if(exportJob.isBusy()) {
-            selectionBar.setVisibility(View.VISIBLE);selectionCountView.setText(exportStatusLabel);
+        if (exportJob.isBusy()) {
+            selectionBar.setVisibility(View.VISIBLE);
+            selectionCountView.setText(exportStatusLabel);
         } else if ((selectionMode == SelectionMode.SELECTING) && !selectedUris.isEmpty()) {
             selectionBar.setVisibility(View.VISIBLE);
             selectionCountView.setText(String.format(Locale.US, "%d selected", selectedUris.size()));
@@ -363,7 +476,7 @@ public class GalleryActivity extends Activity {
             Toast.makeText(this, "Please select at least 2 frames for GIF", Toast.LENGTH_SHORT).show();
             return;
         }
-        ArrayList<String> uriStrings = new ArrayList<>();
+        ArrayList<String> uriStrings = new ArrayList<>(selectedUris.size());
         for (Uri u : selectedUris) uriStrings.add(u.toString());
         Intent intent = new Intent(this, GifStudioActivity.class);
         intent.putStringArrayListExtra(GifStudioActivity.EXTRA_PHOTO_URIS, uriStrings);
@@ -383,13 +496,26 @@ public class GalleryActivity extends Activity {
         }
     }
 
-    private Bitmap decodeThumbnail(Uri uri) {
-        try (InputStream stream = getContentResolver().openInputStream(uri)) {
-            if (stream == null) return null;
+    private static Bitmap decodeThumbnail(Context context, Uri uri, int targetPx) {
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            try (InputStream in = context.getContentResolver().openInputStream(uri)) {
+                if (in == null) return null;
+                BitmapFactory.decodeStream(in, null, bounds);
+            }
+            int sample = 1;
+            int minTarget = Math.max(128, targetPx);
+            while (bounds.outWidth / (sample * 2) >= minTarget && bounds.outHeight / (sample * 2) >= minTarget) {
+                sample *= 2;
+            }
             BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = 16;
+            options.inSampleSize = sample;
             options.inPreferredConfig = Bitmap.Config.RGB_565;
-            return BitmapFactory.decodeStream(stream, null, options);
+            try (InputStream stream = context.getContentResolver().openInputStream(uri)) {
+                if (stream == null) return null;
+                return BitmapFactory.decodeStream(stream, null, options);
+            }
         } catch (Exception e) {
             android.util.Log.w("GalleryActivity", "Failed to decode thumbnail: " + uri, e);
             return null;
@@ -430,32 +556,16 @@ public class GalleryActivity extends Activity {
     }
 
     private TextView text(String value, float size, int color, boolean bold) {
-        TextView view = new TextView(this);
-        view.setText(value);
-        view.setTextSize(size);
-        view.setTextColor(color);
-        if (bold) view.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
-        view.setGravity(Gravity.CENTER_VERTICAL);
-        return view;
+        return UiKit.text(this, value, size, color, bold);
     }
 
     private TextView pill(String value, boolean active) {
-        TextView view = text(value, 11, active ? 0xffd7b574 : 0xffd8ded7, true);
-        view.setGravity(Gravity.CENTER);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(active ? 0xff1d1d1a : 0xff202626);
-        bg.setCornerRadius(dp(18));
-        bg.setStroke(dp(1), active ? 0xffd7b574 : 0xff39413e);
-        view.setBackground(bg);
-        return view;
+        return UiKit.pill(this, value, active, 11f, 18f,
+                0xffd7b574, 0xffd8ded7, 0xff1d1d1a, 0xff202626, 0xffd7b574, 0xff39413e);
     }
 
     private GradientDrawable round(int color, int radius, int strokeColor, int strokeWidth) {
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(color);
-        d.setCornerRadius(dp(radius));
-        if (strokeWidth > 0) d.setStroke(strokeWidth, strokeColor);
-        return d;
+        return UiKit.round(this, color, radius, strokeColor, strokeWidth);
     }
 
     private void generateContactSheet() {
@@ -464,15 +574,15 @@ public class GalleryActivity extends Activity {
             Toast.makeText(this, "No photos to generate proof sheet", Toast.LENGTH_SHORT).show();
             return;
         }
-        final long proofTicket=exportJob.tryBegin(JobState.Phase.SAVING);
-        if(proofTicket==0) return;
+        final long proofTicket = exportJob.tryBegin(JobState.Phase.SAVING);
+        if (proofTicket == 0) return;
         exportStatusLabel = "CREATING PROOF SHEET…";
         updateSelectionBar();
         Toast.makeText(this, "Developing 35mm Darkroom Proof Sheet…", Toast.LENGTH_SHORT).show();
         ContactSheetGenerator.generate(this, photos, new ContactSheetGenerator.Callback() {
             @Override
             public void onCompleted(Uri savedUri, String fileName) {
-                if(!exportJob.move(proofTicket,JobState.Phase.READY) || isDestroyed() || isFinishing()) return;
+                if (!exportJob.move(proofTicket, JobState.Phase.READY) || isDestroyed() || isFinishing()) return;
                 updateSelectionBar();
                 Toast.makeText(GalleryActivity.this, "Proof sheet saved to Pictures/Lika Lens", Toast.LENGTH_LONG).show();
                 loadPhotos();
@@ -485,7 +595,7 @@ public class GalleryActivity extends Activity {
 
             @Override
             public void onError(String message) {
-                if(!exportJob.move(proofTicket,JobState.Phase.FAILED) || isDestroyed() || isFinishing()) return;
+                if (!exportJob.move(proofTicket, JobState.Phase.FAILED) || isDestroyed() || isFinishing()) return;
                 updateSelectionBar();
                 Toast.makeText(GalleryActivity.this, message, Toast.LENGTH_SHORT).show();
             }
@@ -493,29 +603,35 @@ public class GalleryActivity extends Activity {
     }
 
     private void showBatchPasteLookDialog() {
-        List<PhotoRepository.Photo> photos = selectedPhotos();
-        List<PhotoRepository.Photo> editable = new ArrayList<>();
-        for (PhotoRepository.Photo photo : photos) {
-            if (RawArchive.exists(this, PhotoRepository.archiveKey(photo.name))) editable.add(photo);
-        }
+        final List<PhotoRepository.Photo> photos = selectedPhotos();
         if (!PhotoEditStore.hasClipboard(this)) {
             new AlertDialog.Builder(this).setTitle("No copied look")
                     .setMessage("Open a RAW photo in Edit and choose Copy look from its menu.")
                     .setPositiveButton("OK", null).show();
             return;
         }
-        if (editable.isEmpty()) {
-            new AlertDialog.Builder(this).setTitle("RAW original required")
-                    .setMessage("None of the selected photos has an editable RAW original.")
-                    .setPositiveButton("OK", null).show();
-            return;
-        }
-        RawDeveloper.Look copied = PhotoEditStore.pasteFromClipboard(this);
-        new AlertDialog.Builder(this).setTitle("Apply copied look?")
-                .setMessage("Save new editable copies of " + editable.size() + " selected RAW photos. Originals stay unchanged."
-                        + (editable.size() < photos.size() ? " Photos without RAW data will be skipped." : ""))
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Save copies", (d, w) -> applyCopiedLook(editable, copied)).show();
+        final Context appContext = getApplicationContext();
+        final RawDeveloper.Look copied = PhotoEditStore.pasteFromClipboard(this);
+        loadExecutor.execute(() -> {
+            List<PhotoRepository.Photo> editable = new ArrayList<>();
+            for (PhotoRepository.Photo photo : photos) {
+                if (RawArchive.exists(appContext, PhotoRepository.archiveKey(photo.name))) editable.add(photo);
+            }
+            mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (editable.isEmpty()) {
+                    new AlertDialog.Builder(this).setTitle("RAW original required")
+                            .setMessage("None of the selected photos has an editable RAW original.")
+                            .setPositiveButton("OK", null).show();
+                    return;
+                }
+                new AlertDialog.Builder(this).setTitle("Apply copied look?")
+                        .setMessage("Save new editable copies of " + editable.size() + " selected RAW photos. Originals stay unchanged."
+                                + (editable.size() < photos.size() ? " Photos without RAW data will be skipped." : ""))
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Save copies", (d, w) -> applyCopiedLook(editable, copied)).show();
+            });
+        });
     }
 
     private void refreshFilters() {
@@ -536,10 +652,16 @@ public class GalleryActivity extends Activity {
     }
 
     private List<PhotoRepository.Photo> selectedPhotos() {
-        List<PhotoRepository.Photo> photos = new ArrayList<>();
-        List<PhotoRepository.Photo> all = PhotoRepository.all(this);
+        List<PhotoRepository.Photo> photos = new ArrayList<>(selectedUris.size());
+        List<PhotoRepository.Photo> all = cachedAllPhotos;
+        if (all.isEmpty()) all = PhotoRepository.all(this);
         for (Uri uri : selectedUris) {
-            for (PhotoRepository.Photo photo : all) if (photo.uri.equals(uri)) { photos.add(photo); break; }
+            for (PhotoRepository.Photo photo : all) {
+                if (photo.uri.equals(uri)) {
+                    photos.add(photo);
+                    break;
+                }
+            }
         }
         return photos;
     }
@@ -559,9 +681,17 @@ public class GalleryActivity extends Activity {
                     } else new AlertDialog.Builder(this).setTitle("Delete selected photos?")
                             .setMessage("Delete " + selectedUris.size() + " selected photos and their RAW originals? This cannot be undone.")
                             .setNegativeButton("Cancel", null).setPositiveButton("Delete", (dialog, choice) -> {
-                                for (PhotoRepository.Photo photo : selectedPhotos())
-                                    PhotoRepository.delete(this, photo.uri, photo.name, PhotoRepository.archiveKey(photo.name));
+                                final List<PhotoRepository.Photo> toDelete = selectedPhotos();
+                                final Context appContext = getApplicationContext();
                                 exitSelectionMode();
+                                loadExecutor.execute(() -> {
+                                    for (PhotoRepository.Photo photo : toDelete) {
+                                        PhotoRepository.delete(appContext, photo.uri, photo.name, PhotoRepository.archiveKey(photo.name));
+                                    }
+                                    mainHandler.post(() -> {
+                                        if (!isFinishing() && !isDestroyed()) loadPhotos();
+                                    });
+                                });
                             }).show();
                 }).show();
     }
@@ -579,13 +709,13 @@ public class GalleryActivity extends Activity {
 
     private void applyCopiedLook(List<PhotoRepository.Photo> photos, RawDeveloper.Look look) {
         final long exportTicket = exportJob.tryBegin(JobState.Phase.SAVING);
-        if(exportTicket==0) return;
+        if (exportTicket == 0) return;
         final List<PhotoRepository.Photo> snapshot = new ArrayList<>(photos);
         final RawDeveloper.Look recipe = look.copy();
         exportStatusLabel = "SAVING COPIES…";
         updateSelectionBar();
-        android.content.Context context = getApplicationContext();
-        new Thread(() -> {
+        Context context = getApplicationContext();
+        loadExecutor.execute(() -> {
             int saved = 0;
             for (PhotoRepository.Photo photo : snapshot) {
                 try {
@@ -596,18 +726,22 @@ public class GalleryActivity extends Activity {
             }
             final int completed = saved;
             mainHandler.post(() -> {
-                if(!exportJob.move(exportTicket,JobState.Phase.READY) || isFinishing() || isDestroyed()) return;
+                if (!exportJob.move(exportTicket, JobState.Phase.READY) || isFinishing() || isDestroyed()) return;
                 exitSelectionMode();
                 Toast.makeText(this, "Saved " + completed + " of " + snapshot.size() + " copies. Originals unchanged.", Toast.LENGTH_LONG).show();
+                loadPhotos();
             });
-        }, "LibraryLookExport").start();
+        });
     }
 
-
     @Override protected void onDestroy() {
-        exportJob.close(); mainHandler.removeCallbacksAndMessages(null);
+        loadGeneration.incrementAndGet();
+        exportJob.close();
+        mainHandler.removeCallbacksAndMessages(null);
+        loadExecutor.shutdownNow();
+        if (thumbCache != null) thumbCache.evictAll();
         super.onDestroy();
     }
 
-    private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private int dp(float value) { return UiKit.dp(this, value); }
 }

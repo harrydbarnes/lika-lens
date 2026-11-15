@@ -7,6 +7,36 @@ description: >
   fixing individual bugs.
 ---
 
+# Lika Lens — Project & Engineering Guidelines
+
+## 1. Architecture & Stack Boundaries
+- **Pure Android Java 17**: `app` targets `compileSdk = 35`, `targetSdk = 35`, `minSdk = 26`, with `enableKotlin = false` and `android.useAndroidX = false`.
+- **Zero bloated dependencies**: Production code uses standard Android framework APIs (`android.view`, `android.graphics`, `android.hardware.camera2`, `android.media`) plus `org.json`. Do not add Kotlin, AndroidX, Jetpack Compose, or third-party image/UI libraries unless explicitly requested.
+- **Native UI & Brand Language**: Share widget styling, pills, headers, and spacing helpers via `UiKit` rather than duplicating XML/View boilerplate. Preserve the charcoal darkroom ground (`#0B0D0E`), film gold accents (`#D7B574`), high-contrast legibility, and left-handed ergonomics (`AppSettings.LEFT_HAND_MODE`). Look first to `design-qa.md` before changing Library or Editor UX.
+
+## 2. Colour Science & Processing Parity
+Follow [`docs/capture-processing-consistency.md`](docs/capture-processing-consistency.md) for all still/preview/editor/LUT changes:
+- **Freeze capture inputs at shutter press**: Characteristics, clockwise `CaptureOrientation`, recipe (`RawDeveloper.Look`), aspect ratio, selfie mirror, RAW policy, and pre-look `previewMidTarget` travel with the capture request; never re-read shared prefs after camera callbacks fire.
+- **Orientation contracts**: DNG exports keep sensor mosaic samples in sensor order and write TIFF orientation via `CaptureOrientation.toExif`. JPEG fallback honours all eight EXIF transforms prior to grading/cropping and outputs upright pixels tagged `NORMAL`.
+- **Preview ↔ Export parity**: Live viewfinder `RuntimeShader` (Android 13+) interpolates a 33³ LUT built from `RawDeveloper.renderDisplayRgb` (`PreviewLookLut` + `LiveLookPreview`), sharing brains, push/pull, tone/WB controls, built-in/custom LUTs, intensity, and warm-illuminant ambient attenuation with `developBitmap`/`developJpeg`.
+- **Cached RAW scrubbing parity**: `RawDeveloper.prepareLinearScene` + `developFromLinear` / `developFromLinearPixels` (`LinearSceneCache`) **must remain pixel-identical** to `develop` / `developPixels`. Always run and maintain the parity regression test in `RawDeveloperTest`.
+- **Image quality invariants**:
+  - Preserve warm-illuminant attenuation (`ambientWarmthFactor`) so tungsten/warm indoor shots do not double-stack amber tint.
+  - Preserve display white-point headroom in `renderDisplayRgb` without crushing whites.
+  - Anchor grain coordinates to the common `3000f / Math.max(w, h)` reference so texture matches across preview and export resolutions.
+  - Align ISO 21496-1 Ultra HDR gainmaps to inner photo bounds when `frameBorder` padding is applied.
+  - Keep editing strictly **non-destructive** (`Save copy` produces a new independent JPEG/RAW output and never mutates or deletes originals).
+
+## 3. State Machines, Async Ownership & Resource Safety
+Follow [`docs/workflow-state-machines.md`](docs/workflow-state-machines.md) and [`docs/video-orientation-fix.md`](docs/video-orientation-fix.md):
+- **Explicit job & epoch ownership**: Camera opening (`RequestEpoch`), RAW development (`CaptureJobs`), image reader leases (`ResourceLease`), video saves (`VideoSaveJob`), editor/settings/GIF/viewer async jobs (`JobState`), and APK updates (`UpdateSession`) must verify job/generation ownership **and** `!isFinishing() && !isDestroyed()` before updating UI. Recycle rejected bitmaps immediately.
+- **Atomic media publication**: Route media exports through `MediaOutput` so `.part` / pending entries publish only after a clean stream close and roll back cleanly on error. Delete recorded video segments only after the stitched output has published cleanly.
+- **Main-thread & bitmap discipline**: Keep disk I/O, `BitmapFactory` decoding, `.cube` parsing (`LutManager`), GIF encoding/extraction, and `PhotoRepository` indexing off the UI thread. Never call `bitmap.recycle()` inside `LruCache.entryRemoved()` while `ImageView`s may still draw that bitmap; clear drawables (`setImageDrawable(null)`) before explicit recycling and shut down executors in `onDestroy()`.
+
+## 4. Build, R8 Shrinker & Testing Gates
+- **R8 Full Mode & Lint**: Release builds enable `isMinifyEnabled = true`, `isShrinkResources = true`, and `android.enableR8.fullMode = true`. Any new reflection (`Class.forName`, `getMethod`, `getIdentifier`) must have corresponding rules in `app/proguard-rules.pro`. Guard all API 27+ APIs cleanly so `lintVitalRelease` stays clean.
+- **Tests must stay up to date**: Keep `app/src/test/java/com/scope/camera/` (`./gradlew testDebugUnitTest`) compiling and passing cleanly. Whenever you alter colour math, `LinearSceneCache`, LUT parsing/generation, GIF encoding, capture orientation, or workflow state machines, update or add deterministic unit tests and update relevant `docs/` checklists.
+
 <!-- desloppify-begin -->
 <!-- desloppify-skill-version: 7 -->
 

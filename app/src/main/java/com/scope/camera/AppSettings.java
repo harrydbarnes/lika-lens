@@ -224,12 +224,13 @@ final class AppSettings {
 
     static float parseAspectRatio(String aspect) {
         if (aspect == null || aspect.isEmpty()) return 4f / 3f;
-        String clean = aspect.split("·")[0].trim();
-        String[] parts = clean.split(":");
-        if (parts.length == 2) {
+        int dot = aspect.indexOf('·');
+        String clean = (dot >= 0 ? aspect.substring(0, dot) : aspect).trim();
+        int colon = clean.indexOf(':');
+        if (colon > 0 && colon + 1 < clean.length() && clean.indexOf(':', colon + 1) < 0) {
             try {
-                float w = Float.parseFloat(parts[0].trim());
-                float h = Float.parseFloat(parts[1].trim());
+                float w = Float.parseFloat(clean.substring(0, colon).trim());
+                float h = Float.parseFloat(clean.substring(colon + 1).trim());
                 if (w > 0f && h > 0f) return w / h;
             } catch (NumberFormatException e) {
                 Log.w(TAG, "Failed to parse aspect ratio: " + aspect, e);
@@ -309,15 +310,15 @@ final class AppSettings {
         SharedPreferences prefs = prefs(context);
         String oldBrain = prefs.getString(BRAIN, null);
         String oldPrefix = prefs.getString(FILE_PREFIX, null);
+        boolean migrateGrid = !prefs.contains(GRID_STYLE) && prefs.getBoolean(GRID, false);
+        boolean migrateBrain = "SCOPE / CORE".equals(oldBrain);
+        boolean migratePrefix = "SCOPE".equals(oldPrefix);
+        if (!migrateBrain && !migratePrefix && !migrateGrid) return;
         SharedPreferences.Editor editor = prefs.edit();
-        boolean changed = false;
-        if ("SCOPE / CORE".equals(oldBrain)) { editor.putString(BRAIN, "LIKA / FILM"); changed = true; }
-        if ("SCOPE".equals(oldPrefix)) { editor.putString(FILE_PREFIX, "LIKA"); changed = true; }
-        if (!prefs.contains(GRID_STYLE) && prefs.getBoolean(GRID, false)) {
-            editor.putString(GRID_STYLE, "3×3");
-            changed = true;
-        }
-        if (changed) editor.apply();
+        if (migrateBrain) editor.putString(BRAIN, "LIKA / FILM");
+        if (migratePrefix) editor.putString(FILE_PREFIX, "LIKA");
+        if (migrateGrid) editor.putString(GRID_STYLE, "3×3");
+        editor.apply();
     }
 
     static String getCustomRecipeName(Context context, int slot) {
@@ -334,12 +335,6 @@ final class AppSettings {
         String nameKey = slot == 1 ? RECIPE_1_NAME : slot == 2 ? RECIPE_2_NAME : RECIPE_3_NAME;
         String dataKey = slot == 1 ? RECIPE_1_DATA : slot == 2 ? RECIPE_2_DATA : RECIPE_3_DATA;
         prefs(context).edit().putString(nameKey, name).putString(dataKey, data).apply();
-    }
-
-    static void deleteCustomRecipe(Context context, int slot) {
-        String nameKey = slot == 1 ? RECIPE_1_NAME : slot == 2 ? RECIPE_2_NAME : RECIPE_3_NAME;
-        String dataKey = slot == 1 ? RECIPE_1_DATA : slot == 2 ? RECIPE_2_DATA : RECIPE_3_DATA;
-        prefs(context).edit().remove(nameKey).remove(dataKey).apply();
     }
 
     static int resolveWhiteBalanceKelvin(Context context) {
@@ -383,15 +378,19 @@ final class AppSettings {
                 .apply();
     }
 
-    static long getAvailableStorageBytes(Context context) {
+    private static StatFs storageStats(Context context) {
         try {
             File path = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
             if (!path.exists()) path = context.getFilesDir();
-            StatFs stat = new StatFs(path.getPath());
-            return stat.getAvailableBytes();
+            return new StatFs(path.getPath());
         } catch (Throwable t) {
-            return 0L;
+            return null;
         }
+    }
+
+    static long getAvailableStorageBytes(Context context) {
+        StatFs stat = storageStats(context);
+        return stat != null ? stat.getAvailableBytes() : 0L;
     }
 
     static long getEstimatedRemainingFrames(Context context) {
@@ -405,23 +404,18 @@ final class AppSettings {
     }
 
     static long getTotalStorageBytes(Context context) {
-        try {
-            File path = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
-            if (!path.exists()) path = context.getFilesDir();
-            StatFs stat = new StatFs(path.getPath());
-            return stat.getTotalBytes();
-        } catch (Throwable t) {
-            return 0L;
-        }
+        StatFs stat = storageStats(context);
+        return stat != null ? stat.getTotalBytes() : 0L;
     }
 
     static String formatDetailedStorageBreakdown(Context context) {
-        long avail = getAvailableStorageBytes(context);
-        long total = getTotalStorageBytes(context);
+        StatFs stat = storageStats(context);
+        long avail = stat != null ? stat.getAvailableBytes() : 0L;
+        long total = stat != null ? stat.getTotalBytes() : 0L;
         double availGb = avail / (1024.0 * 1024.0 * 1024.0);
         double totalGb = total / (1024.0 * 1024.0 * 1024.0);
-        long frames = getEstimatedRemainingFrames(context);
-        long mins = getEstimatedRemainingVideoMinutes(context);
+        long frames = Math.max(0L, avail / (28L * 1024L * 1024L));
+        long mins = Math.max(0L, avail / (180L * 1024L * 1024L));
         long h = mins / 60;
         long m = mins % 60;
         String videoStr = h > 0 ? (h + "h " + m + "m") : (m + "m");
@@ -433,8 +427,8 @@ final class AppSettings {
     static String formatStorageInfo(Context context) {
         long bytes = getAvailableStorageBytes(context);
         double gb = bytes / (1024.0 * 1024.0 * 1024.0);
-        long frames = getEstimatedRemainingFrames(context);
-        long mins = getEstimatedRemainingVideoMinutes(context);
+        long frames = Math.max(0L, bytes / (28L * 1024L * 1024L));
+        long mins = Math.max(0L, bytes / (180L * 1024L * 1024L));
         long h = mins / 60;
         long m = mins % 60;
         String videoStr = h > 0 ? (h + "h " + m + "m") : (m + "m");

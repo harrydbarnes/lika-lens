@@ -46,7 +46,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.util.Log;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
 import java.util.List;
@@ -66,18 +65,26 @@ public class SettingsActivity extends Activity {
     private LinearLayout currentSectionCard;
     private ImageView heroImageView;
     private TextView heroCompareBadge;
+    private TextView heroShotLabel;
+    private View heroPlaceholderView;
     private Bitmap baseHeroBitmap;
     private Bitmap cachedHeroSource;
     private Bitmap currentHeroBitmap;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final JobState heroJob = new JobState();
-    private final java.util.concurrent.ExecutorService heroWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.ExecutorService heroWorker = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "lika-settings-worker");
+        t.setDaemon(true);
+        return t;
+    });
     private enum HeroCompare { GRADED, ORIGINAL }
     private HeroCompare heroCompare = HeroCompare.GRADED;
     private Bitmap heroGradedBitmap;
     private Runnable heroRender;
     private String pendingBackupName;
     private String pendingBackupJson;
+    private volatile boolean heroLoadStarted;
+    private boolean hapticsEnabled = true;
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -88,6 +95,7 @@ public class SettingsActivity extends Activity {
             );
         }
         AppSettings.migrateBranding(this);
+        hapticsEnabled = AppSettings.getBoolean(this, AppSettings.HAPTICS, true);
         LutManager.init(this);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
@@ -123,6 +131,7 @@ public class SettingsActivity extends Activity {
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Reset", (dialog, which) -> {
                     AppSettings.prefs(this).edit().clear().apply();
+                    hapticsEnabled = true;
                     rebuildContent();
                 }).show());
         TextView done = pill("DONE", true);
@@ -132,9 +141,10 @@ public class SettingsActivity extends Activity {
         done.setOnClickListener(v -> finish());
         page.addView(header);
 
+        WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
         categoryBar = new LinearLayout(this);
         categoryBar.setGravity(Gravity.CENTER_VERTICAL);
-        updateCategoryBarPadding();
+        updateCategoryBarPadding(windowInfo);
         page.addView(categoryBar);
         refreshCategoryBar();
 
@@ -144,22 +154,20 @@ public class SettingsActivity extends Activity {
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(16), dp(5), dp(16), dp(26));
         FrameLayout wrapper = new FrameLayout(this);
-        wrapper.addView(content, getContentLayoutParams());
+        wrapper.addView(content, getContentLayoutParams(windowInfo));
         scroll.addView(wrapper, new FrameLayout.LayoutParams(-1, -2));
         page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(page);
         populateContent();
     }
 
-    private FrameLayout.LayoutParams getContentLayoutParams() {
-        WindowMetricsHelper.WindowSizeInfo info = WindowMetricsHelper.computeWindowSizeInfo(this);
+    private FrameLayout.LayoutParams getContentLayoutParams(WindowMetricsHelper.WindowSizeInfo info) {
         int maxW = info.widthDp >= 760 ? dp(720) : ViewGroup.LayoutParams.MATCH_PARENT;
         return new FrameLayout.LayoutParams(maxW, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL);
     }
 
-    private void updateCategoryBarPadding() {
+    private void updateCategoryBarPadding(WindowMetricsHelper.WindowSizeInfo info) {
         if (categoryBar == null) return;
-        WindowMetricsHelper.WindowSizeInfo info = WindowMetricsHelper.computeWindowSizeInfo(this);
         int extraPad = info.widthDp >= 760 ? dp((info.widthDp - 720) / 2) : 0;
         categoryBar.setPadding(dp(18) + extraPad, 0, dp(18) + extraPad, dp(8));
     }
@@ -167,16 +175,18 @@ public class SettingsActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        hapticsEnabled = AppSettings.getBoolean(this, AppSettings.HAPTICS, true);
         AppUpdateManager.onResume(this);
     }
 
     @Override
     public void onConfigurationChanged(android.content.res.Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
+        WindowMetricsHelper.WindowSizeInfo info = WindowMetricsHelper.computeWindowSizeInfo(this);
         if (content != null) {
-            content.setLayoutParams(getContentLayoutParams());
+            content.setLayoutParams(getContentLayoutParams(info));
         }
-        updateCategoryBarPadding();
+        updateCategoryBarPadding(info);
     }
 
     private void rebuildContent() {
@@ -196,7 +206,7 @@ public class SettingsActivity extends Activity {
             if (!category.equals("GENERAL")) lp.leftMargin = dp(6);
             categoryBar.addView(tab, lp);
             tab.setOnClickListener(v -> {
-                if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+                if (hapticsEnabled) {
                     tab.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
                 }
                 activeCategory = category;
@@ -288,8 +298,8 @@ public class SettingsActivity extends Activity {
 
         for (String lutName : luts) {
             if (!LutManager.isBuiltIn(lutName)) {
-                LutManager.Lut3D lut3d = LutManager.get(this, lutName);
-                String desc = "Custom imported .cube" + (lut3d != null ? (" (" + lut3d.size + "³ grid)") : "");
+                int cubeSize = LutManager.readCubeSize(this, lutName);
+                String desc = "Custom imported .cube" + (cubeSize > 0 ? (" (" + cubeSize + "³ grid)") : "");
                 addInfo(lutName, desc, ACCENT);
             }
         }
@@ -433,7 +443,7 @@ public class SettingsActivity extends Activity {
     }
 
     private void checkAppUpdate() {
-        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+        if (hapticsEnabled) {
             getWindow().getDecorView().performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
         }
         Toast.makeText(this, "Checking GitHub for updates…", Toast.LENGTH_SHORT).show();
@@ -565,32 +575,10 @@ public class SettingsActivity extends Activity {
         frame.addView(heroImageView, new FrameLayout.LayoutParams(-1, dp(192)));
 
         currentHeroBitmap = null;
-        if (cachedHeroSource != null && !cachedHeroSource.isRecycled()) {
-            cachedHeroSource.recycle();
-            cachedHeroSource = null;
-        }
-        if (heroGradedBitmap != null && !heroGradedBitmap.isRecycled()) {
-            heroGradedBitmap.recycle();
-            heroGradedBitmap = null;
-        }
-        if (baseHeroBitmap != null && !baseHeroBitmap.isRecycled()) {
-            baseHeroBitmap.recycle();
-            baseHeroBitmap = null;
-        }
-
-        Uri latest = latestScopeImage();
-        baseHeroBitmap = latest == null ? null : decodePreview(latest, dp(640), dp(400));
-        if (baseHeroBitmap != null) {
-            int[] scaledDims = computeHeroScaledDimensions(baseHeroBitmap.getWidth(), baseHeroBitmap.getHeight(), 480);
-            cachedHeroSource = Bitmap.createScaledBitmap(baseHeroBitmap, scaledDims[0], scaledDims[1], true);
-            setHeroBitmap(baseHeroBitmap);
-            triggerHeroUpdate();
-        } else {
-            heroImageView.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                    new int[]{0xff283237, 0xff131a1c, 0xff090b0c}));
-            PlaceholderArtwork art = new PlaceholderArtwork();
-            frame.addView(art, new FrameLayout.LayoutParams(-1, dp(192)));
-        }
+        heroPlaceholderView = new PlaceholderArtwork();
+        heroImageView.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xff283237, 0xff131a1c, 0xff090b0c}));
+        frame.addView(heroPlaceholderView, new FrameLayout.LayoutParams(-1, dp(192)));
 
         LinearLayout caption = new LinearLayout(this);
         caption.setOrientation(LinearLayout.VERTICAL);
@@ -600,9 +588,10 @@ public class SettingsActivity extends Activity {
 
         LinearLayout captionTop = new LinearLayout(this);
         captionTop.setGravity(Gravity.CENTER_VERTICAL);
-        TextView shot = text(baseHeroBitmap == null ? "READY TO DEVELOP" : "LAST FRAME · HOLD TO COMPARE", 8, ACCENT, true);
-        shot.setLetterSpacing(.15f);
-        captionTop.addView(shot, new LinearLayout.LayoutParams(0, -2, 1));
+        boolean hasCachedHero = baseHeroBitmap != null && !baseHeroBitmap.isRecycled();
+        heroShotLabel = text(hasCachedHero ? "LAST FRAME · HOLD TO COMPARE" : "READY TO DEVELOP", 8, ACCENT, true);
+        heroShotLabel.setLetterSpacing(.15f);
+        captionTop.addView(heroShotLabel, new LinearLayout.LayoutParams(0, -2, 1));
 
         heroCompareBadge = text("ORIGINAL", 8, 0xfff0f2eb, true);
         heroCompareBadge.setBackground(round(0x88000000, 6, 0xffffffff, dp(1)));
@@ -619,11 +608,54 @@ public class SettingsActivity extends Activity {
         FrameLayout.LayoutParams captionLp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
         frame.addView(caption, captionLp);
 
+        if (hasCachedHero) {
+            heroPlaceholderView.setVisibility(View.GONE);
+            if (heroGradedBitmap != null && !heroGradedBitmap.isRecycled() && heroCompare == HeroCompare.GRADED) {
+                setHeroBitmap(heroGradedBitmap);
+            } else {
+                setHeroBitmap(baseHeroBitmap);
+                triggerHeroUpdate();
+            }
+        } else if (!heroLoadStarted) {
+            heroLoadStarted = true;
+            final int targetW = dp(640);
+            final int targetH = dp(400);
+            final android.content.Context appContext = getApplicationContext();
+            heroWorker.execute(() -> {
+                Uri latest = latestScopeImage(appContext);
+                Bitmap base = latest == null ? null : decodePreview(appContext, latest, targetW, targetH);
+                Bitmap scaled = null;
+                if (base != null) {
+                    int[] scaledDims = computeHeroScaledDimensions(base.getWidth(), base.getHeight(), 480);
+                    scaled = (scaledDims[0] == base.getWidth() && scaledDims[1] == base.getHeight())
+                            ? base.copy(Bitmap.Config.ARGB_8888, false)
+                            : Bitmap.createScaledBitmap(base, scaledDims[0], scaledDims[1], true);
+                }
+                final Bitmap finalBase = base;
+                final Bitmap finalScaled = scaled;
+                mainHandler.post(() -> {
+                    if (isFinishing() || isDestroyed() || heroJob.isClosed()) {
+                        if (finalScaled != null && finalScaled != finalBase && !finalScaled.isRecycled()) finalScaled.recycle();
+                        if (finalBase != null && !finalBase.isRecycled()) finalBase.recycle();
+                        return;
+                    }
+                    baseHeroBitmap = finalBase;
+                    cachedHeroSource = finalScaled;
+                    if (finalBase != null) {
+                        if (heroPlaceholderView != null) heroPlaceholderView.setVisibility(View.GONE);
+                        if (heroShotLabel != null) heroShotLabel.setText("LAST FRAME · HOLD TO COMPARE");
+                        setHeroBitmap(finalBase);
+                        triggerHeroUpdate();
+                    }
+                });
+            });
+        }
+
         // Touch-and-hold to compare on the hero preview
         frame.setOnTouchListener((v, event) -> {
             if (baseHeroBitmap == null) return false;
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+                if (hapticsEnabled) {
                     frame.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
                 }
                 heroCompare = HeroCompare.ORIGINAL;
@@ -674,29 +706,29 @@ public class SettingsActivity extends Activity {
 
     private void triggerHeroUpdate() {
         if (heroJob.isClosed() || heroImageView == null || cachedHeroSource == null || cachedHeroSource.isRecycled()) return;
-        final long ticket=heroJob.begin(JobState.Phase.RENDERING);
-        if(heroRender!=null) mainHandler.removeCallbacks(heroRender);
-        heroRender=() -> {
-            if(!heroJob.accepts(ticket) || cachedHeroSource==null || cachedHeroSource.isRecycled()) return;
-            final Bitmap source=cachedHeroSource.copy(Bitmap.Config.ARGB_8888,true);
-            final RawDeveloper.Look recipe=RawDeveloper.Look.fromPreferences(this);
+        final long ticket = heroJob.begin(JobState.Phase.RENDERING);
+        if (heroRender != null) mainHandler.removeCallbacks(heroRender);
+        heroRender = () -> {
+            if (!heroJob.accepts(ticket) || cachedHeroSource == null || cachedHeroSource.isRecycled()) return;
+            final Bitmap source = cachedHeroSource.copy(Bitmap.Config.ARGB_8888, true);
+            final RawDeveloper.Look recipe = RawDeveloper.Look.fromPreferences(this);
             heroWorker.execute(() -> {
                 try {
-                    if(!heroJob.accepts(ticket)) return;
-                    Bitmap developed=RawDeveloper.developBitmap(source,recipe,true);
+                    if (!heroJob.accepts(ticket)) return;
+                    Bitmap developed = RawDeveloper.developBitmap(source, recipe, true);
                     mainHandler.post(() -> {
-                        if(!heroJob.accepts(ticket) || isDestroyed()) { if(developed!=null) developed.recycle();return; }
-                        heroJob.move(ticket,developed==null?JobState.Phase.FAILED:JobState.Phase.READY);
-                        if(developed==null) return;
-                        Bitmap old=heroGradedBitmap;heroGradedBitmap=developed;
-                        if(developed!=null && heroCompare==HeroCompare.GRADED) setHeroBitmap(developed);
-                        if(old!=null && old!=developed && !old.isRecycled()) old.recycle();
+                        if (!heroJob.accepts(ticket) || isDestroyed()) { if (developed != null) developed.recycle(); return; }
+                        heroJob.move(ticket, developed == null ? JobState.Phase.FAILED : JobState.Phase.READY);
+                        if (developed == null) return;
+                        Bitmap old = heroGradedBitmap; heroGradedBitmap = developed;
+                        if (heroCompare == HeroCompare.GRADED) setHeroBitmap(developed);
+                        if (old != null && old != developed && !old.isRecycled()) old.recycle();
                     });
-                } catch(Exception error) { heroJob.move(ticket,JobState.Phase.FAILED);Log.w(TAG,"Hero preview failed",error); }
-                finally { if(source!=null && !source.isRecycled()) source.recycle(); }
+                } catch (Exception error) { heroJob.move(ticket, JobState.Phase.FAILED); Log.w(TAG, "Hero preview failed", error); }
+                finally { if (source != null && !source.isRecycled()) source.recycle(); }
             });
         };
-        mainHandler.postDelayed(heroRender,60);
+        mainHandler.postDelayed(heroRender, 60);
     }
 
     private void addVerticalControl(LinearLayout row, String label, String key, int fallback) {
@@ -728,10 +760,10 @@ public class SettingsActivity extends Activity {
         row.addView(column, new LinearLayout.LayoutParams(0, -2, 1));
     }
 
-    private Uri latestScopeImage() {
+    private static Uri latestScopeImage(android.content.Context context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             String[] columns = {MediaStore.Images.Media._ID};
-            try (Cursor cursor = getContentResolver().query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            try (Cursor cursor = context.getContentResolver().query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                     columns, "(" + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ? OR "
                             + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ?) AND "
                             + MediaStore.Images.Media.MIME_TYPE + "=?",
@@ -747,7 +779,7 @@ public class SettingsActivity extends Activity {
             }
         }
         java.util.List<File> candidates = new java.util.ArrayList<>();
-        File pictures = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+        File pictures = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
         for (String folderName : new String[]{"Lika Lens", "SCOPE"}) {
             File folder = new File(pictures, folderName);
             File[] files = folder.listFiles((dir, name) -> name.toLowerCase(Locale.US).endsWith(".jpg"));
@@ -758,8 +790,8 @@ public class SettingsActivity extends Activity {
         return Uri.fromFile(candidates.get(0));
     }
 
-    private Bitmap decodePreview(Uri uri, int targetWidth, int targetHeight) {
-        try (InputStream boundsStream = getContentResolver().openInputStream(uri)) {
+    private static Bitmap decodePreview(android.content.Context context, Uri uri, int targetWidth, int targetHeight) {
+        try (InputStream boundsStream = context.getContentResolver().openInputStream(uri)) {
             if (boundsStream == null) return null;
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
@@ -768,21 +800,17 @@ public class SettingsActivity extends Activity {
             while (bounds.outWidth / sample > targetWidth * 2 || bounds.outHeight / sample > targetHeight * 2) sample *= 2;
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inSampleSize = sample;
-            try (InputStream imageStream = getContentResolver().openInputStream(uri)) {
+            try (InputStream imageStream = context.getContentResolver().openInputStream(uri)) {
                 Bitmap decoded = imageStream == null ? null : BitmapFactory.decodeStream(imageStream, null, options);
                 if (decoded == null) return null;
-                int exifDegrees = GifMediaHelper.getExifOrientation(this, uri);
+                int exifDegrees = GifMediaHelper.getExifOrientation(context, uri);
                 return exifDegrees != 0 ? GifMediaHelper.rotateBitmap(decoded, exifDegrees) : decoded;
             }
         } catch (Exception ignored) { return null; }
     }
 
     private GradientDrawable round(int color, int radius, int strokeColor, int strokeWidth) {
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(color);
-        d.setCornerRadius(dp(radius));
-        if (strokeWidth > 0) d.setStroke(strokeWidth, strokeColor);
-        return d;
+        return UiKit.round(this, color, radius, strokeColor, strokeWidth);
     }
 
     private void addChoice(String title, String subtitle, String key, String[] options, String defaultValue) {
@@ -950,7 +978,7 @@ public class SettingsActivity extends Activity {
             }
 
             row.setOnClickListener(v -> {
-                if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+                if (hapticsEnabled) {
                     row.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
                 }
                 if (AppSettings.FILE_PREFIX.equals(key) && option.startsWith("CUSTOM")) {
@@ -998,6 +1026,7 @@ public class SettingsActivity extends Activity {
     }
 
     private void addSlider(String title, String subtitle, String key, int min, int max, int defaultValue) {
+        int currentVal = AppSettings.getInt(this, key, defaultValue);
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setPadding(dp(14), dp(12), dp(14), dp(10));
@@ -1006,7 +1035,7 @@ public class SettingsActivity extends Activity {
         top.setGravity(Gravity.CENTER_VERTICAL);
         TextView name = text(title, 11, 0xffe6eae4, true);
         top.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView value = text(sliderValue(key, AppSettings.getInt(this, key, defaultValue)), 9, ACCENT, true);
+        TextView value = text(sliderValue(key, currentVal), 9, ACCENT, true);
         value.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         top.addView(value);
         row.addView(top);
@@ -1019,13 +1048,13 @@ public class SettingsActivity extends Activity {
 
         SeekBar seek = new SeekBar(this);
         seek.setMax(max - min);
-        seek.setProgress(Math.max(0, Math.min(max - min, AppSettings.getInt(this, key, defaultValue) - min)));
+        seek.setProgress(Math.max(0, Math.min(max - min, currentVal - min)));
         seek.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
         seek.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
         seek.setPadding(dp(1), dp(4), dp(1), 0);
         row.addView(seek, new LinearLayout.LayoutParams(-1, dp(32)));
 
-        final int[] lastHapticVal = {AppSettings.getInt(this, key, defaultValue)};
+        final int[] lastHapticVal = {currentVal};
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 int selected = min + progress;
@@ -1033,7 +1062,7 @@ public class SettingsActivity extends Activity {
                 if (fromUser) {
                     AppSettings.prefs(SettingsActivity.this).edit().putInt(key, selected).apply();
                     triggerHeroUpdate();
-                    if (AppSettings.getBoolean(SettingsActivity.this, AppSettings.HAPTICS, true)) {
+                    if (hapticsEnabled) {
                         boolean isLandmark = false;
                         if (AppSettings.EXPOSURE.equals(key) && selected == 0) isLandmark = true;
                         else if (AppSettings.WARMTH.equals(key) && selected == 50) isLandmark = true;
@@ -1079,11 +1108,13 @@ public class SettingsActivity extends Activity {
         Switch toggle = new Switch(this);
         toggle.setButtonTintList(android.content.res.ColorStateList.valueOf(ACCENT));
         final boolean isLocation = AppSettings.LOCATION.equals(key);
-        boolean hasLocationPerm = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        boolean hasLocationPerm = !isLocation
+                || checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
                 || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
-        toggle.setChecked(AppSettings.getBoolean(this, key, fallback) && (!isLocation || hasLocationPerm));
+        toggle.setChecked(AppSettings.getBoolean(this, key, fallback) && hasLocationPerm);
         toggle.setOnCheckedChangeListener((button, checked) -> {
-            if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+            if (AppSettings.HAPTICS.equals(key)) hapticsEnabled = checked;
+            if (hapticsEnabled) {
                 toggle.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
             }
             if (isLocation && checked) {
@@ -1426,15 +1457,21 @@ public class SettingsActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CODE_PICK_LUT && resultCode == RESULT_OK && data != null && data.getData() != null) {
-            Uri uri = data.getData();
-            String name = LutManager.importLut(this, uri);
-            if (name != null) {
-                AppSettings.prefs(this).edit().putString(AppSettings.LUT_NAME, name).apply();
-                Toast.makeText(this, "Imported 3D LUT: " + name, Toast.LENGTH_SHORT).show();
-                rebuildContent();
-            } else {
-                Toast.makeText(this, "Could not import LUT. Ensure valid .cube format.", Toast.LENGTH_LONG).show();
-            }
+            final Uri uri = data.getData();
+            final android.content.Context appContext = getApplicationContext();
+            heroWorker.execute(() -> {
+                String name = LutManager.importLut(appContext, uri);
+                mainHandler.post(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    if (name != null) {
+                        AppSettings.prefs(this).edit().putString(AppSettings.LUT_NAME, name).apply();
+                        Toast.makeText(this, "Imported 3D LUT: " + name, Toast.LENGTH_SHORT).show();
+                        rebuildContent();
+                    } else {
+                        Toast.makeText(this, "Could not import LUT. Ensure valid .cube format.", Toast.LENGTH_LONG).show();
+                    }
+                });
+            });
         } else if (requestCode == REQUEST_CODE_EXPORT_BACKUP) {
             String exportName = pendingBackupName;
             String exportJson = pendingBackupJson;
@@ -1462,24 +1499,13 @@ public class SettingsActivity extends Activity {
     }
 
     private TextView text(String value, float size, int color, boolean bold) {
-        TextView view = new TextView(this);
-        view.setText(value);
-        view.setTextSize(size);
-        view.setTextColor(color);
-        if (bold) view.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        view.setGravity(Gravity.CENTER_VERTICAL);
-        return view;
+        return UiKit.text(this, value, size, color, bold);
     }
 
     private TextView pill(String value, boolean active) {
-        TextView view = text(value, 8, active ? ACCENT : 0xffd8ded7, true);
-        view.setGravity(Gravity.CENTER);
+        TextView view = UiKit.pill(this, value, active, 8f, 20f,
+                ACCENT, 0xffd8ded7, 0xff1d1d1a, 0xff202626, ACCENT, 0xff39413e);
         view.setPadding(dp(9), 0, dp(9), 0);
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(active ? 0xff1d1d1a : 0xff202626);
-        background.setCornerRadius(dp(20));
-        background.setStroke(dp(1), active ? ACCENT : 0xff39413e);
-        view.setBackground(background);
         return view;
     }
 
@@ -1626,14 +1652,20 @@ public class SettingsActivity extends Activity {
     /** A quiet abstract sunset frame gives the editor a photographic preview before the first capture. */
     private final class PlaceholderArtwork extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private LinearGradient skyShader;
 
         PlaceholderArtwork() { super(SettingsActivity.this); }
+
+        @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+            super.onSizeChanged(w, h, oldw, oldh);
+            skyShader = h > 0 ? new LinearGradient(0, 0, 0, h,
+                    new int[]{0xff536068, 0xff73726b, 0xff9a8062, 0xff242727}, null, Shader.TileMode.CLAMP) : null;
+        }
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             float w = getWidth(), h = getHeight();
-            paint.setShader(new LinearGradient(0, 0, 0, h,
-                    new int[]{0xff536068, 0xff73726b, 0xff9a8062, 0xff242727}, null, Shader.TileMode.CLAMP));
+            paint.setShader(skyShader);
             canvas.drawRect(0, 0, w, h, paint);
             paint.setShader(null);
             paint.setColor(0xfff3bf77);
@@ -1659,7 +1691,7 @@ public class SettingsActivity extends Activity {
         }
     }
 
-    @Override protected void onPause() { AppUpdateManager.onPause(this);super.onPause(); }
+    @Override protected void onPause() { AppUpdateManager.onPause(this); super.onPause(); }
 
     @Override
     protected void onDestroy() {
@@ -1671,8 +1703,10 @@ public class SettingsActivity extends Activity {
             heroImageView.setImageDrawable(null);
             heroImageView = null;
         }
-        if(heroGradedBitmap!=null && !heroGradedBitmap.isRecycled()) heroGradedBitmap.recycle();
-        super.onDestroy();
+        if (heroGradedBitmap != null && !heroGradedBitmap.isRecycled()) {
+            heroGradedBitmap.recycle();
+            heroGradedBitmap = null;
+        }
         if (cachedHeroSource != null && !cachedHeroSource.isRecycled()) {
             cachedHeroSource.recycle();
             cachedHeroSource = null;
@@ -1681,7 +1715,8 @@ public class SettingsActivity extends Activity {
             baseHeroBitmap.recycle();
             baseHeroBitmap = null;
         }
+        super.onDestroy();
     }
 
-    private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private int dp(float value) { return UiKit.dp(this, value); }
 }

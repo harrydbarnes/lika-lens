@@ -17,6 +17,9 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /**
  * 35mm darkroom proof sheet generation engine for Lika Lens.
  * Renders contact proof sheets with Kodak Vision3 500T 35mm emulsion styling,
@@ -24,6 +27,11 @@ import java.util.Locale;
  */
 public final class ContactSheetGenerator {
     private static final String TAG = "ContactSheetGenerator";
+    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "ContactSheet");
+        t.setDaemon(true);
+        return t;
+    });
 
     private ContactSheetGenerator() {}
 
@@ -38,12 +46,22 @@ public final class ContactSheetGenerator {
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inJustDecodeBounds = true;
             BitmapFactory.decodeStream(in, null, options);
-            int scale = Math.max(1, Math.min(options.outWidth / reqW, options.outHeight / reqH));
-            options.inSampleSize = scale;
+            if (options.outWidth <= 0 || options.outHeight <= 0) return null;
+            int targetW = Math.max(1, reqW);
+            int targetH = Math.max(1, reqH);
+            int sample = 1;
+            while ((options.outWidth / (sample * 2)) >= targetW && (options.outHeight / (sample * 2)) >= targetH) {
+                sample *= 2;
+            }
+            options.inSampleSize = sample;
             options.inJustDecodeBounds = false;
             options.inPreferredConfig = Bitmap.Config.RGB_565;
             try (InputStream in2 = context.getContentResolver().openInputStream(uri)) {
-                return BitmapFactory.decodeStream(in2, null, options);
+                if (in2 == null) return null;
+                Bitmap decoded = BitmapFactory.decodeStream(in2, null, options);
+                if (decoded == null) return null;
+                int orientation = GifMediaHelper.getExifOrientation(context, uri);
+                return orientation != 0 ? GifMediaHelper.rotateBitmap(decoded, orientation) : decoded;
             }
         } catch (Throwable t) {
             Log.w(TAG, "Failed to decode sampled bitmap for proof sheet: " + uri, t);
@@ -52,17 +70,18 @@ public final class ContactSheetGenerator {
     }
 
     public static void generate(Activity activity, List<PhotoRepository.Photo> photos, Callback callback) {
-        if (photos.isEmpty()) {
+        if (photos == null || photos.isEmpty()) {
             if (callback != null) callback.onError("No photos to generate proof sheet");
             return;
         }
-
-        new Thread(() -> {
+        Context appContext = activity.getApplicationContext();
+        EXECUTOR.execute(() -> {
+            Bitmap sheet = null;
             try {
                 int count = Math.min(6, photos.size());
                 int sheetW = 2400;
                 int sheetH = 3000;
-                Bitmap sheet = Bitmap.createBitmap(sheetW, sheetH, Bitmap.Config.ARGB_8888);
+                sheet = Bitmap.createBitmap(sheetW, sheetH, Bitmap.Config.ARGB_8888);
                 Canvas canvas = new Canvas(sheet);
                 canvas.drawColor(0xFF090B0C);
 
@@ -111,12 +130,20 @@ public final class ContactSheetGenerator {
                 leicaGoldMark.setStyle(Paint.Style.STROKE);
                 leicaGoldMark.setStrokeWidth(6f);
 
+                Paint blankPaint = new Paint();
+                blankPaint.setColor(0xFF121516);
+                Paint bitmapPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+                RectF sprockRect = new RectF();
+                Rect srcRect = new Rect();
+                Rect dstRect = new Rect();
+
                 for (int r = 0; r < rows; r++) {
                     int rowTop = gridTop + r * rowHeightWithSprockets;
                     int sprockY1 = rowTop + 10;
                     int sprockW = 24, sprockH = 36, sprockR = 6;
                     for (int sx = gridMarginX; sx < sheetW - gridMarginX; sx += 48) {
-                        canvas.drawRoundRect(new RectF(sx, sprockY1, sx + sprockW, sprockY1 + sprockH), sprockR, sprockR, sprocketPaint);
+                        sprockRect.set(sx, sprockY1, sx + sprockW, sprockY1 + sprockH);
+                        canvas.drawRoundRect(sprockRect, sprockR, sprockR, sprocketPaint);
                     }
 
                     int photoY = sprockY1 + sprockH + 18;
@@ -125,23 +152,14 @@ public final class ContactSheetGenerator {
                         int index = r * cols + c;
                         int photoX = gridMarginX + c * (frameW + colSpacing);
 
-                        if (index < count) {
-                            PhotoRepository.Photo p = photos.get(index);
-                            Bitmap thumb = decodeSampledBitmap(activity, p.uri, frameW, frameH);
-                            if (thumb != null) {
-                                Rect src = new Rect(0, 0, thumb.getWidth(), thumb.getHeight());
-                                Rect dst = new Rect(photoX, photoY, photoX + frameW, photoY + frameH);
-                                canvas.drawBitmap(thumb, src, dst, null);
-                                thumb.recycle();
-                            } else {
-                                Paint blank = new Paint();
-                                blank.setColor(0xFF121516);
-                                canvas.drawRect(photoX, photoY, photoX + frameW, photoY + frameH, blank);
-                            }
+                        Bitmap thumb = index < count ? decodeSampledBitmap(appContext, photos.get(index).uri, frameW, frameH) : null;
+                        if (thumb != null) {
+                            srcRect.set(0, 0, thumb.getWidth(), thumb.getHeight());
+                            dstRect.set(photoX, photoY, photoX + frameW, photoY + frameH);
+                            canvas.drawBitmap(thumb, srcRect, dstRect, bitmapPaint);
+                            thumb.recycle();
                         } else {
-                            Paint blank = new Paint();
-                            blank.setColor(0xFF121516);
-                            canvas.drawRect(photoX, photoY, photoX + frameW, photoY + frameH, blank);
+                            canvas.drawRect(photoX, photoY, photoX + frameW, photoY + frameH, blankPaint);
                         }
 
                         canvas.drawRect(photoX, photoY, photoX + frameW, photoY + frameH, frameBorderPaint);
@@ -160,13 +178,13 @@ public final class ContactSheetGenerator {
 
                     int sprockY2 = photoY + frameH + 46;
                     for (int sx = gridMarginX; sx < sheetW - gridMarginX; sx += 48) {
-                        canvas.drawRoundRect(new RectF(sx, sprockY2, sx + sprockW, sprockY2 + sprockH), sprockR, sprockR, sprocketPaint);
+                        sprockRect.set(sx, sprockY2, sx + sprockW, sprockY2 + sprockH);
+                        canvas.drawRoundRect(sprockRect, sprockR, sprockR, sprocketPaint);
                     }
                 }
 
                 String fileName = "LIKA_PROOF_SHEET_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".jpg";
-                Uri savedUri = PhotoRepository.saveBitmap(activity, sheet, fileName);
-                sheet.recycle();
+                Uri savedUri = PhotoRepository.saveBitmap(appContext, sheet, fileName);
 
                 if (callback != null) {
                     activity.runOnUiThread(() -> {
@@ -182,7 +200,9 @@ public final class ContactSheetGenerator {
                 if (callback != null) {
                     activity.runOnUiThread(() -> callback.onError("Error generating proof sheet: " + t.getMessage()));
                 }
+            } finally {
+                if (sheet != null && !sheet.isRecycled()) sheet.recycle();
             }
-        }).start();
+        });
     }
 }
