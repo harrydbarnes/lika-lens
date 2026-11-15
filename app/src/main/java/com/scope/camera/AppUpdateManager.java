@@ -1,16 +1,21 @@
 package com.scope.camera;
 
 import android.app.Activity;
+import android.app.Application;
 import android.app.Dialog;
+import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
+import android.content.pm.PackageInstaller;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
@@ -31,15 +36,22 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -50,6 +62,9 @@ import java.util.regex.Pattern;
 public final class AppUpdateManager {
     private static final String TAG = "AppUpdateManager";
     public static final String GITHUB_RELEASES_API = "https://api.github.com/repos/harrydbarnes/lika-lens/releases";
+    static final String GITHUB_RELEASES_LIST_API = GITHUB_RELEASES_API + "?per_page=15";
+    static final String GITHUB_LATEST_RELEASE_API = GITHUB_RELEASES_API + "/latest";
+    private static final String ACTION_INSTALL_COMMIT = "com.scope.camera.ACTION_INSTALL_COMMIT";
 
     private static final int ACCENT = 0xffd7b574;
     private static final int BG_DIALOG = 0xff0e1314;
@@ -91,6 +106,7 @@ public final class AppUpdateManager {
 
     private static final UpdateSession session = new UpdateSession();
     private static final JobState checkJob = new JobState();
+    private static final JobState recentReleasesJob = new JobState();
     static final class UpdateSession {
         volatile File apk;
         volatile UpdateInfo info;
@@ -110,6 +126,150 @@ public final class AppUpdateManager {
     private static Dialog sCurrentUpdateDialog;
     private static java.lang.ref.WeakReference<Activity> dialogOwner = new java.lang.ref.WeakReference<>(null);
     private static java.lang.ref.WeakReference<Activity> resumedActivity = new java.lang.ref.WeakReference<>(null);
+
+    static final long FOREGROUND_CHECK_DEBOUNCE_MS = 15_000L;
+    static final long IN_SESSION_PERIODIC_CHECK_MS = 15 * 60_000L;
+
+    private static final AtomicBoolean lifecycleRegistered = new AtomicBoolean(false);
+    private static final AtomicBoolean startupCleanupScheduled = new AtomicBoolean(false);
+    private static int startedActivityCount = 0;
+    private static boolean appWasStopped = false;
+    private static volatile boolean pendingBackgroundReturn = false;
+    private static volatile boolean hasCompletedAutoCheckThisProcess = false;
+    private static volatile long lastAutoCheckTimeMs = 0L;
+    private static volatile String lastAutoCheckChannel = null;
+    private static volatile String dismissedTagThisProcess = null;
+
+    static final class AutoCheckAttempt {
+        final String channel;
+        final boolean fromBackgroundReturn;
+        AutoCheckAttempt(String channel, boolean fromBackgroundReturn) {
+            this.channel = channel;
+            this.fromBackgroundReturn = fromBackgroundReturn;
+        }
+    }
+
+    static void ensureLifecycleTracking(Context context) {
+        if (context == null) return;
+        Context appContext = context.getApplicationContext();
+        cleanStaleApksOnStartup(appContext);
+        if (!(appContext instanceof Application)) return;
+        if (!lifecycleRegistered.compareAndSet(false, true)) return;
+        ((Application) appContext).registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
+            @Override public void onActivityCreated(Activity activity, Bundle savedInstanceState) {}
+            @Override public void onActivityStarted(Activity activity) {
+                if (startedActivityCount == 0 && appWasStopped) {
+                    pendingBackgroundReturn = true;
+                }
+                startedActivityCount++;
+                appWasStopped = false;
+            }
+            @Override public void onActivityResumed(Activity activity) {}
+            @Override public void onActivityPaused(Activity activity) {}
+            @Override public void onActivityStopped(Activity activity) {
+                startedActivityCount = Math.max(0, startedActivityCount - 1);
+                if (startedActivityCount == 0 && !activity.isChangingConfigurations()) {
+                    appWasStopped = true;
+                }
+            }
+            @Override public void onActivitySaveInstanceState(Activity activity, Bundle outState) {}
+            @Override public void onActivityDestroyed(Activity activity) {}
+        });
+    }
+
+    static void markAppBackgrounded() {
+        appWasStopped = true;
+    }
+
+    static boolean isDialogShowing() {
+        return sCurrentUpdateDialog != null && sCurrentUpdateDialog.isShowing();
+    }
+
+    static boolean isDownloadOrInstallActive(UpdateState state) {
+        return state == UpdateState.DOWNLOADING
+                || state == UpdateState.READY_TO_INSTALL
+                || state == UpdateState.AWAITING_PERMISSION
+                || state == UpdateState.INSTALLER_OPEN;
+    }
+
+    static boolean shouldRunAutoUpdateCheck(
+            boolean autoCheckEnabled,
+            boolean checkSucceededThisLaunch,
+            boolean returnedFromBackground,
+            boolean channelChanged,
+            boolean isDialogShowing,
+            boolean isDownloadOrInstallActive,
+            long lastSuccessfulCheckMs,
+            long nowMs) {
+        if (!autoCheckEnabled || isDialogShowing || isDownloadOrInstallActive) {
+            return false;
+        }
+        if (!checkSucceededThisLaunch || channelChanged) {
+            return true;
+        }
+        long elapsed = nowMs >= lastSuccessfulCheckMs ? (nowMs - lastSuccessfulCheckMs) : Long.MAX_VALUE;
+        if (returnedFromBackground) {
+            return elapsed >= FOREGROUND_CHECK_DEBOUNCE_MS;
+        }
+        return elapsed >= IN_SESSION_PERIODIC_CHECK_MS;
+    }
+
+    static boolean shouldShowAutoUpdateDialog(
+            UpdateInfo info,
+            String dismissedTag,
+            boolean isDialogShowing,
+            boolean isDownloadOrInstallActive) {
+        if (info == null || isDialogShowing || isDownloadOrInstallActive) {
+            return false;
+        }
+        return dismissedTag == null || !dismissedTag.equals(info.tagName);
+    }
+
+    static AutoCheckAttempt beginAutoCheckIfDue(Context context, long nowMs) {
+        Context appContext = context.getApplicationContext();
+        boolean autoEnabled = AppSettings.getBoolean(appContext, AppSettings.AUTO_CHECK_UPDATES, true);
+        String channel = AppSettings.get(appContext, AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_BETA);
+        boolean channelChanged = lastAutoCheckChannel != null && !lastAutoCheckChannel.equals(channel);
+        if (!shouldRunAutoUpdateCheck(
+                autoEnabled,
+                hasCompletedAutoCheckThisProcess,
+                pendingBackgroundReturn,
+                channelChanged,
+                isDialogShowing(),
+                isDownloadOrInstallActive(session.state),
+                lastAutoCheckTimeMs,
+                nowMs)) {
+            return null;
+        }
+        boolean fromBg = pendingBackgroundReturn;
+        pendingBackgroundReturn = false;
+        if (channelChanged) {
+            dismissedTagThisProcess = null;
+        }
+        return new AutoCheckAttempt(channel, fromBg);
+    }
+
+    static void markAutoCheckSucceeded(String channel, long nowMs) {
+        hasCompletedAutoCheckThisProcess = true;
+        lastAutoCheckTimeMs = nowMs;
+        if (channel != null) {
+            lastAutoCheckChannel = channel;
+        }
+    }
+
+    static void markAutoCheckFailed(boolean fromBackgroundReturn) {
+        if (fromBackgroundReturn) {
+            pendingBackgroundReturn = true;
+        }
+    }
+
+    static boolean canShowAutoUpdateDialog(UpdateInfo info) {
+        return shouldShowAutoUpdateDialog(
+                info,
+                dismissedTagThisProcess,
+                isDialogShowing(),
+                isDownloadOrInstallActive(session.state));
+    }
 
     static boolean isActivityForeground(boolean sameResumedActivity, boolean hasShowingDialogForActivity, boolean hasWindowFocus) {
         return sameResumedActivity || hasShowingDialogForActivity || hasWindowFocus;
@@ -174,10 +334,72 @@ public final class AppUpdateManager {
         void onError(String message);
     }
 
+    public interface RecentReleasesCallback {
+        void onLoaded(List<UpdateInfo> releases, boolean offlineFallback);
+        void onError(String message);
+    }
+
     public interface DownloadProgressListener {
         void onProgress(int percent, long bytesDownloaded, long totalBytes);
         void onComplete(File apkFile);
         void onError(String message);
+    }
+
+    static boolean isBetaChannel(String channel) {
+        return channel != null && (channel.contains("Beta") || channel.equalsIgnoreCase("beta"));
+    }
+
+    static String releasesUrlForChannel(String channel) {
+        return isBetaChannel(channel) ? GITHUB_RELEASES_LIST_API : GITHUB_LATEST_RELEASE_API;
+    }
+
+    static String etagKeyForEndpoint(boolean betaListEndpoint) {
+        return betaListEndpoint ? AppSettings.UPDATE_CACHE_ETAG_BETA : AppSettings.UPDATE_CACHE_ETAG_STABLE;
+    }
+
+    static String jsonCacheKeyForEndpoint(boolean betaListEndpoint) {
+        return betaListEndpoint ? AppSettings.UPDATE_CACHE_JSON_BETA : AppSettings.UPDATE_CACHE_JSON_STABLE;
+    }
+
+    static boolean isDownloadedApkValid(File apkFile, long expectedSize) {
+        if (apkFile == null || !apkFile.isFile() || apkFile.length() <= 1024L) {
+            return false;
+        }
+        if (expectedSize > 0L) {
+            return apkFile.length() == expectedSize;
+        }
+        return true;
+    }
+
+    static String formatRelativeCheckTime(long checkedAtMs, long nowMs) {
+        if (checkedAtMs <= 0L) return "Not checked yet";
+        long diff = Math.max(0L, nowMs - checkedAtMs);
+        if (diff < 60_000L) return "Just now";
+        long minutes = diff / 60_000L;
+        if (minutes < 60L) return minutes + "m ago";
+        long hours = minutes / 60L;
+        if (hours < 24L) return hours + "h ago";
+        long days = hours / 24L;
+        return days + "d ago";
+    }
+
+    static String formatUpdateStatusSubtitle(Context context, long nowMs) {
+        if (context == null) return "Query GitHub Releases API for the latest APK";
+        SharedPreferences prefs = AppSettings.prefs(context);
+        String channel = prefs.getString(AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_BETA);
+        String shortChannel = isBetaChannel(channel) ? "Beta" : "Stable";
+        long lastChecked = prefs.getLong(AppSettings.LAST_UPDATE_CHECK_TIME, 0L);
+        String cachedTag = prefs.getString(AppSettings.UPDATE_CACHED_AVAILABLE_TAG, "");
+        String cachedChannel = prefs.getString(AppSettings.UPDATE_CACHED_AVAILABLE_CHANNEL, "");
+        if (cachedTag != null && !cachedTag.isEmpty()
+                && channel.equals(cachedChannel)
+                && isNewerVersion(cachedTag, getAppVersionName(context), getAppVersionCode(context))) {
+            return "Update available: " + cachedTag + " · Checked " + formatRelativeCheckTime(lastChecked, nowMs);
+        }
+        if (lastChecked > 0L) {
+            return "Up to date (" + shortChannel + ") · Checked " + formatRelativeCheckTime(lastChecked, nowMs);
+        }
+        return "Query GitHub Releases API (" + shortChannel + " channel)";
     }
 
     /**
@@ -226,18 +448,54 @@ public final class AppUpdateManager {
         return new File(updateDir, "lika-lens-update-" + safeTag + ".apk");
     }
 
+    static void cleanStaleApksOnStartup(Context context) {
+        if (context == null) return;
+        if (!startupCleanupScheduled.compareAndSet(false, true)) return;
+        final Context appContext = context.getApplicationContext();
+        downloadExecutor.execute(() -> {
+            if (isDownloadOrInstallActive(session.state)) return;
+            try {
+                File updateDir = new File(appContext.getCacheDir(), "updates");
+                if (!updateDir.exists() || !updateDir.isDirectory()) return;
+                String currentVer = getAppVersionName(appContext);
+                int currentCode = getAppVersionCode(appContext);
+                File[] files = updateDir.listFiles();
+                if (files == null) return;
+                for (File f : files) {
+                    if (!f.isFile()) continue;
+                    String name = f.getName();
+                    if (name.endsWith(".apk.part") || name.endsWith(".part")) {
+                        f.delete();
+                    } else if (name.startsWith("lika-lens-update-") && name.endsWith(".apk")) {
+                        String tag = name.substring("lika-lens-update-".length(), name.length() - ".apk".length());
+                        if (!isNewerVersion(tag, currentVer, currentCode)) {
+                            f.delete();
+                        }
+                    } else if (name.endsWith(".apk")) {
+                        f.delete();
+                    }
+                }
+            } catch (Exception ignored) {}
+        });
+    }
+
     public static void cleanStaleApks(Context context, String activeTag) {
         try {
             File updateDir = new File(context.getCacheDir(), "updates");
             if (!updateDir.exists() || !updateDir.isDirectory()) return;
             File activeFile = getApkFileForTag(context, activeTag);
+            String activePartName = activeFile.getName() + ".part";
             File[] files = updateDir.listFiles();
             if (files != null) {
                 for (File f : files) {
-                    if (f.isFile() && f.getName().endsWith(".apk")) {
+                    if (!f.isFile()) continue;
+                    String name = f.getName();
+                    if (name.endsWith(".apk")) {
                         if (!f.getAbsolutePath().equals(activeFile.getAbsolutePath())) {
                             f.delete();
                         }
+                    } else if (name.endsWith(".part") && !name.equals(activePartName)) {
+                        f.delete();
                     }
                 }
             }
@@ -267,56 +525,175 @@ public final class AppUpdateManager {
         }
     }
 
+    private static UpdateInfo parseReleaseJsonObject(JSONObject rel, boolean requireApkAsset) {
+        if (rel == null) return null;
+        boolean isDraft = rel.optBoolean("draft", false);
+        if (isDraft) return null;
+        boolean isPrerelease = rel.optBoolean("prerelease", false);
+        String tagName = rel.optString("tag_name", "");
+        if (tagName.isEmpty()) return null;
+        String title = rel.optString("name", tagName);
+        String body = rel.optString("body", "Continuous integration build.");
+        String publishedAt = rel.optString("published_at", "");
+
+        JSONArray assets = rel.optJSONArray("assets");
+        String apkUrl = null;
+        String apkName = null;
+        long apkSize = 0L;
+        if (assets != null) {
+            for (int j = 0; j < assets.length(); j++) {
+                JSONObject asset = assets.optJSONObject(j);
+                if (asset == null) continue;
+                String name = asset.optString("name", "");
+                if (name.toLowerCase(Locale.US).endsWith(".apk")) {
+                    apkUrl = asset.optString("browser_download_url", null);
+                    apkName = name;
+                    apkSize = asset.optLong("size", 0L);
+                    break;
+                }
+            }
+        }
+        if (requireApkAsset && (apkUrl == null || apkUrl.isEmpty())) {
+            return null;
+        }
+        return new UpdateInfo(tagName, title, body, isPrerelease, apkUrl, apkName, apkSize, publishedAt);
+    }
+
     /**
-     * Parses GitHub Releases JSON array for the newest available update matching channel.
+     * Parses GitHub Releases JSON (array from /releases or single object from /releases/latest)
+     * for the newest available update matching channel.
      */
     public static UpdateInfo parseLatestRelease(String jsonString, String channel,
                                                 String currentVersionName, int currentVersionCode) {
-        if (jsonString == null || jsonString.isEmpty()) return null;
+        if (jsonString == null) return null;
+        String trimmed = jsonString.trim();
+        if (trimmed.isEmpty()) return null;
         try {
-            JSONArray releases = new JSONArray(jsonString);
-            boolean wantBeta = channel != null && (channel.contains("Beta") || channel.equalsIgnoreCase("beta"));
-
-            for (int i = 0; i < releases.length(); i++) {
-                JSONObject rel = releases.getJSONObject(i);
-                boolean isPrerelease = rel.optBoolean("prerelease", false);
-                boolean isDraft = rel.optBoolean("draft", false);
-                if (isDraft) continue;
-
-                // If user selected Stable channel, ignore beta / prereleases
-                if (!wantBeta && isPrerelease) continue;
-
-                String tagName = rel.optString("tag_name", "");
-                String title = rel.optString("name", tagName);
-                String body = rel.optString("body", "Continuous integration build.");
-                String publishedAt = rel.optString("published_at", "");
-
-                // Find APK asset
-                JSONArray assets = rel.optJSONArray("assets");
-                String apkUrl = null;
-                String apkName = null;
-                long apkSize = 0L;
-                if (assets != null) {
-                    for (int j = 0; j < assets.length(); j++) {
-                        JSONObject asset = assets.getJSONObject(j);
-                        String name = asset.optString("name", "");
-                        if (name.toLowerCase(Locale.US).endsWith(".apk")) {
-                            apkUrl = asset.optString("browser_download_url", null);
-                            apkName = name;
-                            apkSize = asset.optLong("size", 0L);
-                            break;
-                        }
-                    }
+            boolean wantBeta = isBetaChannel(channel);
+            if (trimmed.startsWith("{")) {
+                UpdateInfo info = parseReleaseJsonObject(new JSONObject(trimmed), true);
+                if (info == null) return null;
+                if (!wantBeta && info.isBeta) return null;
+                if (isNewerVersion(info.tagName, currentVersionName, currentVersionCode)) {
+                    return info;
                 }
+                return null;
+            }
 
-                if (apkUrl != null && isNewerVersion(tagName, currentVersionName, currentVersionCode)) {
-                    return new UpdateInfo(tagName, title, body, isPrerelease, apkUrl, apkName, apkSize, publishedAt);
+            JSONArray releases = new JSONArray(trimmed);
+            for (int i = 0; i < releases.length(); i++) {
+                UpdateInfo info = parseReleaseJsonObject(releases.optJSONObject(i), true);
+                if (info == null) continue;
+                if (!wantBeta && info.isBeta) continue;
+                if (isNewerVersion(info.tagName, currentVersionName, currentVersionCode)) {
+                    return info;
                 }
             }
         } catch (Exception e) {
             Log.w(TAG, "Error parsing releases JSON", e);
         }
         return null;
+    }
+
+    /**
+     * Parses up to {@code limit} recent non-draft releases from GitHub Releases JSON.
+     */
+    public static List<UpdateInfo> parseRecentReleases(String jsonString, int limit) {
+        if (jsonString == null || limit <= 0) return Collections.emptyList();
+        String trimmed = jsonString.trim();
+        if (trimmed.isEmpty()) return Collections.emptyList();
+        List<UpdateInfo> list = new ArrayList<>();
+        try {
+            if (trimmed.startsWith("{")) {
+                UpdateInfo info = parseReleaseJsonObject(new JSONObject(trimmed), false);
+                if (info != null) list.add(info);
+                return list;
+            }
+            JSONArray releases = new JSONArray(trimmed);
+            for (int i = 0; i < releases.length() && list.size() < limit; i++) {
+                UpdateInfo info = parseReleaseJsonObject(releases.optJSONObject(i), false);
+                if (info != null) {
+                    list.add(info);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Error parsing recent releases JSON", e);
+        }
+        return list;
+    }
+
+    private static final class FetchResult {
+        final String json;
+        final int httpCode;
+        final String errorMessage;
+
+        FetchResult(String json, int httpCode, String errorMessage) {
+            this.json = json;
+            this.httpCode = httpCode;
+            this.errorMessage = errorMessage;
+        }
+
+        boolean isSuccess() {
+            return json != null && (httpCode == HttpURLConnection.HTTP_OK || httpCode == HttpURLConnection.HTTP_NOT_MODIFIED);
+        }
+    }
+
+    private static FetchResult fetchReleasesJsonWithEtag(Context appContext, String endpointUrl, boolean betaListEndpoint) {
+        SharedPreferences prefs = AppSettings.prefs(appContext);
+        String etagKey = etagKeyForEndpoint(betaListEndpoint);
+        String jsonKey = jsonCacheKeyForEndpoint(betaListEndpoint);
+        String cachedEtag = prefs.getString(etagKey, null);
+        String cachedJson = prefs.getString(jsonKey, null);
+        boolean canConditional = cachedEtag != null && !cachedEtag.isEmpty()
+                && cachedJson != null && !cachedJson.isEmpty();
+
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(endpointUrl);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setUseCaches(false);
+            conn.setRequestProperty("Cache-Control", "no-cache");
+            conn.setRequestProperty("User-Agent", "LikaLens-Android");
+            conn.setRequestProperty("Accept", "application/vnd.github.v3+json");
+            if (canConditional) {
+                conn.setRequestProperty("If-None-Match", cachedEtag);
+            }
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(12000);
+
+            int code = conn.getResponseCode();
+            if (code == HttpURLConnection.HTTP_OK) {
+                StringBuilder sb = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        sb.append(line).append('\n');
+                    }
+                }
+                String body = sb.toString();
+                String newEtag = conn.getHeaderField("ETag");
+                SharedPreferences.Editor editor = prefs.edit().putString(jsonKey, body);
+                if (newEtag != null && !newEtag.trim().isEmpty()) {
+                    editor.putString(etagKey, newEtag.trim());
+                } else {
+                    editor.remove(etagKey);
+                }
+                editor.apply();
+                return new FetchResult(body, code, null);
+            } else if (code == HttpURLConnection.HTTP_NOT_MODIFIED) {
+                if (cachedJson != null && !cachedJson.isEmpty()) {
+                    return new FetchResult(cachedJson, code, null);
+                }
+                return new FetchResult(null, code, "Empty cache for 304");
+            }
+            return new FetchResult(null, code, "GitHub API HTTP " + code);
+        } catch (Exception e) {
+            Log.w(TAG, "Release API request failed: " + endpointUrl, e);
+            return new FetchResult(null, -1, e.getMessage() != null ? e.getMessage() : "Network error");
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
     }
 
     /**
@@ -327,61 +704,101 @@ public final class AppUpdateManager {
         final Context appContext = context.getApplicationContext();
         final WeakReference<Activity> activityRef = new WeakReference<>(context instanceof Activity ? (Activity) context : null);
         String channel = AppSettings.get(appContext, AppSettings.UPDATE_CHANNEL, AppSettings.UPDATE_CHANNEL_STABLE);
+        boolean wantBeta = isBetaChannel(channel);
+        String endpointUrl = releasesUrlForChannel(channel);
         String currentVersionName = getAppVersionName(appContext);
         int currentVersionCode = getAppVersionCode(appContext);
 
         checkExecutor.execute(() -> {
-            HttpURLConnection conn = null;
-            try {
-                URL url = new URL(GITHUB_RELEASES_API);
-                conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("GET");
-                conn.setRequestProperty("User-Agent", "LikaLens-Android");
-                conn.setRequestProperty("Accept", "application/vnd.github.v3+json");
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(12000);
+            FetchResult res = fetchReleasesJsonWithEtag(appContext, endpointUrl, wantBeta);
+            if (res.isSuccess()) {
+                UpdateInfo info = parseLatestRelease(res.json, channel, currentVersionName, currentVersionCode);
+                final long checkedAt = System.currentTimeMillis();
+                AppSettings.prefs(appContext).edit()
+                        .putLong(AppSettings.LAST_UPDATE_CHECK_TIME, checkedAt)
+                        .putString(AppSettings.UPDATE_CACHED_AVAILABLE_TAG, info != null ? info.tagName : "")
+                        .putString(AppSettings.UPDATE_CACHED_AVAILABLE_CHANNEL, channel)
+                        .apply();
 
-                int code = conn.getResponseCode();
-                if (code == 200) {
-                    StringBuilder sb = new StringBuilder();
-                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
-                        String line;
-                        while ((line = reader.readLine()) != null) {
-                            sb.append(line).append('\n');
-                        }
-                    }
-                    UpdateInfo info = parseLatestRelease(sb.toString(), channel, currentVersionName, currentVersionCode);
-                    AppSettings.prefs(appContext).edit().putLong(AppSettings.LAST_UPDATE_CHECK_TIME, System.currentTimeMillis()).apply();
-
-                    mainHandler.post(() -> {
-                        Activity act = activityRef.get();
-                        if (!checkJob.accepts(checkTicket) || (act != null && (act.isFinishing() || act.isDestroyed()))) return;
-                        checkJob.move(checkTicket, JobState.Phase.READY);
-                        if (info != null) {
-                            if (callback != null) callback.onUpdateAvailable(info);
-                        } else {
-                            if (callback != null) callback.onNoUpdateAvailable();
-                        }
-                    });
-                } else {
-                    mainHandler.post(() -> {
-                        Activity act = activityRef.get();
-                        if (!checkJob.accepts(checkTicket) || (act != null && (act.isFinishing() || act.isDestroyed()))) return;
-                        checkJob.move(checkTicket, JobState.Phase.READY);
-                        if (callback != null) callback.onError("GitHub API HTTP " + code);
-                    });
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "Update check failed", e);
                 mainHandler.post(() -> {
                     Activity act = activityRef.get();
                     if (!checkJob.accepts(checkTicket) || (act != null && (act.isFinishing() || act.isDestroyed()))) return;
                     checkJob.move(checkTicket, JobState.Phase.READY);
-                    if (callback != null) callback.onError(e.getMessage() != null ? e.getMessage() : "Network error");
+                    markAutoCheckSucceeded(channel, checkedAt);
+                    if (info != null) {
+                        if (callback != null) callback.onUpdateAvailable(info);
+                    } else {
+                        if (callback != null) callback.onNoUpdateAvailable();
+                    }
                 });
-            } finally {
-                if (conn != null) conn.disconnect();
+            } else if (!wantBeta && res.httpCode == HttpURLConnection.HTTP_NOT_FOUND) {
+                final long checkedAt = System.currentTimeMillis();
+                AppSettings.prefs(appContext).edit()
+                        .putLong(AppSettings.LAST_UPDATE_CHECK_TIME, checkedAt)
+                        .putString(AppSettings.UPDATE_CACHED_AVAILABLE_TAG, "")
+                        .putString(AppSettings.UPDATE_CACHED_AVAILABLE_CHANNEL, channel)
+                        .apply();
+                mainHandler.post(() -> {
+                    Activity act = activityRef.get();
+                    if (!checkJob.accepts(checkTicket) || (act != null && (act.isFinishing() || act.isDestroyed()))) return;
+                    checkJob.move(checkTicket, JobState.Phase.READY);
+                    markAutoCheckSucceeded(channel, checkedAt);
+                    if (callback != null) callback.onNoUpdateAvailable();
+                });
+            } else {
+                mainHandler.post(() -> {
+                    Activity act = activityRef.get();
+                    if (!checkJob.accepts(checkTicket) || (act != null && (act.isFinishing() || act.isDestroyed()))) return;
+                    checkJob.move(checkTicket, JobState.Phase.READY);
+                    if (callback != null) callback.onError(res.errorMessage != null ? res.errorMessage : "Update check failed");
+                });
             }
+        });
+    }
+
+    /**
+     * Fetches recent releases (with ETag revalidation and offline cache fallback) for release notes browsing.
+     */
+    public static void fetchRecentReleases(Context context, int limit, RecentReleasesCallback callback) {
+        if (context == null || callback == null) return;
+        final long ticket = recentReleasesJob.begin(JobState.Phase.LOADING);
+        final Context appContext = context.getApplicationContext();
+        final WeakReference<Activity> activityRef = new WeakReference<>(context instanceof Activity ? (Activity) context : null);
+
+        checkExecutor.execute(() -> {
+            FetchResult res = fetchReleasesJsonWithEtag(appContext, GITHUB_RELEASES_LIST_API, true);
+            List<UpdateInfo> parsed = Collections.emptyList();
+            boolean offlineFallback = false;
+
+            if (res.isSuccess()) {
+                parsed = parseRecentReleases(res.json, limit);
+            } else {
+                SharedPreferences prefs = AppSettings.prefs(appContext);
+                String cached = prefs.getString(AppSettings.UPDATE_CACHE_JSON_BETA, null);
+                if (cached == null || cached.isEmpty()) {
+                    cached = prefs.getString(AppSettings.UPDATE_CACHE_JSON_STABLE, null);
+                }
+                if (cached != null && !cached.isEmpty()) {
+                    parsed = parseRecentReleases(cached, limit);
+                    offlineFallback = !parsed.isEmpty();
+                }
+            }
+
+            final List<UpdateInfo> finalReleases = parsed;
+            final boolean finalOfflineFallback = offlineFallback;
+            final boolean succeeded = res.isSuccess() || offlineFallback;
+            final String errMsg = res.errorMessage != null ? res.errorMessage : "Could not load release notes";
+
+            mainHandler.post(() -> {
+                Activity act = activityRef.get();
+                if (!recentReleasesJob.accepts(ticket) || (act != null && (act.isFinishing() || act.isDestroyed()))) return;
+                recentReleasesJob.move(ticket, succeeded ? JobState.Phase.READY : JobState.Phase.FAILED);
+                if (succeeded) {
+                    callback.onLoaded(finalReleases, finalOfflineFallback);
+                } else {
+                    callback.onError(errMsg);
+                }
+            });
         });
     }
 
@@ -465,6 +882,10 @@ public final class AppUpdateManager {
                     if (tempFile.exists()) tempFile.delete();
                     return;
                 }
+                if (!isDownloadedApkValid(tempFile, info.apkSize)) {
+                    if (tempFile.exists()) tempFile.delete();
+                    throw new java.io.IOException("Downloaded APK is incomplete");
+                }
                 if (destFile.exists() && !destFile.delete()) {
                     throw new java.io.IOException("Could not replace existing APK");
                 }
@@ -529,7 +950,67 @@ public final class AppUpdateManager {
             }
         }
 
-        session.state = UpdateState.READY_TO_INSTALL;
+        session.state = UpdateState.INSTALLER_OPEN;
+        installViaPackageInstallerAsync(activity, apkFile);
+    }
+
+    private static void installViaPackageInstallerAsync(Activity activity, File apkFile) {
+        final Context appContext = activity.getApplicationContext();
+        final WeakReference<Activity> activityRef = new WeakReference<>(activity);
+        downloadExecutor.execute(() -> {
+            PackageInstaller.Session installerSession = null;
+            try {
+                PackageInstaller packageInstaller = appContext.getPackageManager().getPackageInstaller();
+                PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(
+                        PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+                params.setAppPackageName(appContext.getPackageName());
+                if (apkFile.length() > 0L) {
+                    params.setSize(apkFile.length());
+                }
+                int sessionId = packageInstaller.createSession(params);
+                installerSession = packageInstaller.openSession(sessionId);
+
+                try (InputStream in = new FileInputStream(apkFile);
+                     OutputStream out = installerSession.openWrite("lika_lens_update.apk", 0, apkFile.length())) {
+                    byte[] buffer = new byte[32 * 1024];
+                    int read;
+                    while ((read = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, read);
+                    }
+                    installerSession.fsync(out);
+                }
+
+                Intent callbackIntent = new Intent(appContext, UpdateInstallReceiver.class);
+                callbackIntent.setAction(ACTION_INSTALL_COMMIT);
+                int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    flags |= PendingIntent.FLAG_MUTABLE;
+                }
+                PendingIntent statusIntent = PendingIntent.getBroadcast(appContext, sessionId, callbackIntent, flags);
+                installerSession.commit(statusIntent.getIntentSender());
+                installerSession.close();
+                installerSession = null;
+            } catch (Exception e) {
+                Log.w(TAG, "PackageInstaller session failed, falling back to ACTION_VIEW installer", e);
+                if (installerSession != null) {
+                    try { installerSession.abandon(); } catch (Exception ignored) {}
+                    try { installerSession.close(); } catch (Exception ignored) {}
+                }
+                mainHandler.post(() -> {
+                    Activity act = activityRef.get();
+                    if (act == null || act.isFinishing() || act.isDestroyed()) {
+                        session.state = UpdateState.READY_TO_INSTALL;
+                        return;
+                    }
+                    launchLegacyApkInstaller(act, apkFile);
+                });
+            }
+        });
+    }
+
+    private static void launchLegacyApkInstaller(Activity activity, File apkFile) {
+        if (activity == null || apkFile == null || !apkFile.exists()) return;
+        if (activity.isFinishing() || activity.isDestroyed()) return;
         try {
             apkFile.setReadable(true, false);
             Uri apkUri = ApkFileProvider.getUriForFile(activity, apkFile);
@@ -539,15 +1020,82 @@ public final class AppUpdateManager {
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity.startActivity(intent);
-            session.state=UpdateState.INSTALLER_OPEN;
+            session.state = UpdateState.INSTALLER_OPEN;
         } catch (Exception e) {
-            session.state=UpdateState.READY_TO_INSTALL;
+            session.state = UpdateState.READY_TO_INSTALL;
             Log.e(TAG, "Failed to start package installer", e);
             Toast.makeText(activity, "Could not open installer: " + e.getMessage(), Toast.LENGTH_SHORT).show();
             if (session.info != null) {
                 showUpdateDialog(activity, session.info);
             }
         }
+    }
+
+    static void onPackageInstallerResult(Context context, Intent intent) {
+        if (context == null || intent == null) return;
+        final Context appContext = context.getApplicationContext();
+        int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
+        String statusMessage = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
+
+        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            Intent confirmIntent;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                confirmIntent = intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent.class);
+            } else {
+                @SuppressWarnings("deprecation")
+                Intent legacy = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+                confirmIntent = legacy;
+            }
+            if (confirmIntent == null) return;
+            mainHandler.post(() -> {
+                Activity act = resumedActivity.get();
+                try {
+                    if (act != null && !act.isFinishing() && !act.isDestroyed()) {
+                        act.startActivity(confirmIntent);
+                    } else {
+                        Intent launchIntent = new Intent(confirmIntent);
+                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        appContext.startActivity(launchIntent);
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to launch PackageInstaller confirmation UI", e);
+                    if (act != null && !act.isFinishing() && !act.isDestroyed() && session.apk != null && session.apk.exists()) {
+                        launchLegacyApkInstaller(act, session.apk);
+                    } else {
+                        session.state = UpdateState.READY_TO_INSTALL;
+                    }
+                }
+            });
+            return;
+        }
+
+        if (status == PackageInstaller.STATUS_SUCCESS) {
+            downloadExecutor.execute(() -> cleanStaleApks(appContext, ""));
+            mainHandler.post(session::clear);
+            return;
+        }
+
+        mainHandler.post(() -> {
+            if (session.state == UpdateState.INSTALLER_OPEN) {
+                session.state = UpdateState.READY_TO_INSTALL;
+            }
+            if (status == PackageInstaller.STATUS_FAILURE_ABORTED) {
+                Log.d(TAG, "PackageInstaller update cancelled by user");
+                return;
+            }
+            Log.w(TAG, "PackageInstaller failed status=" + status + " message=" + statusMessage);
+            Activity act = resumedActivity.get();
+            if (act != null && !act.isFinishing() && !act.isDestroyed()) {
+                if (status == PackageInstaller.STATUS_FAILURE && session.apk != null && session.apk.exists()) {
+                    launchLegacyApkInstaller(act, session.apk);
+                } else {
+                    String msg = (statusMessage != null && !statusMessage.trim().isEmpty())
+                            ? statusMessage.trim()
+                            : ("Install failed (code " + status + ")");
+                    Toast.makeText(act, msg, Toast.LENGTH_LONG).show();
+                }
+            }
+        });
     }
 
     /**
@@ -579,8 +1127,10 @@ public final class AppUpdateManager {
             }
         }
 
-        if(session.state==UpdateState.READY_TO_INSTALL && session.apk!=null && session.info!=null) {
-            showUpdateDialog(activity,session.info);return;
+        long expectedSize = session.info != null ? session.info.apkSize : 0L;
+        if (session.state == UpdateState.READY_TO_INSTALL && isDownloadedApkValid(session.apk, expectedSize) && session.info != null) {
+            showUpdateDialog(activity, session.info);
+            return;
         }
         if(session.state==UpdateState.INSTALLER_OPEN) {
             session.state=UpdateState.READY_TO_INSTALL;
@@ -592,7 +1142,7 @@ public final class AppUpdateManager {
             boolean canInstall = Build.VERSION.SDK_INT < Build.VERSION_CODES.O
                     || activity.getPackageManager().canRequestPackageInstalls();
 
-            if (canInstall && session.apk != null && session.apk.exists()) {
+            if (canInstall && isDownloadedApkValid(session.apk, expectedSize)) {
                 Toast.makeText(activity, "Permission granted. Starting installation…", Toast.LENGTH_SHORT).show();
                 promptInstall(activity, session.apk, session.info);
             } else if (session.info != null) {
@@ -756,11 +1306,14 @@ public final class AppUpdateManager {
         LinearLayout.LayoutParams laterLp = new LinearLayout.LayoutParams(0, Math.round(44 * density), 1f);
         laterLp.rightMargin = dp6;
         actions.addView(laterBtn, laterLp);
-        laterBtn.setOnClickListener(v -> { session.state=UpdateState.CANCELLED;dialog.dismiss(); });
+        laterBtn.setOnClickListener(v -> {
+            dismissedTagThisProcess = info.tagName;
+            session.state = UpdateState.CANCELLED;
+            dialog.dismiss();
+        });
 
         File destFile = getApkFileForTag(activity, info.tagName);
-        boolean isAlreadyDownloaded = destFile.exists() && destFile.length() > 1024
-                && (info.apkSize <= 0 || Math.abs(destFile.length() - info.apkSize) < 100000);
+        boolean isAlreadyDownloaded = isDownloadedApkValid(destFile, info.apkSize);
         if (isAlreadyDownloaded) {
             session.apk = destFile;
         }
@@ -786,7 +1339,7 @@ public final class AppUpdateManager {
 
         installBtn.setOnClickListener(v -> {
             UiKit.hapticClick(activity, installBtn);
-            boolean hasApk = destFile.exists() && destFile.length() > 1024;
+            boolean hasApk = isDownloadedApkValid(destFile, info.apkSize);
             if (shouldPromptInstallInsteadOfDownload(session.state, hasApk)) {
                 session.state = UpdateState.READY_TO_INSTALL;
                 dialog.dismiss();

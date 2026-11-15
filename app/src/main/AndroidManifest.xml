@@ -67,5 +67,9 @@
             android:authorities="com.scope.camera.backupprovider"
             android:exported="false"
             android:grantUriPermissions="true" />
+
+        <receiver
+            android:name=".UpdateInstallReceiver"
+            android:exported="false" />
     </application>
 </manifest>

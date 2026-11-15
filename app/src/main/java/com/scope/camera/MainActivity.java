@@ -526,6 +526,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     };
     private Surface previewSurface;
+    private SurfaceTexture previewSurfaceTexture;
     private ImageReader rawReader;
     private ImageReader jpegReader;
     private MediaRecorder mediaRecorder;
@@ -536,6 +537,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private File videoTempFile;
     private HandlerThread cameraThread;
     private Handler cameraHandler;
+    private final Handler cameraUiHandler = new Handler(Looper.getMainLooper());
+    private int cameraOpenRetryCount = 0;
+    private boolean cameraRetryPromptActive = false;
+    private boolean availabilityCallbackRegistered = false;
+    private final Runnable cameraReopenRetryRunnable = this::attemptCameraReopenRetry;
+    private final CameraManager.AvailabilityCallback cameraAvailabilityCallback =
+            new CameraManager.AvailabilityCallback() {
+                @Override public void onCameraAvailable(String availableCameraId) {
+                    if (availableCameraId == null || !availableCameraId.equals(cameraId)) return;
+                    cameraUiHandler.post(() -> {
+                        if (activityResumed && !isFinishing() && !isDestroyed()
+                                && cameraLifecycleState.canOpen()
+                                && textureView != null && textureView.isAvailable()) {
+                            openCameraIfReady();
+                        }
+                    });
+                }
+            };
+    private AppUpdateManager.UpdateInfo pendingAutoUpdateInfo;
     private final ExecutorService processor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "CaptureProcessor");
         t.setDaemon(true);
@@ -588,6 +608,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private volatile int lastMeteredIso = 0;
     private volatile long lastVideo180StepAt = 0L;
     private float pendingZoomSettleScale = 1.0f;
+    private float pendingPostConfigZoom = -1f;
+    private final List<ImageReader> retiredReaders = new ArrayList<>();
     private float zoomRowStartX;
     private float zoomRowStartY;
     private float zoomRowStartZoom;
@@ -942,6 +964,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        AppUpdateManager.ensureLifecycleTracking(this);
         volumeQuickTakeRunnable = () -> {
             if (!volumeKeyHolding || cameraDevice == null || !cameraLifecycleState.isStarted()) return;
             if (!videoState.tryBeginQuickTake(VideoStateMachine.Trigger.QUICK_TAKE_VOLUME)) return;
@@ -953,7 +976,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         AppSettings.migrateBranding(this);
         refreshHotPrefs();
         AppSettings.prefs(this).registerOnSharedPreferenceChangeListener(hotPrefsListener);
-        LutManager.init(this);
+        ioExecutor.execute(() -> LutManager.init(getApplicationContext()));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true);
             setTurnScreenOn(true);
@@ -1120,6 +1143,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         super.onResume();
         activityResumed = true;
         video180FallbackNotified = false;
+        cameraOpenRetryCount = 0;
+        registerCameraAvailabilityCallback();
         refreshHotPrefs();
         applyFullScreenImmersive();
         if (root != null) {
@@ -1154,6 +1179,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             textureView.postDelayed(exposureAidsSampler, 200L);
             if (textureView.isAvailable()) {
                 openCameraIfReady();
+                applyLiveFilmPreview();
                 if(videoState.isPermissionReady() && cameraDevice!=null && cameraLifecycleState.isStarted())
                     beginVideoRecording(checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED);
             }
@@ -1163,36 +1189,59 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         offerVideoRecovery();
     }
 
-    private static boolean hasCheckedUpdatesThisSession = false;
-
     private void checkAutomaticUpdates() {
-        if (!AppSettings.getBoolean(this, AppSettings.AUTO_CHECK_UPDATES, true)) return;
-        long lastCheck = AppSettings.prefs(this).getLong(AppSettings.LAST_UPDATE_CHECK_TIME, 0L);
-        long now = System.currentTimeMillis();
-        // Check immediately on app cold-start, or every 4 hours if kept alive in memory
-        if (hasCheckedUpdatesThisSession && (now - lastCheck < 4 * 3600 * 1000L)) return;
-        hasCheckedUpdatesThisSession = true;
+        if (pendingAutoUpdateInfo != null) {
+            AppUpdateManager.UpdateInfo pending = pendingAutoUpdateInfo;
+            pendingAutoUpdateInfo = null;
+            if (AppUpdateManager.isNewerVersion(pending.tagName,
+                    AppUpdateManager.getAppVersionName(this),
+                    AppUpdateManager.getAppVersionCode(this))
+                    && AppUpdateManager.canShowAutoUpdateDialog(pending)) {
+                AppUpdateManager.showUpdateDialog(MainActivity.this, pending);
+                return;
+            }
+        }
+
+        final AppUpdateManager.AutoCheckAttempt attempt =
+                AppUpdateManager.beginAutoCheckIfDue(this, System.currentTimeMillis());
+        if (attempt == null) return;
 
         AppUpdateManager.checkForUpdate(this, false, new AppUpdateManager.UpdateCallback() {
             @Override
             public void onUpdateAvailable(AppUpdateManager.UpdateInfo updateInfo) {
-                if (!isFinishing() && !isDestroyed()) {
+                if (!AppUpdateManager.canShowAutoUpdateDialog(updateInfo)) return;
+                if (activityResumed && !isFinishing() && !isDestroyed()) {
+                    pendingAutoUpdateInfo = null;
                     AppUpdateManager.showUpdateDialog(MainActivity.this, updateInfo);
+                } else if (!isFinishing() && !isDestroyed()) {
+                    pendingAutoUpdateInfo = updateInfo;
                 }
             }
 
             @Override
-            public void onNoUpdateAvailable() {}
+            public void onNoUpdateAvailable() {
+                pendingAutoUpdateInfo = null;
+            }
 
             @Override
             public void onError(String message) {
+                AppUpdateManager.markAutoCheckFailed(attempt.fromBackgroundReturn);
                 Log.d(TAG, "Background update check notice: " + message);
             }
         });
     }
 
+    @Override public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_UI_HIDDEN) {
+            AppUpdateManager.markAppBackgrounded();
+        }
+    }
+
     @Override protected void onPause() {
         activityResumed = false;
+        cameraUiHandler.removeCallbacks(cameraReopenRetryRunnable);
+        unregisterCameraAvailabilityCallback();
         AppUpdateManager.onPause(this);
         if (videoRecoveryDialog != null && videoRecoveryDialog.isShowing()) {
             videoRecoveryDialog.dismiss();
@@ -1238,6 +1287,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     @Override protected void onDestroy() {
+        cameraUiHandler.removeCallbacksAndMessages(null);
+        unregisterCameraAvailabilityCallback();
         liveLookPreview.close();
         closeCamera();
         if (cameraThread != null) {
@@ -4292,10 +4343,73 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         cameraHandler = new Handler(cameraThread.getLooper());
     }
 
+    private void registerCameraAvailabilityCallback() {
+        if (availabilityCallbackRegistered) return;
+        if (cameraManager == null) cameraManager = (CameraManager) getSystemService(CAMERA_SERVICE);
+        if (cameraManager == null) return;
+        try {
+            cameraManager.registerAvailabilityCallback(cameraAvailabilityCallback,
+                    cameraHandler != null ? cameraHandler : cameraUiHandler);
+            availabilityCallbackRegistered = true;
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void unregisterCameraAvailabilityCallback() {
+        if (!availabilityCallbackRegistered || cameraManager == null) return;
+        try {
+            cameraManager.unregisterAvailabilityCallback(cameraAvailabilityCallback);
+        } catch (Throwable ignored) {
+        } finally {
+            availabilityCallbackRegistered = false;
+        }
+    }
+
+    private void scheduleCameraReopenRetry() {
+        cameraUiHandler.post(() -> {
+            if (!activityResumed || isFinishing() || isDestroyed()) return;
+            if (!cameraLifecycleState.canOpen()) return;
+            if (!CameraLifecycleState.shouldRetryOpen(cameraOpenRetryCount)) return;
+            long delayMs = CameraLifecycleState.reopenRetryDelayMs(cameraOpenRetryCount);
+            cameraOpenRetryCount++;
+            cameraUiHandler.removeCallbacks(cameraReopenRetryRunnable);
+            cameraUiHandler.postDelayed(cameraReopenRetryRunnable, delayMs);
+        });
+    }
+
+    private void attemptCameraReopenRetry() {
+        if (!activityResumed || isFinishing() || isDestroyed()) return;
+        if (cameraLifecycleState.canOpen() && textureView != null && textureView.isAvailable()) {
+            openCameraIfReady();
+        }
+    }
+
+    private void setCameraStateRetryPrompt(String text, boolean allowTapRetry) {
+        cameraRetryPromptActive = allowTapRetry;
+        if (cameraState == null) return;
+        cameraState.setText(allowTapRetry ? (text + " · TAP TO RETRY") : text);
+        if (allowTapRetry) {
+            cameraState.setClickable(true);
+            cameraState.setVisibility(View.VISIBLE);
+            cameraState.setOnClickListener(v -> {
+                hapticClick(v);
+                setCameraStateRetryPrompt("RECONNECTING CAMERA…", false);
+                updateTelemetryVisibility();
+                cameraOpenRetryCount = 0;
+                openCameraIfReady();
+            });
+        } else {
+            cameraState.setClickable(false);
+            cameraState.setOnClickListener(null);
+        }
+    }
+
     private void openCameraIfReady() {
-        if (!cameraLifecycleState.canOpen() || textureView == null || !textureView.isAvailable()) return;
+        if (!activityResumed || isFinishing() || isDestroyed()
+                || !cameraLifecycleState.canOpen() || textureView == null || !textureView.isAvailable()) return;
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return;
         if (cameraManager == null) cameraManager = (CameraManager) getSystemService(CAMERA_SERVICE);
+        setCameraStateRetryPrompt(cameraState != null ? String.valueOf(cameraState.getText()) : "", false);
         try {
             if (cameraId == null) chooseMainCamera();
             if (cameraId == null) {
@@ -4361,9 +4475,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         } catch (Throwable e) {
             Log.e("LikaLens", "Could not open camera", e);
             cameraLifecycleState = CameraLifecycleState.ERROR;
+            boolean canRetry = !(e instanceof SecurityException)
+                    && activityResumed && !isFinishing() && !isDestroyed()
+                    && CameraLifecycleState.shouldRetryOpen(cameraOpenRetryCount);
             runOnUiThread(() -> {
-                cameraState.setText("CAMERA UNAVAILABLE");
-                showMessage("Could not open this camera.");
+                if (canRetry) {
+                    setCameraStateRetryPrompt("RECONNECTING CAMERA…", false);
+                    scheduleCameraReopenRetry();
+                } else {
+                    setCameraStateRetryPrompt("CAMERA UNAVAILABLE", !(e instanceof SecurityException));
+                    showMessage("Could not open this camera.");
+                }
             });
         }
     }
@@ -4661,7 +4783,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private CameraDevice.StateCallback cameraStateCallback(long ticket) { return new CameraDevice.StateCallback() {
         @Override public void onOpened(CameraDevice camera) {
-            if (!activityResumed || !cameraEpoch.owns(ticket)) { camera.close(); return; }
+            if (!activityResumed || !cameraEpoch.owns(ticket)) {
+                camera.close();
+                if (cameraEpoch.owns(ticket)) {
+                    cameraLifecycleState = CameraLifecycleState.CLOSED;
+                }
+                return;
+            }
             cameraDevice = camera;
             cameraLifecycleState = CameraLifecycleState.OPENED;
             if (videoState.isSwitchingCamera()) {
@@ -4678,7 +4806,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             camera.close();
             if (cameraDevice == camera) cameraDevice = null;
             cameraLifecycleState = CameraLifecycleState.CLOSED;
-            runOnUiThread(MainActivity.this::updateVideoModeUi);
+            runOnUiThread(() -> {
+                updateVideoModeUi();
+                if (activityResumed && !isFinishing() && !isDestroyed()) {
+                    scheduleCameraReopenRetry();
+                }
+            });
         }
         @Override public void onError(CameraDevice camera, int error) {
             if (!cameraEpoch.owns(ticket)) { camera.close(); return; }
@@ -4687,22 +4820,51 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (cameraDevice == camera) cameraDevice = null;
             cameraLifecycleState = CameraLifecycleState.ERROR;
             runOnUiThread(() -> {
-                cameraState.setText("CAMERA ERROR · " + error);
+                boolean canRetry = activityResumed && !isFinishing() && !isDestroyed()
+                        && error != CameraDevice.StateCallback.ERROR_CAMERA_DISABLED
+                        && CameraLifecycleState.shouldRetryOpen(cameraOpenRetryCount);
+                if (canRetry) {
+                    setCameraStateRetryPrompt("RECONNECTING CAMERA…", false);
+                    scheduleCameraReopenRetry();
+                } else {
+                    boolean allowTap = error != CameraDevice.StateCallback.ERROR_CAMERA_DISABLED;
+                    setCameraStateRetryPrompt("CAMERA ERROR · " + error, allowTap);
+                }
                 updateVideoModeUi();
             });
+        }
+        @Override public void onClosed(CameraDevice camera) {
+            if (cameraDevice == camera) cameraDevice = null;
+            if (cameraEpoch.owns(ticket) && cameraLifecycleState == CameraLifecycleState.CLOSING) {
+                cameraLifecycleState = CameraLifecycleState.CLOSED;
+                if (activityResumed && !isFinishing() && !isDestroyed()) {
+                    cameraUiHandler.post(MainActivity.this::openCameraIfReady);
+                }
+            }
         }
     }; }
 
     private void createPreviewSession() {
-        previewColourMetadata = null;
+        createPreviewSession(false);
+    }
+
+    private void createPreviewSession(boolean seamless) {
+        if (!seamless) {
+            previewColourMetadata = null;
+        }
         lastPreviewMetadataAt = 0L;
         if (cameraDevice == null || textureView == null || !textureView.isAvailable()) return;
         try {
             SurfaceTexture texture = textureView.getSurfaceTexture();
+            if (texture == null) {
+                if (cameraDevice != null) cameraLifecycleState = CameraLifecycleState.OPENED;
+                return;
+            }
             texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
-            if (previewSurface == null || !previewSurface.isValid()) {
+            if (previewSurface == null || !previewSurface.isValid() || previewSurfaceTexture != texture) {
                 if (previewSurface != null) previewSurface.release();
                 previewSurface = new Surface(texture);
+                previewSurfaceTexture = texture;
             }
             Surface sessionPreviewSurface = previewSurface;
             List<Surface> outputs = new ArrayList<>();
@@ -4717,6 +4879,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     if (!activityResumed || cameraDevice != owner || !sessionEpoch.owns(sessionTicket)) { session.close(); return; }
                     captureSession = session;
                     cameraLifecycleState = CameraLifecycleState.PREVIEW_READY;
+                    closeRetiredReaders();
                     try {
                         previewRequest = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
                         previewRequest.addTarget(sessionPreviewSurface);
@@ -4731,23 +4894,36 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         applyZoom(previewRequest);
                         captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
                         runOnUiThread(() -> {
+                            if (!activityResumed || !sessionEpoch.owns(sessionTicket)) return;
+                            cameraOpenRetryCount = 0;
+                            cameraRetryPromptActive = false;
+                            if (cameraState != null) {
+                                cameraState.setClickable(false);
+                                cameraState.setOnClickListener(null);
+                            }
+                            updateTelemetryVisibility();
+                            cameraUiHandler.removeCallbacks(cameraReopenRetryRunnable);
                             if (textureView != null) {
-                                configureTransform(textureView.getWidth(), textureView.getHeight());
-                                textureView.animate().cancel();
-                                if (pendingZoomSettleScale != 1.0f) {
-                                    textureView.setScaleX(pendingZoomSettleScale);
-                                    textureView.setScaleY(pendingZoomSettleScale);
-                                    pendingZoomSettleScale = 1.0f;
-                                    textureView.animate()
-                                            .scaleX(1f)
-                                            .scaleY(1f)
-                                            .alpha(1f)
-                                            .setDuration(180L)
-                                            .setInterpolator(new DecelerateInterpolator(1.6f))
-                                            .start();
+                                textureView.setVisibility(View.VISIBLE);
+                                if (textureView.getWidth() > 0 && textureView.getHeight() > 0) {
+                                    configureTransform(textureView.getWidth(), textureView.getHeight());
                                 } else {
+                                    textureView.post(() -> {
+                                        if (textureView != null && textureView.getWidth() > 0 && textureView.getHeight() > 0) {
+                                            configureTransform(textureView.getWidth(), textureView.getHeight());
+                                        }
+                                    });
+                                }
+                                if (!seamless || textureView.getAlpha() < 0.99f) {
+                                    textureView.animate().cancel();
                                     textureView.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(140L).start();
                                 }
+                                applyLiveFilmPreview();
+                            }
+                            float postZoom = pendingPostConfigZoom;
+                            pendingPostConfigZoom = -1f;
+                            if (postZoom > 0f && captureSession == session && previewRequest != null) {
+                                animateZoomTo(postZoom, 240L, null, false);
                             }
                         });
                     } catch (CameraAccessException e) {
@@ -4757,6 +4933,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 @Override public void onConfigureFailed(CameraCaptureSession session) {
                     session.close();
                     if (!sessionEpoch.owns(sessionTicket)) return;
+                    closeRetiredReaders();
+                    pendingPostConfigZoom = -1f;
                     cameraLifecycleState = CameraLifecycleState.OPENED;
                     if (useRawForThisCamera) {
                         useRawForThisCamera = false;
@@ -4766,12 +4944,38 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                             cameraState.setText("RAW STREAM COMBINATION UNSUPPORTED · USING JPEG");
                             recreateJpegSession();
                         });
-                    } else runOnUiThread(() -> showMessage("Camera preview could not be configured."));
+                    } else {
+                        runOnUiThread(() -> {
+                            closeCamera();
+                            if (activityResumed && !isFinishing() && !isDestroyed()
+                                    && CameraLifecycleState.shouldRetryOpen(cameraOpenRetryCount)) {
+                                setCameraStateRetryPrompt("RECONNECTING CAMERA…", false);
+                                scheduleCameraReopenRetry();
+                            } else {
+                                setCameraStateRetryPrompt("CAMERA PREVIEW ERROR", true);
+                                showMessage("Camera preview could not be configured.");
+                            }
+                        });
+                    }
                 }
             }, cameraHandler);
         } catch (CameraAccessException | IllegalStateException e) {
+            closeRetiredReaders();
+            pendingPostConfigZoom = -1f;
             if (cameraDevice != null) cameraLifecycleState = CameraLifecycleState.OPENED;
             showMessage("Could not start camera preview.");
+        }
+    }
+
+    private void closeRetiredReaders() {
+        final List<ImageReader> toClose;
+        synchronized (retiredReaders) {
+            if (retiredReaders.isEmpty()) return;
+            toClose = new ArrayList<>(retiredReaders);
+            retiredReaders.clear();
+        }
+        for (ImageReader reader : toClose) {
+            closeReader(reader);
         }
     }
 
@@ -4785,20 +4989,20 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (map == null) return;
             if (seamless) {
-                ImageReader oldRaw = rawReader;
-                ImageReader oldJpeg = jpegReader;
-                rawReader = null;
-                jpegReader = null;
+                synchronized (retiredReaders) {
+                    if (rawReader != null) { retiredReaders.add(rawReader); rawReader = null; }
+                    if (jpegReader != null) { retiredReaders.add(jpegReader); jpegReader = null; }
+                }
                 prepareReader(map);
-                createPreviewSession();
-                closeReader(oldRaw);
-                closeReader(oldJpeg);
+                createPreviewSession(true);
             } else {
+                closeRetiredReaders();
                 closeSessionOnly();
                 prepareReader(map);
-                createPreviewSession();
+                createPreviewSession(false);
             }
         } catch (RuntimeException e) {
+            closeRetiredReaders();
             showMessage(errorMessage);
         }
     }
@@ -4822,6 +5026,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         lastPreviewMetadataAt = 0L;
         if (captureSession != null) { captureSession.close(); captureSession = null; }
         if (previewSurface != null) { previewSurface.release(); previewSurface = null; }
+        previewSurfaceTexture = null;
         previewRequest = null;
     }
 
@@ -6449,7 +6654,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void applyLiveFilmPreview() {
-        if (!activityResumed || textureView == null) return;
+        if (!activityResumed || textureView == null || !textureView.isAvailable()) return;
         if (!prefLiveFilmPreview) {
             liveLookPreview.clear();
             textureView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
@@ -6914,9 +7119,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 showMessage("JPEG fallback on this lens · RAW unavailable here");
             }
         }
+        boolean isInteractive = gesture.is(InteractionState.Gesture.Mode.PINCH)
+                || gesture.is(InteractionState.Gesture.Mode.ZOOM_SLIDER)
+                || gesture.is(InteractionState.Gesture.Mode.ZOOM_ROW);
         if (mustRestart) {
             forceJpegForWide = jpegWide;
-            pendingZoomSettleScale = 1.0f;
+            pendingPostConfigZoom = -1f;
             if (prefHaptics && captureButton != null) {
                 captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
             }
@@ -6927,8 +7135,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             restartCameraForLens(resolvedFactor);
         } else if (mustReconfigureSession) {
             if (videoState.isRecordingOrPaused() || videoState.isPreparing() || videoState.isSwitchingCamera()) {
+                pendingPostConfigZoom = -1f;
                 forceJpegForWide = jpegWide;
                 animateZoomTo(resolvedFactor);
+            } else if (isInteractive) {
+                forceJpegForWide = jpegWide;
+                reconfigureSessionForZoom(resolvedFactor, true);
             } else {
                 float preZoomTarget = CameraExposureHelper.preReconfigAnimationTarget(
                         prevForceJpegForWide, jpegWide, requestedZoom, resolvedFactor);
@@ -6937,11 +7149,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     animateZoomTo(preZoomTarget, animMs, () -> {
                         if (!activityResumed || !id.equals(cameraId)) return;
                         forceJpegForWide = jpegWide;
-                        reconfigureSessionForZoom(resolvedFactor, jpegWide);
-                    });
+                        reconfigureSessionForZoom(resolvedFactor, false);
+                    }, false);
                 } else {
                     forceJpegForWide = jpegWide;
-                    reconfigureSessionForZoom(resolvedFactor, jpegWide);
+                    reconfigureSessionForZoom(resolvedFactor, false);
                 }
             }
         } else {
@@ -6950,16 +7162,21 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
-    private void reconfigureSessionForZoom(float factor, boolean useWideSettle) {
+    private void reconfigureSessionForZoom(float targetFactor, boolean interactiveGesture) {
         if (zoomAnimator != null) {
             zoomAnimator.cancel();
             zoomAnimator = null;
         }
-        requestedZoom = factor;
-        updateLensButtons(factor);
+        float sessionStartZoom = CameraExposureHelper.sessionInitialZoomForReconfig(
+                forceJpegForWide, requestedZoom, targetFactor, interactiveGesture);
+        pendingPostConfigZoom = CameraExposureHelper.postReconfigZoomTarget(
+                forceJpegForWide, sessionStartZoom, targetFactor, interactiveGesture);
+        requestedZoom = sessionStartZoom;
+        updateLensButtons(targetFactor);
         useRawForThisCamera = rawSupported && !forceJpegForWide;
         if (cameraLifecycleState == CameraLifecycleState.OPENING) {
-            pendingZoomSettleScale = 1.0f;
+            pendingPostConfigZoom = -1f;
+            requestedZoom = targetFactor;
             if (textureView != null) textureView.setAlpha(.82f);
             closeCamera(videoState.isSwitchingCamera());
             openCameraIfReady();
@@ -6969,21 +7186,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 || cameraLifecycleState == CameraLifecycleState.CLOSED
                 || cameraLifecycleState == CameraLifecycleState.CLOSING
                 || cameraLifecycleState == CameraLifecycleState.ERROR) {
-            pendingZoomSettleScale = 1.0f;
+            pendingPostConfigZoom = -1f;
+            requestedZoom = targetFactor;
             return;
-        }
-        if (useWideSettle && textureView != null) {
-            pendingZoomSettleScale = 1.08f;
-            textureView.animate().cancel();
-            textureView.animate()
-                    .scaleX(0.95f)
-                    .scaleY(0.95f)
-                    .alpha(0.92f)
-                    .setDuration(100L)
-                    .setInterpolator(new DecelerateInterpolator())
-                    .start();
-        } else {
-            pendingZoomSettleScale = 1.0f;
         }
         recreateCurrentPreviewSession("Wide lens preview could not start on this camera.", true);
     }
@@ -7125,11 +7330,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void animateZoomTo(float targetZoom) {
-        animateZoomTo(targetZoom, 260L, null);
+        animateZoomTo(targetZoom, 260L, null, true);
     }
 
-    private void animateZoomTo(float targetZoom, long durationMs, Runnable onComplete) {
-        hapticDetent();
+    private void animateZoomTo(float targetZoom, long durationMs, Runnable onComplete, boolean withHaptic) {
+        if (withHaptic) hapticDetent();
         if (zoomAnimator != null) zoomAnimator.cancel();
         if (captureSession == null || previewRequest == null) {
             requestedZoom = targetZoom;
@@ -7154,7 +7359,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             updateZoomSliderUi();
             if (previewRequest == null || captureSession == null) return;
             long now = SystemClock.uptimeMillis();
-            if (now - lastRequestTime[0] >= 24L || animation.getAnimatedFraction() >= 1f) {
+            if (now - lastRequestTime[0] >= 16L || animation.getAnimatedFraction() >= 1f) {
                 lastRequestTime[0] = now;
                 try {
                     applyZoom(previewRequest);
@@ -7940,7 +8145,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             telemetry.setVisibility(showTelemetry ? View.VISIBLE : View.GONE);
         }
         if (cameraState != null) {
-            cameraState.setVisibility((showTelemetry || activeVideo) ? View.VISIBLE : View.GONE);
+            cameraState.setVisibility((showTelemetry || activeVideo || cameraRetryPromptActive) ? View.VISIBLE : View.GONE);
         }
         if (outputModeText != null) {
             outputModeText.setVisibility(View.GONE);
@@ -9021,6 +9226,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void closeCamera(boolean preserveVideoSwitch) {
         cameraEpoch.invalidate();
+        cameraUiHandler.removeCallbacks(cameraReopenRetryRunnable);
         cancelDelayedCapture();
         if(activityResumed || videoState.isQuickTake()) videoState.cancelPermissionPending();
         if (stillCaptureState.isTimerRunning()) cancelTimerCountdown();
@@ -9032,7 +9238,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             stopVideoRecording(false);
         }
         if (zoomAnimator != null) { zoomAnimator.cancel(); zoomAnimator = null; }
-        pendingZoomSettleScale = 1.0f;
+        pendingPostConfigZoom = -1f;
         if (textureView != null) {
             textureView.animate().cancel();
             textureView.setScaleX(1f);
@@ -9043,6 +9249,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         runOnUiThread(this::updateGalleryProcessingUi);
         closeSessionOnly();
         if (cameraDevice != null) { cameraDevice.close(); cameraDevice = null; }
+        closeRetiredReaders();
         closeReader(rawReader); rawReader = null;
         closeReader(jpegReader); jpegReader = null;
         synchronized (captureLock) {
@@ -9065,9 +9272,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (messageView != null && System.currentTimeMillis() >= toastUntil) messageView.setVisibility(View.GONE);
     };
 
-    @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) { openCameraIfReady(); }
+    @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
+        if (width > 0 && height > 0) {
+            configureTransform(width, height);
+        }
+        if (activityResumed) {
+            openCameraIfReady();
+            applyLiveFilmPreview();
+        }
+    }
     @Override public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) { configureTransform(width, height); }
-    @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) { closeCamera(); return true; }
+    @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+        closeCamera();
+        if (previewSurface != null) { previewSurface.release(); previewSurface = null; }
+        previewSurfaceTexture = null;
+        return true;
+    }
     @Override public void onSurfaceTextureUpdated(SurfaceTexture surface) { }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {

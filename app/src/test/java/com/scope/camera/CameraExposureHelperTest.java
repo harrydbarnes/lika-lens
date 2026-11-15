@@ -281,4 +281,16 @@ public class CameraExposureHelperTest {
         assertEquals("3", picked.id);
     }
 
+    @Test
+    public void wideHandoffStartsSessionAtOneThenGlidesToTarget() {
+        assertEquals(1.0f, CameraExposureHelper.sessionInitialZoomForReconfig(true, 1.0f, 0.5f, false), 0.0001f);
+        assertEquals(0.5f, CameraExposureHelper.postReconfigZoomTarget(true, 1.0f, 0.5f, false), 0.0001f);
+
+        assertEquals(0.96f, CameraExposureHelper.sessionInitialZoomForReconfig(true, 1.0f, 0.96f, true), 0.0001f);
+        assertEquals(-1f, CameraExposureHelper.postReconfigZoomTarget(true, 0.96f, 0.96f, true), 0.0001f);
+
+        assertEquals(1.0f, CameraExposureHelper.sessionInitialZoomForReconfig(false, 1.0f, 1.0f, false), 0.0001f);
+        assertEquals(-1f, CameraExposureHelper.postReconfigZoomTarget(false, 1.0f, 1.0f, false), 0.0001f);
+    }
+
 }

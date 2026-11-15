@@ -56,8 +56,12 @@ final class LiveLookPreview {
     }
 
     boolean apply(TextureView view, RawDeveloper.Look look, RawArchive.Frame frame, Runnable fallback) {
-        if(phase==Phase.DISPOSED) return false;
-        if(Build.VERSION.SDK_INT<33 || capability==Capability.UNSUPPORTED) { phase=Phase.FALLBACK;return false; }
+        if (view == null || phase == Phase.DISPOSED) return false;
+        if (Build.VERSION.SDK_INT < 33 || capability == Capability.UNSUPPORTED) { phase = Phase.FALLBACK; return false; }
+        if (!view.isAvailable()) {
+            phase = Phase.DISABLED;
+            return true;
+        }
         String key = RawDeveloper.displayLookKey(look, frame);
         if (view == currentView && key.equals(currentKey) && (phase == Phase.ACTIVE || phase == Phase.BUILDING)) {
             return true;
@@ -110,14 +114,20 @@ final class LiveLookPreview {
                 PreviewLookLut table = PreviewLookLut.build(snapshot, frame);
                 putCachedLut(key, table);
                 main.post(() -> {
-                    if (generation.get() != ticket || phase==Phase.DISPOSED) return;
+                    if (generation.get() != ticket || phase == Phase.DISPOSED) return;
+                    if (!view.isAvailable()) {
+                        phase = Phase.DISABLED;
+                        currentKey = null;
+                        currentView = null;
+                        return;
+                    }
                     try {
                         Api33.apply(view, table);
-                        capability=Capability.SUPPORTED;phase=Phase.ACTIVE;
+                        capability = Capability.SUPPORTED; phase = Phase.ACTIVE;
                     } catch (RuntimeException error) {
                         Log.w("LikaLens", "Shared look preview unavailable on this GPU", error);
-                        capability=Capability.UNSUPPORTED;
-                        clear();phase=Phase.FALLBACK;
+                        capability = Capability.UNSUPPORTED;
+                        clear(); phase = Phase.FALLBACK;
                         if (fallback != null) fallback.run();
                     }
                 });
