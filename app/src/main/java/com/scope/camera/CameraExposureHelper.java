@@ -327,4 +327,30 @@ public final class CameraExposureHelper {
         return currentZoom > 1.05f ? 1.0f : -1f;
     }
 
+    /**
+     * Resolves the initial zoom applied when creating the reconfigured preview session.
+     * For discrete taps into wide mode, starts at >= 1.0x so the FOV matches the previous RAW
+     * session before smoothly gliding down to the wide target inside the new JPEG session.
+     */
+    static float sessionInitialZoomForReconfig(boolean targetForceJpegWide, float currentZoom,
+            float targetZoom, boolean interactiveGesture) {
+        if (!interactiveGesture && targetForceJpegWide && targetZoom < WIDE_ZOOM_THRESHOLD) {
+            return Math.max(1.0f, currentZoom);
+        }
+        return targetZoom;
+    }
+
+    /**
+     * Returns the final wide zoom target to glide toward once the reconfigured JPEG session is
+     * active, or -1f when no post-configuration animation is needed.
+     */
+    static float postReconfigZoomTarget(boolean targetForceJpegWide, float sessionStartZoom,
+            float targetZoom, boolean interactiveGesture) {
+        if (!interactiveGesture && targetForceJpegWide
+                && sessionStartZoom >= 1.0f && targetZoom < WIDE_ZOOM_THRESHOLD) {
+            return targetZoom;
+        }
+        return -1f;
+    }
+
 }
