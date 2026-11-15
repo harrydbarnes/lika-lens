@@ -400,6 +400,8 @@ public class SettingsActivity extends Activity {
                     addInfo("RAW sensor support", hasRaw ? "Supported on the last opened camera" : "Not confirmed yet · open camera to check sensor capability", hasRaw ? ACCENT : 0xffdfb56f);
                     boolean hasManual = AppSettings.getBoolean(this, AppSettings.MANUAL_SUPPORTED, false);
                     addInfo("Manual sensor support", hasManual ? "Manual shutter, ISO, and exposure available on last opened camera" : "Not confirmed yet · depends on active camera sensor", hasManual ? ACCENT : 0xffdfb56f);
+                    boolean hasMf = AppSettings.getBoolean(this, AppSettings.MANUAL_FOCUS_SUPPORTED, false);
+                    addInfo("Manual focus support", hasMf ? "LENS_FOCUS_DISTANCE supported on last opened camera" : "Fixed-focus or not confirmed yet · depends on active lens", hasMf ? ACCENT : 0xffdfb56f);
                 });
     }
 

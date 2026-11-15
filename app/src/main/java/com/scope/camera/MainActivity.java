@@ -43,9 +43,11 @@ import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.DngCreator;
 import android.location.Location;
 import android.location.LocationManager;
+import android.media.AudioManager;
 import android.media.ExifInterface;
 import android.media.Image;
 import android.media.ImageReader;
+import android.media.MediaActionSound;
 import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
@@ -128,6 +130,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private TextView flashButton;
     private TextView aspectButton;
     private TextView timerButton;
+    private TextView focusToggleButton;
+    private TextView loupeToggleButton;
+    private LinearLayout manualFocusPanel;
+    private SeekBar manualFocusSeekBar;
+    private TextView manualFocusValue;
+    private TextView manualFocusExitButton;
     private TextView easyButton;
     private TextView adjustButton;
     private TextView captureButton;
@@ -195,6 +203,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private volatile boolean prefZebra = false;
     private volatile boolean prefFocusPeaking = false;
     private volatile boolean prefOpticalLoupe = false;
+    private volatile boolean prefLoupeOnMfAdjust = false;
     private volatile boolean prefLiveFilmPreview = true;
     private volatile boolean prefDirtyLensWarning = true;
     private volatile boolean prefPalmTimer = false;
@@ -221,6 +230,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         prefZebra = prefs.getBoolean(AppSettings.ZEBRA, false);
         prefFocusPeaking = prefs.getBoolean(AppSettings.FOCUS_PEAKING, false);
         prefOpticalLoupe = prefs.getBoolean(AppSettings.OPTICAL_LOUPE, false);
+        prefLoupeOnMfAdjust = prefs.getBoolean(AppSettings.LOUPE_ON_MF_ADJUST, false);
         prefLiveFilmPreview = prefs.getBoolean(AppSettings.LIVE_FILM_PREVIEW, true);
         prefDirtyLensWarning = prefs.getBoolean(AppSettings.DIRTY_LENS_WARNING, true);
         prefPalmTimer = prefs.getBoolean(AppSettings.PALM_TIMER, false);
@@ -411,13 +421,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void playShutterSound(int soundType) {
-        if (!AppSettings.getBoolean(this, AppSettings.SHUTTER_SOUND, true)) return;
+        boolean userEnabled = AppSettings.getBoolean(this, AppSettings.SHUTTER_SOUND, true);
+        AudioManager audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+        int ringerMode = audioManager != null ? audioManager.getRingerMode() : AudioManager.RINGER_MODE_NORMAL;
+        boolean mandatory = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && MediaActionSound.mustPlayShutterSound();
+        if (!CameraExposureHelper.shouldPlayShutterSound(userEnabled, ringerMode, mandatory)) return;
         try {
             if (mediaActionSound == null) {
-                mediaActionSound = new android.media.MediaActionSound();
-                mediaActionSound.load(android.media.MediaActionSound.SHUTTER_CLICK);
-                mediaActionSound.load(android.media.MediaActionSound.START_VIDEO_RECORDING);
-                mediaActionSound.load(android.media.MediaActionSound.STOP_VIDEO_RECORDING);
+                mediaActionSound = new MediaActionSound();
+                mediaActionSound.load(MediaActionSound.SHUTTER_CLICK);
+                mediaActionSound.load(MediaActionSound.START_VIDEO_RECORDING);
+                mediaActionSound.load(MediaActionSound.STOP_VIDEO_RECORDING);
             }
             mediaActionSound.play(soundType);
         } catch (Throwable t) {
@@ -437,6 +452,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private float dragStartY = 0f;
     private float dragStartEv = 0f;
     private int dragStartShadows = 50;
+    private volatile boolean manualLoupeActive = false;
+    private volatile boolean mfDragLoupeActive = false;
+    private volatile float lastLiveFocusDistance = Float.NaN;
+    private String lastAutoFocusMode = AppSettings.FOCUS_CONTINUOUS;
+    private boolean manualFocusSliderSyncing = false;
+    private long lastMfPreviewRequestAt = 0L;
 
     private LinearLayout zoomSliderPanel;
     private SeekBar zoomSlider;
@@ -464,6 +485,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private long lastPreviewMetadataAt;
     private final CameraCaptureSession.CaptureCallback previewMetadataCallback = new CameraCaptureSession.CaptureCallback() {
         @Override public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
+            if (session == captureSession) {
+                Float liveDist = result.get(CaptureResult.LENS_FOCUS_DISTANCE);
+                if (liveDist != null && Float.isFinite(liveDist) && liveDist >= 0f) {
+                    lastLiveFocusDistance = liveDist;
+                }
+            }
             long now = SystemClock.elapsedRealtime();
             if (session != captureSession || videoState.isRecordingOrPaused() || now - lastPreviewMetadataAt < 500L) return;
             lastPreviewMetadataAt = now;
@@ -524,6 +551,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private volatile CameraLifecycleState cameraLifecycleState = CameraLifecycleState.CLOSED;
     private boolean rawSupported;
     private boolean manualSupported;
+    private boolean manualFocusSupported;
+    private float minFocusDiopters = 0f;
+    private Integer focusDistanceCalibration = null;
+    private boolean hasUltraWideSupport = false;
+    private float maxCameraZoom = 1f;
     private boolean flashSupported;
     private boolean useRawForThisCamera;
     private boolean forceJpegForWide;
@@ -1067,6 +1099,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         updateBrainButton();
         updateEasyButton();
         updateQuickButtons();
+        updateManualFocusUi();
+        updateLoupeButtonUi();
         if (quickAdjustPanel != null && quickAdjustPanel.getVisibility() == View.VISIBLE) {
             populateQuickControls();
         }
@@ -1133,10 +1167,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         volumeKeyHandler.removeCallbacks(volumeQuickTakeRunnable);
         volumeKeyHolding = false;
         focusHandler.removeCallbacksAndMessages(null);
+        stopLoupeRefresh();
+        mfDragLoupeActive = false;
+        manualLoupeActive = false;
+        updateLoupeButtonUi();
         if (focusMode != FocusMode.LOCKED
+                && !isManualFocusActive()
                 && (focusMode != FocusMode.CONTINUOUS || currentAfRegions != null || currentAeRegions != null)) {
             if (focusReticle != null) focusReticle.fadeOut();
-            resetFocusToContinuous();
+            resetFocusToPreferredAfMode();
+        } else if (focusReticle != null && focusReticle.isVisible) {
+            focusReticle.fadeOut();
         }
         timerHandler.removeCallbacksAndMessages(null);
         liveLookPreview.clear();
@@ -1354,6 +1395,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         timerLp.leftMargin = dp(6);
         header.addView(timerButton, timerLp);
         timerButton.setOnClickListener(v -> { hapticClick(v); cycleTimer(); });
+
+        focusToggleButton = pill("AF", false);
+        focusToggleButton.setMinimumWidth(dp(44));
+        focusToggleButton.setPadding(dp(10), 0, dp(10), 0);
+        focusToggleButton.setContentDescription("Focus mode: Continuous AF, Single AF, or Manual Focus. Tap to choose; long press to toggle MF.");
+        LinearLayout.LayoutParams focusLp = new LinearLayout.LayoutParams(-2, dp(32));
+        focusLp.leftMargin = dp(6);
+        header.addView(focusToggleButton, focusLp);
+        focusToggleButton.setOnClickListener(v -> { hapticClick(v); chooseFocusMode(); });
+        focusToggleButton.setOnLongClickListener(v -> { hapticClick(v); toggleQuickManualFocus(); return true; });
+
+        loupeToggleButton = pill("5×", false);
+        loupeToggleButton.setMinimumWidth(dp(40));
+        loupeToggleButton.setPadding(dp(9), 0, dp(9), 0);
+        loupeToggleButton.setContentDescription("Toggle 5× focus loupe");
+        LinearLayout.LayoutParams loupeLp = new LinearLayout.LayoutParams(-2, dp(32));
+        loupeLp.leftMargin = dp(6);
+        header.addView(loupeToggleButton, loupeLp);
+        loupeToggleButton.setOnClickListener(v -> { hapticClick(v); setManualLoupeActive(!manualLoupeActive); });
 
         videoFpsButton = pill("24 FPS", true);
         LinearLayout.LayoutParams fpsLp = new LinearLayout.LayoutParams(-2, dp(32));
@@ -1586,6 +1646,72 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 gesture.end(InteractionState.Gesture.Mode.ZOOM_SLIDER);
                 finishInteractiveZoom();
                 scheduleZoomSliderHide();
+            }
+        });
+
+        manualFocusPanel = row();
+        manualFocusPanel.setGravity(Gravity.CENTER_VERTICAL);
+        manualFocusPanel.setPadding(dp(10), dp(2), dp(8), dp(2));
+        manualFocusPanel.setBackground(round(0xd8191e1e, 13, 0x66454d49, dp(1)));
+        manualFocusValue = label("∞", 9, ACCENT, true);
+        manualFocusValue.setGravity(Gravity.CENTER);
+        manualFocusPanel.addView(manualFocusValue, new LinearLayout.LayoutParams(dp(50), dp(30)));
+        TextView nearCap = label("NEAR", 7.5f, MUTED, true);
+        nearCap.setPadding(dp(2), 0, dp(4), 0);
+        manualFocusPanel.addView(nearCap, new LinearLayout.LayoutParams(-2, -2));
+        manualFocusSeekBar = new SeekBar(this);
+        manualFocusSeekBar.setMax(ManualFocusHelper.SLIDER_MAX);
+        manualFocusSeekBar.setProgress(ManualFocusHelper.SLIDER_MAX);
+        manualFocusSeekBar.setContentDescription("Manual focus distance from near to infinity");
+        manualFocusSeekBar.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        manualFocusSeekBar.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        manualFocusPanel.addView(manualFocusSeekBar, new LinearLayout.LayoutParams(0, dp(32), 1f));
+        TextView infCap = label("∞", 11, MUTED, true);
+        infCap.setPadding(dp(4), 0, dp(6), 0);
+        manualFocusPanel.addView(infCap, new LinearLayout.LayoutParams(-2, -2));
+        manualFocusExitButton = pill("AF", false);
+        manualFocusExitButton.setMinimumWidth(dp(38));
+        manualFocusExitButton.setPadding(dp(8), 0, dp(8), 0);
+        manualFocusExitButton.setTextSize(10f);
+        manualFocusExitButton.setContentDescription("Return to autofocus");
+        manualFocusExitButton.setOnClickListener(v -> { hapticClick(v); exitManualFocusToAf(); });
+        manualFocusPanel.addView(manualFocusExitButton, new LinearLayout.LayoutParams(-2, dp(26)));
+        manualFocusPanel.setVisibility(View.GONE);
+        manualFocusSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (!fromUser || manualFocusSliderSyncing) return;
+                AppSettings.prefs(MainActivity.this).edit().putInt(AppSettings.MANUAL_FOCUS_DISTANCE, progress).apply();
+                float diopters = ManualFocusHelper.progressToDiopters(progress, minFocusDiopters);
+                if (manualFocusValue != null) {
+                    manualFocusValue.setText(ManualFocusHelper.formatFocusDistance(diopters, minFocusDiopters, focusDistanceCalibration));
+                }
+                applyManualFocusToPreview(diopters, false);
+                if ((mfDragLoupeActive || manualLoupeActive) && focusReticle != null) {
+                    focusReticle.invalidate();
+                    refreshActiveLoupeSample();
+                }
+            }
+
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {
+                focusHandler.removeCallbacks(mfDragLoupeHideRunnable);
+                if (prefLoupeOnMfAdjust) {
+                    mfDragLoupeActive = true;
+                    if (focusReticle != null) {
+                        focusReticle.setAlpha(1f);
+                        focusReticle.setVisibility(View.VISIBLE);
+                    }
+                    refreshActiveLoupeSample();
+                    startLoupeRefresh();
+                }
+            }
+
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {
+                float diopters = ManualFocusHelper.progressToDiopters(seekBar.getProgress(), minFocusDiopters);
+                applyManualFocusToPreview(diopters, true);
+                if (mfDragLoupeActive) {
+                    focusHandler.removeCallbacks(mfDragLoupeHideRunnable);
+                    focusHandler.postDelayed(mfDragLoupeHideRunnable, 700L);
+                }
             }
         });
 
@@ -1837,6 +1963,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 timerLp.leftMargin = dp(6);
                 header.addView(timerButton, timerLp);
             }
+            if (focusToggleButton != null) {
+                LinearLayout.LayoutParams focusLp = new LinearLayout.LayoutParams(-2, dp(32));
+                focusLp.leftMargin = dp(6);
+                header.addView(focusToggleButton, focusLp);
+            }
+            if (loupeToggleButton != null) {
+                LinearLayout.LayoutParams loupeLp = new LinearLayout.LayoutParams(-2, dp(32));
+                loupeLp.leftMargin = dp(6);
+                header.addView(loupeToggleButton, loupeLp);
+            }
             if (videoFpsButton != null) {
                 LinearLayout.LayoutParams fpsLp = new LinearLayout.LayoutParams(-2, dp(32));
                 fpsLp.leftMargin = dp(6);
@@ -1855,7 +1991,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (topSpacer != null) header.addView(topSpacer, new LinearLayout.LayoutParams(0, 1, 1));
         } else {
             if (topSpacer != null) header.addView(topSpacer, new LinearLayout.LayoutParams(0, 1, 1));
-            View[] rightAligned = {videoStabButton, videoAspectButton, videoFpsButton, timerButton, aspectButton, flashButton};
+            View[] rightAligned = {videoStabButton, videoAspectButton, videoFpsButton, loupeToggleButton, focusToggleButton, timerButton, aspectButton, flashButton};
             for (View btn : rightAligned) {
                 if (btn == null) continue;
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(32));
@@ -2037,10 +2173,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 lensRowLp.topMargin = (int) (frame.bottom - dp(44) - dp(12));
                 overlay.addView(lensRow, lensRowLp);
             }
+            if (manualFocusPanel != null) {
+                if (manualFocusPanel.getParent() != null) ((ViewGroup) manualFocusPanel.getParent()).removeView(manualFocusPanel);
+                FrameLayout.LayoutParams mfLp = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+                mfLp.topMargin = (int) (frame.bottom - dp(44) - dp(12) - dp(42));
+                mfLp.leftMargin = dp(24);
+                mfLp.rightMargin = dp(24);
+                overlay.addView(manualFocusPanel, mfLp);
+            }
             if (zoomSliderPanel != null) {
                 if (zoomSliderPanel.getParent() != null) ((ViewGroup) zoomSliderPanel.getParent()).removeView(zoomSliderPanel);
                 FrameLayout.LayoutParams zoomSliderLp = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-                zoomSliderLp.topMargin = (int) (frame.bottom - dp(44) - dp(12) - dp(40));
+                boolean mfOpen = manualFocusPanel != null && manualFocusPanel.getVisibility() == View.VISIBLE;
+                zoomSliderLp.topMargin = (int) (frame.bottom - dp(44) - dp(12) - (mfOpen ? dp(84) : dp(40)));
                 zoomSliderLp.leftMargin = dp(24);
                 zoomSliderLp.rightMargin = dp(24);
                 overlay.addView(zoomSliderPanel, zoomSliderLp);
@@ -2158,6 +2303,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 zoomSliderLp.gravity = Gravity.CENTER_HORIZONTAL;
                 zoomSliderLp.topMargin = dp(4);
                 leftCanvas.addView(zoomSliderPanel, zoomSliderLp);
+            }
+            if (manualFocusPanel != null) {
+                if (manualFocusPanel.getParent() != null) ((ViewGroup) manualFocusPanel.getParent()).removeView(manualFocusPanel);
+                int mfWidth = Math.min(dp(340), Math.max(dp(200), leftCanvasWidthPx - dp(24)));
+                LinearLayout.LayoutParams mfLp = new LinearLayout.LayoutParams(mfWidth, -2);
+                mfLp.gravity = Gravity.CENTER_HORIZONTAL;
+                mfLp.topMargin = dp(4);
+                leftCanvas.addView(manualFocusPanel, mfLp);
             }
             if (lookRow != null) {
                 if (lookRow.getParent() != null) ((ViewGroup) lookRow.getParent()).removeView(lookRow);
@@ -2410,6 +2563,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         updateVideoModeUi();
         updateQuickButtons();
         updateReadouts();
+        refreshPreviewRequest();
         if (gridOverlay != null) gridOverlay.invalidate();
         if (textureView != null) configureTransform(textureView.getWidth(), textureView.getHeight());
     }
@@ -2477,11 +2631,20 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (brainButton != null) brainButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (aspectButton != null) aspectButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (timerButton != null) timerButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
+        if (focusToggleButton != null) focusToggleButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
+        if (loupeToggleButton != null) loupeToggleButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (adjustButton != null) adjustButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (easyButton != null) easyButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (videoFpsButton != null) videoFpsButton.setVisibility(videoMode ? View.VISIBLE : View.GONE);
         if (videoAspectButton != null) videoAspectButton.setVisibility(videoMode ? View.VISIBLE : View.GONE);
         if (videoStabButton != null) videoStabButton.setVisibility(videoMode ? View.VISIBLE : View.GONE);
+        if (videoMode) {
+            mfDragLoupeActive = false;
+            if (manualLoupeActive) {
+                setManualLoupeActive(false);
+            }
+        }
+        updateManualFocusUi();
         updateContextualStatus();
         boolean activeVideoTake = (recording || switching) && !videoLock.locked();
         if (recordingLockButton != null) recordingLockButton.setVisibility(activeVideoTake ? View.VISIBLE : View.GONE);
@@ -2505,6 +2668,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (flashButton != null) flashButton.setEnabled(idleControlsAvailable);
         if (aspectButton != null) aspectButton.setEnabled(idleControlsAvailable);
         if (timerButton != null) timerButton.setEnabled(idleControlsAvailable);
+        if (focusToggleButton != null) focusToggleButton.setEnabled(idleControlsAvailable);
+        if (loupeToggleButton != null) loupeToggleButton.setEnabled(idleControlsAvailable);
+        if (manualFocusSeekBar != null) manualFocusSeekBar.setEnabled(idleControlsAvailable);
+        if (manualFocusExitButton != null) manualFocusExitButton.setEnabled(idleControlsAvailable);
         if (brainButton != null) brainButton.setEnabled(idleControlsAvailable);
         if (flipButton != null) flipButton.setEnabled(liveSwitchAvailable);
         if (settingsButton != null) settingsButton.setEnabled(idleControlsAvailable);
@@ -2556,12 +2723,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 String codecTag = codecChoice.contains("HEVC") ? "HEVC" : "H.264";
                 cameraState.setText(cameraDevice == null ? "WAITING FOR CAMERA" : "VIDEO READY");
                 outputModeText.setText(codecTag + " VIDEO  ·  " + videoProfileLabel());
-            } else if (rawSupported && rawSize != null) {
+            } else if (useRawForThisCamera && rawSize != null) {
                 cameraState.setText("RAW SENSOR READY  ·  " + Math.round(rawSize.getWidth() * rawSize.getHeight() / 1000000f) + " MP");
                 outputModeText.setText(stillOutputSummary());
             } else if (jpegReader != null) {
-                cameraState.setText("RAW NOT AVAILABLE  ·  JPEG LOOK FALLBACK");
-                outputModeText.setText("JPEG FALLBACK  ·  SENSOR RAW NOT AVAILABLE");
+                boolean dngWanted = AppSettings.shouldSaveDng(AppSettings.get(this, AppSettings.PHOTO_OUTPUT, AppSettings.PHOTO_OUTPUT_JPEG_ONLY));
+                if (forceJpegForWide && rawSupported) {
+                    cameraState.setText("WIDE FOV READY  ·  JPEG INPUT");
+                    outputModeText.setText(dngWanted ? "WIDE LENS · DNG UNAVAILABLE HERE (JPEG SAVED)" : "WIDE SENSOR  ·  LIKA LENS RENDER");
+                } else {
+                    cameraState.setText(dngWanted ? "JPEG FALLBACK  ·  DNG UNAVAILABLE ON THIS LENS" : "RAW NOT AVAILABLE  ·  JPEG LOOK FALLBACK");
+                    outputModeText.setText("JPEG FALLBACK  ·  SENSOR RAW NOT AVAILABLE");
+                }
             }
         }
         updateTelemetryVisibility();
@@ -3615,12 +3788,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             captureButton.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
         }
 
+        boolean mfActive = isManualFocusActive();
         String metering = AppSettings.get(this, AppSettings.RETICLE_METERING, "AF + AE Metering");
-        boolean doAf = !metering.contains("AE Only");
+        int[] afModes = characteristics != null ? characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) : null;
+        boolean canSingleAf = hasCapability(afModes, CaptureRequest.CONTROL_AF_MODE_AUTO);
+        boolean doAf = !mfActive && canSingleAf && !metering.contains("AE Only");
         boolean doAe = !metering.contains("AF Only");
 
         Rect activeArray = characteristics != null ? characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) : null;
-        if (activeArray != null) {
+        if (activeArray != null && (doAf || doAe)) {
             float nx = (x - frame.left) / frame.width();
             float ny = (y - frame.top) / frame.height();
             nx = Math.max(0f, Math.min(1f, nx));
@@ -3637,7 +3813,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             MeteringRectangle meteringRect = new MeteringRectangle(focusRect, MeteringRectangle.METERING_WEIGHT_MAX);
             currentAfRegions = doAf ? new MeteringRectangle[]{meteringRect} : null;
             currentAeRegions = doAe ? new MeteringRectangle[]{meteringRect} : null;
-            focusMode = doAf ? FocusMode.TARGETED : FocusMode.CONTINUOUS;
+            if (!mfActive) {
+                focusMode = doAf ? FocusMode.TARGETED : FocusMode.CONTINUOUS;
+            }
 
             try {
                 Integer maxAf = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF);
@@ -3651,17 +3829,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     previewRequest.set(CaptureRequest.CONTROL_AE_REGIONS, currentAeRegions);
                 }
 
-                captureSession.capture(previewRequest.build(), null, cameraHandler);
-                if (doAf) previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+                if (doAf) {
+                    captureSession.capture(previewRequest.build(), null, cameraHandler);
+                    previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+                }
                 captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
             } catch (Exception e) {
-                Log.w(TAG, "Failed to apply manual focus/metering region", e);
+                Log.w(TAG, "Failed to apply focus/metering region", e);
             }
         }
 
         if (focusReticle != null) {
             focusReticle.showAt(x, y, currentEvOffset);
-            focusReticle.sampleLoupe(x, y);
+            refreshActiveLoupeSample();
         }
         scheduleFocusReticleHide();
     }
@@ -3698,10 +3878,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         String action = AppSettings.get(this, AppSettings.VIEWFINDER_LONG_PRESS, "AE / AF lock");
         if ("AE / AF lock".equals(action)) {
             handleViewfinderTap(x, y);
-            focusMode = FocusMode.LOCKED;
+            if (!isManualFocusActive()) {
+                focusMode = FocusMode.LOCKED;
+            }
             focusHandler.removeCallbacks(hideFocusReticleRunnable);
             if (!aeLocked) toggleAeLock();
-            showMessage("AE / AF LOCKED");
+            showMessage(isManualFocusActive() ? "AE LOCKED (MF HELD)" : "AE / AF LOCKED");
         } else if ("Lock exposure only (AE-L)".equals(action)) {
             toggleAeLock();
         } else if ("Reset exposure bias".equals(action)) {
@@ -3716,8 +3898,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private final Runnable hideFocusReticleRunnable = new Runnable() {
         @Override public void run() {
-            if (focusReticle != null) focusReticle.fadeOut();
-            if (focusMode != FocusMode.LOCKED) resetFocusToContinuous();
+            if (focusReticle != null) focusReticle.fadeOutReticle();
+            if (focusMode != FocusMode.LOCKED && !isManualFocusActive()) {
+                resetFocusToPreferredAfMode();
+            }
         }
     };
 
@@ -3726,13 +3910,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         focusHandler.postDelayed(hideFocusReticleRunnable, 3500);
     }
 
-    private void resetFocusToContinuous() {
+    private void resetFocusToPreferredAfMode() {
+        if (isManualFocusActive()) {
+            refreshPreviewRequest();
+            return;
+        }
         focusMode = FocusMode.CONTINUOUS;
         currentAfRegions = null;
         currentAeRegions = null;
         if (captureSession != null && previewRequest != null && cameraHandler != null) {
             try {
-                previewRequest.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+                setFocusMode(previewRequest);
                 previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
                 Integer maxAf = characteristics != null ? characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) : null;
                 Integer maxAe = characteristics != null ? characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) : null;
@@ -3740,7 +3928,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (maxAe != null && maxAe > 0) previewRequest.set(CaptureRequest.CONTROL_AE_REGIONS, null);
                 captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
             } catch (Exception e) {
-                Log.w(TAG, "Failed to reset focus to continuous", e);
+                Log.w(TAG, "Failed to reset focus mode", e);
             }
         }
     }
@@ -3770,7 +3958,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void toggleAeLock() {
         if (characteristics == null || previewRequest == null || captureSession == null) return;
         aeLocked = !aeLocked;
-        if (!aeLocked && focusMode == FocusMode.LOCKED) resetFocusToContinuous();
+        if (!aeLocked && focusMode == FocusMode.LOCKED) resetFocusToPreferredAfMode();
         if (captureButton != null && AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
             captureButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
         }
@@ -3930,9 +4118,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             int[] capabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
             rawSupported = isRawCapable(capabilities, map);
             manualSupported = hasCapability(capabilities, CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR);
+            Float minFocusDist = characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+            int[] afModes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+            manualFocusSupported = ManualFocusHelper.isManualFocusSupported(minFocusDist, afModes);
+            minFocusDiopters = minFocusDist != null && Float.isFinite(minFocusDist) ? Math.max(0f, minFocusDist) : 0f;
+            focusDistanceCalibration = characteristics.get(CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION);
+            hasUltraWideSupport = computeHasUltraWideSupport(characteristics);
+            maxCameraZoom = computeMaxCameraZoom(characteristics);
             AppSettings.prefs(this).edit()
                     .putBoolean(AppSettings.MANUAL_SUPPORTED, manualSupported)
                     .putBoolean(AppSettings.RAW_SUPPORTED, rawSupported)
+                    .putBoolean(AppSettings.MANUAL_FOCUS_SUPPORTED, manualFocusSupported)
                     .apply();
             updateReadouts();
             useRawForThisCamera = rawSupported && !forceJpegForWide;
@@ -3940,6 +4136,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             previewSize = choosePreviewSize(map.getOutputSizes(SurfaceTexture.class));
             if (previewSize == null) previewSize = new Size(1280, 720);
             prepareReader(map);
+            runOnUiThread(() -> {
+                updateManualFocusUi();
+                updateLensButtons(requestedZoom);
+                if (!videoMode && !manualFocusSupported
+                        && AppSettings.FOCUS_MANUAL.equals(AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS))) {
+                    showMessage("Fixed-focus lens · manual focus not supported here");
+                }
+            });
             cameraLifecycleState = CameraLifecycleState.OPENING;
             cameraManager.openCamera(cameraId, cameraStateCallback(cameraEpoch.next()), cameraHandler);
         } catch (Throwable e) {
@@ -3950,6 +4154,53 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 showMessage("Could not open this camera.");
             });
         }
+    }
+
+    private boolean computeHasUltraWideSupport(CameraCharacteristics activeChars) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && activeChars != null) {
+            Range<Float> range = activeChars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+            if (range != null && range.getLower() < CameraExposureHelper.WIDE_ZOOM_THRESHOLD) {
+                return true;
+            }
+        }
+        if (cameraManager != null) {
+            try {
+                if (mainCameraId != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    CameraCharacteristics mainChars = cameraManager.getCameraCharacteristics(mainCameraId);
+                    Range<Float> mainRange = mainChars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+                    if (mainRange != null && mainRange.getLower() < CameraExposureHelper.WIDE_ZOOM_THRESHOLD) {
+                        return true;
+                    }
+                }
+                for (String id : cameraManager.getCameraIdList()) {
+                    CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
+                    Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+                    if (facing == null || facing != CameraCharacteristics.LENS_FACING_BACK) continue;
+                    float[] focals = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                    if (focals != null && focals.length > 0 && primaryFocalLength > 0f
+                            && (focals[0] / primaryFocalLength) < 0.95f) {
+                        return true;
+                    }
+                }
+            } catch (CameraAccessException ignored) {
+            }
+        }
+        return false;
+    }
+
+    private float computeMaxCameraZoom(CameraCharacteristics activeChars) {
+        float maxZoom = 1f;
+        if (activeChars != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Range<Float> range = activeChars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+                if (range != null) maxZoom = Math.max(maxZoom, range.getUpper());
+            }
+            Float maxDigital = activeChars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
+            if (maxDigital != null && Float.isFinite(maxDigital)) {
+                maxZoom = Math.max(maxZoom, maxDigital);
+            }
+        }
+        return Math.min(MAX_INTERACTIVE_ZOOM, maxZoom);
     }
 
     private static boolean hasCapability(int[] caps, int target) {
@@ -3973,50 +4224,47 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         return rawSizes != null && rawSizes.length > 0;
     }
 
+    private List<CameraExposureHelper.LensCandidate> collectLensCandidates() throws CameraAccessException {
+        List<CameraExposureHelper.LensCandidate> candidates = new ArrayList<>();
+        if (cameraManager == null) return candidates;
+        for (String id : cameraManager.getCameraIdList()) {
+            CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
+            Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+            boolean isBack = facing != null && facing == CameraCharacteristics.LENS_FACING_BACK;
+            StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            if (map == null) continue;
+            boolean raw = isRawCapable(c, map);
+            Size[] sizes = raw ? map.getOutputSizes(ImageFormat.RAW_SENSOR) : map.getOutputSizes(ImageFormat.JPEG);
+            long area = maxSizeArea(sizes);
+            float[] lenses = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+            float focal = lenses != null && lenses.length > 0 ? lenses[0] : 1f;
+            Float minZoom = null;
+            Float maxZoom = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Range<Float> range = c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+                if (range != null) {
+                    minZoom = range.getLower();
+                    maxZoom = range.getUpper();
+                }
+            }
+            candidates.add(new CameraExposureHelper.LensCandidate(id, isBack, raw, area, focal, minZoom, maxZoom));
+        }
+        return candidates;
+    }
+
     private void chooseMainCamera() throws CameraAccessException {
         String defaultLens = AppSettings.get(this, AppSettings.DEFAULT_LENS, "Auto / Wide 1×");
         String lastId = AppSettings.get(this, AppSettings.LAST_CAMERA_ID, null);
-
-        String best = null;
-        long bestArea = -1;
-        boolean foundRaw = false;
-        float focal = 1f;
-
-        if ("Last used".equals(defaultLens) && lastId != null) {
-            for (String id : cameraManager.getCameraIdList()) {
-                if (id.equals(lastId)) {
-                    CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
-                    float[] lenses = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
-                    best = id;
-                    focal = lenses != null && lenses.length > 0 ? lenses[0] : 1f;
-                    break;
-                }
-            }
-        }
-
-        if (best == null) {
-            for (String id : cameraManager.getCameraIdList()) {
-                CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
-                Integer facing = c.get(CameraCharacteristics.LENS_FACING);
-                if (facing == null || facing != CameraCharacteristics.LENS_FACING_BACK) continue;
-                StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-                if (map == null) continue;
-                boolean raw = isRawCapable(c, map);
-                Size[] sizes = raw ? map.getOutputSizes(ImageFormat.RAW_SENSOR) : map.getOutputSizes(ImageFormat.JPEG);
-                long area = maxSizeArea(sizes);
-                if ((raw && !foundRaw) || (raw == foundRaw && area > bestArea)) {
-                    best = id;
-                    bestArea = area;
-                    foundRaw = raw;
-                    float[] lenses = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
-                    if (lenses != null && lenses.length > 0) focal = lenses[0];
-                }
-            }
-        }
-        cameraId = best;
-        mainCameraId = best;
-        primaryFocalLength = focal;
-        physicalFocalFactor = 1f;
+        List<CameraExposureHelper.LensCandidate> candidates = collectLensCandidates();
+        CameraExposureHelper.StartupLensChoice choice =
+                CameraExposureHelper.resolveStartupLens(candidates, defaultLens, lastId);
+        mainCameraId = choice.mainCameraId;
+        primaryFocalLength = choice.primaryFocalLength;
+        cameraId = choice.activeCameraId;
+        requestedZoom = choice.initialZoom;
+        physicalFocalFactor = choice.physicalFocalFactor;
+        forceJpegForWide = choice.forceJpegForWide;
+        runOnUiThread(() -> updateLensButtons(requestedZoom));
     }
 
     private static long maxSizeArea(Size[] sizes) {
@@ -4042,12 +4290,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (jpegSize == null) jpegSize = new Size(1920, 1080);
             jpegReader = ImageReader.newInstance(jpegSize.getWidth(), jpegSize.getHeight(), ImageFormat.JPEG, 4);
             jpegReader.setOnImageAvailableListener(this::onImageAvailable, cameraHandler);
+            String photoOutput = AppSettings.get(this, AppSettings.PHOTO_OUTPUT, AppSettings.PHOTO_OUTPUT_JPEG_ONLY);
+            boolean wantsDng = AppSettings.shouldSaveDng(photoOutput);
             if (forceJpegForWide && rawSupported) {
-                cameraState.setText("WIDE FOV READY  ·  JPEG INPUT");
-                outputModeText.setText("WIDE SENSOR  ·  LIKA LENS RENDER");
+                cameraState.setText(wantsDng ? "WIDE LENS · JPEG FALLBACK (DNG UNAVAILABLE)" : "WIDE FOV READY · JPEG INPUT");
+                outputModeText.setText("WIDE SENSOR · LIKA LENS RENDER");
             } else {
-                cameraState.setText("RAW NOT AVAILABLE  ·  JPEG LOOK FALLBACK");
-                outputModeText.setText("JPEG FALLBACK  ·  SENSOR RAW NOT AVAILABLE");
+                cameraState.setText(wantsDng ? "JPEG FALLBACK · DNG UNAVAILABLE ON THIS LENS" : "RAW NOT AVAILABLE · JPEG LOOK FALLBACK");
+                outputModeText.setText("JPEG FALLBACK · SENSOR RAW NOT AVAILABLE");
             }
         }
         updateVideoModeUi();
@@ -5079,7 +5329,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             setFocusMode(still);
             setFlash(still, false);
             applyOpticalSettings(still, false);
-            if (focusMode != FocusMode.LOCKED && AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS).startsWith("Single")) {
+            if (!isManualFocusActive() && focusMode != FocusMode.LOCKED
+                    && AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS).startsWith("Single")) {
                 still.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
             }
             applyZoom(still);
@@ -5150,7 +5401,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             frameCount = (int) params[2];
         }
 
-        boolean singleAf = focusMode != FocusMode.LOCKED
+        boolean singleAf = !isManualFocusActive() && focusMode != FocusMode.LOCKED
                 && AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS).startsWith("Single");
 
         List<CaptureRequest> burstRequests = new ArrayList<>(frameCount);
@@ -6293,9 +6544,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 return;
             }
 
-            // If we are currently on an auxiliary camera, return to mainCameraId when factor >= 1f
+            // If we are currently on an auxiliary camera, return to mainCameraId (or telephoto) when factor >= 1f
             if (!mainCameraId.equals(cameraId) && factor >= 1f) {
-                selectCameraForLens(mainCameraId, factor, false);
+                if (factor > 1.05f) {
+                    chooseContinuousLens(factor);
+                } else {
+                    selectCameraForLens(mainCameraId, factor, false);
+                }
                 return;
             }
 
@@ -6371,7 +6626,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 return;
             }
 
-            selectCameraForLens(mainCameraId, factor, false);
+            if (factor > 1.05f) {
+                chooseContinuousLens(factor);
+            } else {
+                selectCameraForLens(mainCameraId, factor, false);
+            }
         } catch (CameraAccessException e) {
             showMessage("Lens selection is unavailable.");
         }
@@ -6407,6 +6666,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         boolean prevForceJpegForWide = forceJpegForWide;
         boolean mustReconfigureSession = CameraExposureHelper.needsPreviewSessionReconfig(
                 cameraId, id, prevForceJpegForWide, jpegWide);
+        if (!videoMode && AppSettings.shouldSaveDng(AppSettings.get(this, AppSettings.PHOTO_OUTPUT, AppSettings.PHOTO_OUTPUT_JPEG_ONLY))) {
+            boolean targetHasRaw = true;
+            if (jpegWide) {
+                targetHasRaw = false;
+            } else if (cameraManager != null && mustRestart) {
+                try {
+                    CameraCharacteristics targetChars = cameraManager.getCameraCharacteristics(id);
+                    StreamConfigurationMap targetMap = targetChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                    targetHasRaw = isRawCapable(targetChars, targetMap);
+                } catch (CameraAccessException ignored) {
+                }
+            }
+            if (!targetHasRaw && (mustRestart || !prevForceJpegForWide)) {
+                showMessage("JPEG fallback on this lens · RAW unavailable here");
+            }
+        }
         if (mustRestart) {
             forceJpegForWide = jpegWide;
             pendingZoomSettleScale = 1.0f;
@@ -6545,34 +6820,52 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 chooseLens(factor);
                 return;
             }
-            String bestId = mainCameraId;
-            float bestPhysical = 1f;
-            boolean requireDng = AppSettings.shouldSaveDng(
-                    AppSettings.get(this, AppSettings.PHOTO_OUTPUT, AppSettings.PHOTO_OUTPUT_JPEG_ONLY));
-            for (String id : cameraManager.getCameraIdList()) {
-                CameraCharacteristics candidate = cameraManager.getCameraCharacteristics(id);
-                Integer candidateFacing = candidate.get(CameraCharacteristics.LENS_FACING);
-                if (candidateFacing == null || candidateFacing != CameraCharacteristics.LENS_FACING_BACK) continue;
-                float[] focal = candidate.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
-                if (focal == null || focal.length == 0) continue;
-                float physical = focal[0] / Math.max(.1f, primaryFocalLength);
-                if (physical > factor + .001f || physical < bestPhysical) continue;
-                StreamConfigurationMap map = candidate.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-                boolean raw = isRawCapable(candidate, map);
-                if (requireDng && !raw) continue;
-                bestId = id;
-                bestPhysical = physical;
+            List<CameraExposureHelper.LensCandidate> candidates = collectLensCandidates();
+            CameraExposureHelper.LensCandidate primary = null;
+            for (CameraExposureHelper.LensCandidate c : candidates) {
+                if (mainCameraId.equals(c.id)) {
+                    primary = c;
+                    break;
+                }
             }
-            physicalFocalFactor = bestPhysical;
-            selectCameraForLens(bestId, factor, false);
+            if (primary == null) {
+                primary = CameraExposureHelper.selectPrimaryBackCamera(candidates);
+            }
+            CameraExposureHelper.LensCandidate best =
+                    CameraExposureHelper.selectContinuousPhysicalLens(candidates, primary, factor);
+            if (best != null) {
+                physicalFocalFactor = (best.isBack && primary != null) ? (best.focalLength / primary.focalLength) : 1f;
+                selectCameraForLens(best.id, factor, false);
+            } else {
+                physicalFocalFactor = 1f;
+                selectCameraForLens(mainCameraId, factor, false);
+            }
         } catch (CameraAccessException e) {
             showMessage("Zoom selection is unavailable.");
+        }
+    }
+
+    private void syncPortraitZoomSliderClearance() {
+        if (zoomSliderPanel == null || textureView == null) return;
+        ViewGroup.LayoutParams lp = zoomSliderPanel.getLayoutParams();
+        if (lp instanceof FrameLayout.LayoutParams && zoomSliderPanel.getParent() == overlay) {
+            RectF frame = framingRect(textureView.getWidth(), textureView.getHeight());
+            if (frame.bottom > 0) {
+                boolean mfOpen = manualFocusPanel != null && manualFocusPanel.getVisibility() == View.VISIBLE;
+                int desiredTop = (int) (frame.bottom - dp(44) - dp(12) - (mfOpen ? dp(84) : dp(40)));
+                FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
+                if (flp.topMargin != desiredTop) {
+                    flp.topMargin = desiredTop;
+                    zoomSliderPanel.setLayoutParams(flp);
+                }
+            }
         }
     }
 
     private void showZoomSlider() {
         if (zoomSliderPanel == null) return;
         zoomSliderPanel.removeCallbacks(hideZoomSlider);
+        syncPortraitZoomSliderClearance();
         zoomSliderPanel.setVisibility(View.VISIBLE);
         updateZoomSliderUi();
     }
@@ -6729,9 +7022,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (indexChanged) {
             lastActiveLensIndex = closestIndex;
         }
+        boolean wideAvailable = hasUltraWideSupport || (isFrontCamera() && supportedWideZoom(characteristics, 0.5f) > 0f);
         for (int i = 0; i < lensButtons.size(); i++) {
             TextView button = lensButtons.get(i);
             boolean active = (i == closestIndex);
+            button.setAlpha((i == 0 && characteristics != null && !wideAvailable && !active) ? 0.50f : 1.0f);
             if (active) {
                 button.setBackground(round(0xfffed36a, 100, 0, 0));
                 button.setTextColor(BG);
@@ -6843,19 +7138,254 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void setFocusMode(CaptureRequest.Builder builder) {
-        if ((focusMode != FocusMode.CONTINUOUS) && currentAfRegions != null) {
+        if (characteristics == null || builder == null) return;
+        int[] modes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+        if (isManualFocusActive()) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF);
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+            builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, currentManualFocusDiopters());
+            Integer maxAf = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF);
+            if (maxAf != null && maxAf > 0) {
+                builder.set(CaptureRequest.CONTROL_AF_REGIONS, null);
+            }
+            return;
+        }
+        if ((focusMode != FocusMode.CONTINUOUS) && currentAfRegions != null
+                && hasCapability(modes, CaptureRequest.CONTROL_AF_MODE_AUTO)) {
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO);
             builder.set(CaptureRequest.CONTROL_AF_REGIONS, currentAfRegions);
             return;
         }
-        int[] modes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
         if (modes == null) return;
         String preference = AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS);
-        int wanted = preference.startsWith("Single") ? CaptureRequest.CONTROL_AF_MODE_AUTO
-                : CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE;
-        if (Arrays.stream(modes).anyMatch(v -> v == wanted)) builder.set(CaptureRequest.CONTROL_AF_MODE, wanted);
-        else if (Arrays.stream(modes).anyMatch(v -> v == CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)) {
+        int wanted = !videoMode && preference.startsWith("Single")
+                ? CaptureRequest.CONTROL_AF_MODE_AUTO
+                : (videoMode ? CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO : CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+        if (hasCapability(modes, wanted)) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, wanted);
+        } else if (hasCapability(modes, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)) {
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+        } else if (hasCapability(modes, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+        } else if (hasCapability(modes, CaptureRequest.CONTROL_AF_MODE_AUTO)) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO);
+        } else if (hasCapability(modes, CaptureRequest.CONTROL_AF_MODE_OFF)) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF);
+        }
+    }
+
+    private boolean isManualFocusActive() {
+        return !videoMode
+                && manualFocusSupported
+                && AppSettings.FOCUS_MANUAL.equals(AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS));
+    }
+
+    private float currentManualFocusDiopters() {
+        int progress = AppSettings.getInt(this, AppSettings.MANUAL_FOCUS_DISTANCE, ManualFocusHelper.SLIDER_MAX);
+        return ManualFocusHelper.progressToDiopters(progress, minFocusDiopters);
+    }
+
+    private void updateManualFocusUi() {
+        String pref = AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS);
+        if (!AppSettings.FOCUS_MANUAL.equals(pref)) {
+            lastAutoFocusMode = pref;
+        }
+        boolean mfActive = isManualFocusActive();
+        if (focusToggleButton != null) {
+            focusToggleButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
+            if (!manualFocusSupported && !videoMode) {
+                focusToggleButton.setText("FIXED");
+                focusToggleButton.setTextColor(0xffaab3ad);
+                focusToggleButton.setBackground(round(0xd8191e1e, 22, 0x44606963, dp(1)));
+            } else if (mfActive) {
+                focusToggleButton.setText("MF");
+                focusToggleButton.setTextColor(BG);
+                focusToggleButton.setBackground(round(ACCENT, 22, ACCENT, dp(1)));
+            } else if (AppSettings.FOCUS_SINGLE.equals(pref)) {
+                focusToggleButton.setText("AF-S");
+                focusToggleButton.setTextColor(ACCENT);
+                focusToggleButton.setBackground(round(0xe21c1d1b, 22, ACCENT, dp(1)));
+            } else {
+                focusToggleButton.setText("AF-C");
+                focusToggleButton.setTextColor(0xffe9ede6);
+                focusToggleButton.setBackground(round(0xd8191e1e, 22, 0x556e7872, dp(1)));
+            }
+        }
+        if (manualFocusPanel != null) {
+            manualFocusPanel.setVisibility(mfActive ? View.VISIBLE : View.GONE);
+            syncPortraitZoomSliderClearance();
+        }
+        if (mfActive) {
+            int progress = AppSettings.getInt(this, AppSettings.MANUAL_FOCUS_DISTANCE, ManualFocusHelper.SLIDER_MAX);
+            progress = Math.max(0, Math.min(ManualFocusHelper.SLIDER_MAX, progress));
+            if (manualFocusSeekBar != null && manualFocusSeekBar.getProgress() != progress) {
+                manualFocusSliderSyncing = true;
+                manualFocusSeekBar.setProgress(progress);
+                manualFocusSliderSyncing = false;
+            }
+            float diopters = ManualFocusHelper.progressToDiopters(progress, minFocusDiopters);
+            if (manualFocusValue != null) {
+                manualFocusValue.setText(ManualFocusHelper.formatFocusDistance(diopters, minFocusDiopters, focusDistanceCalibration));
+            }
+        }
+    }
+
+    private void updateLoupeButtonUi() {
+        if (loupeToggleButton == null) return;
+        boolean active = manualLoupeActive && !videoMode;
+        loupeToggleButton.setTextColor(active ? BG : 0xffe9ede6);
+        loupeToggleButton.setBackground(round(active ? ACCENT : 0xd8191e1e, 22, active ? ACCENT : 0x556e7872, dp(1)));
+    }
+
+    private void applyManualFocusToPreview(float diopters, boolean forceSend) {
+        if (!isManualFocusActive() || previewRequest == null || captureSession == null || cameraHandler == null) return;
+        long now = SystemClock.uptimeMillis();
+        if (!forceSend && now - lastMfPreviewRequestAt < 33L) return;
+        lastMfPreviewRequestAt = now;
+        float clamped = ManualFocusHelper.clampedDiopters(diopters, minFocusDiopters);
+        try {
+            previewRequest.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF);
+            previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+            previewRequest.set(CaptureRequest.LENS_FOCUS_DISTANCE, clamped);
+            captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
+        } catch (CameraAccessException | IllegalStateException e) {
+            Log.w(TAG, "Failed to update manual focus distance", e);
+        }
+    }
+
+    private void chooseFocusMode() {
+        String mfSubtitle = manualFocusSupported
+                ? "Lock AF and rack focus smoothly from near to infinity"
+                : "Fixed-focus or unsupported on the active camera lens";
+        String[] subtitles = {
+                "Tracks subject movement continuously before capture",
+                "Focuses on tap or when capturing a frame",
+                mfSubtitle
+        };
+        String current = AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS);
+        int selected = 0;
+        for (int i = 0; i < AppSettings.FOCUS_MODE_CHOICES.length; i++) {
+            if (AppSettings.FOCUS_MODE_CHOICES[i].equals(current)) {
+                selected = i;
+                break;
+            }
+        }
+        showCustomBottomSheet("FOCUS MODE", AppSettings.FOCUS_MODE_CHOICES, subtitles, selected,
+                which -> activateFocusModePreference(AppSettings.FOCUS_MODE_CHOICES[which]));
+    }
+
+    private void toggleQuickManualFocus() {
+        if (isManualFocusActive()) {
+            exitManualFocusToAf();
+        } else {
+            activateFocusModePreference(AppSettings.FOCUS_MANUAL);
+        }
+    }
+
+    private void exitManualFocusToAf() {
+        String restore = AppSettings.FOCUS_SINGLE.equals(lastAutoFocusMode)
+                ? AppSettings.FOCUS_SINGLE : AppSettings.FOCUS_CONTINUOUS;
+        activateFocusModePreference(restore);
+    }
+
+    private void activateFocusModePreference(String targetMode) {
+        if (AppSettings.FOCUS_MANUAL.equals(targetMode)) {
+            if (!manualFocusSupported) {
+                showMessage("Manual focus not supported on this lens (fixed focus)");
+                return;
+            }
+            String current = AppSettings.get(this, AppSettings.FOCUS_MODE, AppSettings.FOCUS_CONTINUOUS);
+            if (!AppSettings.FOCUS_MANUAL.equals(current)) {
+                lastAutoFocusMode = current;
+                if (Float.isFinite(lastLiveFocusDistance) && lastLiveFocusDistance >= 0f && minFocusDiopters > 0f) {
+                    int initialProgress = ManualFocusHelper.dioptersToProgress(lastLiveFocusDistance, minFocusDiopters);
+                    AppSettings.prefs(this).edit()
+                            .putString(AppSettings.FOCUS_MODE, AppSettings.FOCUS_MANUAL)
+                            .putInt(AppSettings.MANUAL_FOCUS_DISTANCE, initialProgress)
+                            .apply();
+                } else {
+                    AppSettings.prefs(this).edit().putString(AppSettings.FOCUS_MODE, AppSettings.FOCUS_MANUAL).apply();
+                }
+            }
+            focusMode = FocusMode.CONTINUOUS;
+            currentAfRegions = null;
+            updateManualFocusUi();
+            refreshPreviewRequest();
+            showMessage("MANUAL FOCUS · Drag slider or toggle 5× loupe");
+            return;
+        }
+        lastAutoFocusMode = targetMode;
+        AppSettings.prefs(this).edit().putString(AppSettings.FOCUS_MODE, targetMode).apply();
+        focusMode = FocusMode.CONTINUOUS;
+        currentAfRegions = null;
+        mfDragLoupeActive = false;
+        focusHandler.removeCallbacks(mfDragLoupeHideRunnable);
+        updateManualFocusUi();
+        updateLoupeOverlayVisibility();
+        resetFocusToPreferredAfMode();
+        showMessage(AppSettings.FOCUS_SINGLE.equals(targetMode) ? "SINGLE AUTOFOCUS (AF-S)" : "CONTINUOUS AUTOFOCUS (AF-C)");
+    }
+
+    private final Runnable mfDragLoupeHideRunnable = () -> {
+        mfDragLoupeActive = false;
+        updateLoupeOverlayVisibility();
+    };
+
+    private final Runnable loupeRefreshRunnable = new Runnable() {
+        @Override public void run() {
+            if (!activityResumed || videoMode || (!manualLoupeActive && !mfDragLoupeActive)) {
+                return;
+            }
+            refreshActiveLoupeSample(false);
+            focusHandler.postDelayed(this, 100L);
+        }
+    };
+
+    private void setManualLoupeActive(boolean active) {
+        if (videoMode) active = false;
+        manualLoupeActive = active;
+        updateLoupeButtonUi();
+        if (active) {
+            startLoupeRefresh();
+        } else if (!mfDragLoupeActive) {
+            stopLoupeRefresh();
+        }
+        updateLoupeOverlayVisibility();
+    }
+
+    private void startLoupeRefresh() {
+        focusHandler.removeCallbacks(loupeRefreshRunnable);
+        if (!videoMode && (manualLoupeActive || mfDragLoupeActive)) {
+            focusHandler.postDelayed(loupeRefreshRunnable, 90L);
+        }
+    }
+
+    private void stopLoupeRefresh() {
+        focusHandler.removeCallbacks(loupeRefreshRunnable);
+    }
+
+    private void refreshActiveLoupeSample() {
+        refreshActiveLoupeSample(true);
+    }
+
+    private void refreshActiveLoupeSample(boolean force) {
+        if (focusReticle == null || videoMode) return;
+        if (!focusReticle.isLoupeWanted()) return;
+        focusReticle.sampleLoupe(focusReticle.reticleX, focusReticle.reticleY, force);
+    }
+
+    private void updateLoupeOverlayVisibility() {
+        if (!manualLoupeActive && !mfDragLoupeActive) {
+            stopLoupeRefresh();
+        }
+        if (focusReticle == null) return;
+        if (focusReticle.isLoupeWanted() || focusReticle.isVisible) {
+            focusReticle.setAlpha(1f);
+            focusReticle.setVisibility(View.VISIBLE);
+            focusReticle.invalidate();
+            refreshActiveLoupeSample(true);
+        } else {
+            focusReticle.fadeOut();
         }
     }
 
@@ -6963,6 +7493,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         try {
             setExposure(previewRequest);
             setFlash(previewRequest, true);
+            setFocusMode(previewRequest);
             applyOpticalSettings(previewRequest, videoMode);
             captureSession.setRepeatingRequest(previewRequest.build(), previewMetadataCallback, cameraHandler);
         } catch (CameraAccessException | IllegalStateException e) {
@@ -7042,19 +7573,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void chooseShutterSpeed() {
-        String[] options = {
-                "Auto exposure",
-                "1/30 sec",
-                "1/60 sec",
-                "1/120 sec",
-                "1/240 sec",
-                "1/500 sec",
-                "1/1000 sec",
-                "1/2000 sec",
-                "1/4000 sec"
+        String[] baseOptions = {
+                "1/30 sec", "1/60 sec", "1/120 sec", "1/240 sec",
+                "1/500 sec", "1/1000 sec", "1/2000 sec", "1/4000 sec"
         };
-        String[] subtitles = {
-                "Intelligent scene-adaptive shutter & ISO",
+        String[] baseSubtitles = {
                 "Slow shutter · Handheld low-light limit",
                 "Standard indoor / 30fps 180° cinema shutter",
                 "Everyday walkaround · freezes casual motion",
@@ -7064,6 +7587,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 "Very bright sun · wide-aperture control",
                 "Maximum high-speed shutter freeze"
         };
+        Range<Long> expRange = characteristics != null ? characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) : null;
+        Long minNs = expRange != null ? expRange.getLower() : null;
+        Long maxNs = expRange != null ? expRange.getUpper() : null;
+        List<String> optList = new ArrayList<>();
+        List<String> subList = new ArrayList<>();
+        optList.add("Auto exposure");
+        subList.add("Intelligent scene-adaptive shutter & ISO");
+        for (int i = 0; i < baseOptions.length; i++) {
+            long ns = shutterNanoseconds(baseOptions[i]);
+            if (CameraExposureHelper.isShutterNanosecondsSupported(ns, minNs, maxNs)) {
+                optList.add(baseOptions[i]);
+                subList.add(baseSubtitles[i]);
+            }
+        }
+        String[] options = optList.toArray(new String[0]);
+        String[] subtitles = subList.toArray(new String[0]);
         boolean isManual = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual");
         String curShutter = AppSettings.get(this, AppSettings.MANUAL_SHUTTER, "1/120 sec");
         int currentIndex = 0;
@@ -7096,18 +7635,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void chooseManualIso() {
-        String[] options = {
-                "Auto ISO",
-                "ISO 50",
-                "ISO 100",
-                "ISO 200",
-                "ISO 400",
-                "ISO 800",
-                "ISO 1600",
-                "ISO 3200"
+        String[] baseOptions = {
+                "ISO 50", "ISO 100", "ISO 200", "ISO 400",
+                "ISO 800", "ISO 1600", "ISO 3200"
         };
-        String[] subtitles = {
-                "Automatic sensor gain & exposure",
+        String[] baseSubtitles = {
                 "Base lowest gain · maximum dynamic range",
                 "Daylight fine grain baseline",
                 "Bright overcast & shaded daylight",
@@ -7116,6 +7648,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 "Low-light night street",
                 "Pushed high-sensitivity night"
         };
+        Range<Integer> sensRange = characteristics != null ? characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) : null;
+        Integer minIso = sensRange != null ? sensRange.getLower() : null;
+        Integer maxIso = sensRange != null ? sensRange.getUpper() : null;
+        List<String> optList = new ArrayList<>();
+        List<String> subList = new ArrayList<>();
+        optList.add("Auto ISO");
+        subList.add("Automatic sensor gain & exposure");
+        for (int i = 0; i < baseOptions.length; i++) {
+            int iso = parseIso(baseOptions[i]);
+            if (CameraExposureHelper.isIsoSupported(iso, minIso, maxIso)) {
+                optList.add(baseOptions[i]);
+                subList.add(baseSubtitles[i]);
+            }
+        }
+        String[] options = optList.toArray(new String[0]);
+        String[] subtitles = subList.toArray(new String[0]);
         boolean isManual = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual");
         String curIso = AppSettings.get(this, AppSettings.MANUAL_ISO, "ISO 100");
         int currentIndex = 0;
@@ -7255,11 +7803,23 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 }
             }
         }
+        if (manualFocusPanel != null && frame.bottom > 0) {
+            ViewGroup.LayoutParams lp = manualFocusPanel.getLayoutParams();
+            if (lp instanceof FrameLayout.LayoutParams) {
+                FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
+                int desiredTop = (int) (frame.bottom - dp(44) - dp(12) - dp(42));
+                if (flp.topMargin != desiredTop) {
+                    flp.topMargin = desiredTop;
+                    manualFocusPanel.setLayoutParams(flp);
+                }
+            }
+        }
         if (zoomSliderPanel != null && frame.bottom > 0) {
             ViewGroup.LayoutParams lp = zoomSliderPanel.getLayoutParams();
             if (lp instanceof FrameLayout.LayoutParams) {
                 FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
-                int desiredTop = (int) (frame.bottom - dp(44) - dp(12) - dp(40));
+                boolean mfOpen = manualFocusPanel != null && manualFocusPanel.getVisibility() == View.VISIBLE;
+                int desiredTop = (int) (frame.bottom - dp(44) - dp(12) - (mfOpen ? dp(84) : dp(40)));
                 if (flp.topMargin != desiredTop) {
                     flp.topMargin = desiredTop;
                     zoomSliderPanel.setLayoutParams(flp);
@@ -7374,6 +7934,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         private boolean showEvSlider = false;
         private boolean isVisible = false;
         private Bitmap loupeBitmap;
+        private Bitmap loupeSampleBuffer;
         private long lastLoupeSample;
         private final Paint reticlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint sunPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -7383,6 +7944,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         private final Paint bezelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint badgeBg = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint badgeText = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint loupeBitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private final RectF arcRect = new RectF();
         private final Rect loupeSrc = new Rect();
         private final RectF loupeDst = new RectF();
@@ -7423,6 +7985,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             badgeText.setTextAlign(Paint.Align.CENTER);
         }
 
+        boolean isLoupeWanted() {
+            return !videoMode && (manualLoupeActive || mfDragLoupeActive || (prefOpticalLoupe && isVisible));
+        }
+
         void showAt(float x, float y, float currentEv) {
             reticleX = x;
             reticleY = y;
@@ -7442,38 +8008,51 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 invalidate();
             });
             anim.start();
-            sampleLoupe(x, y);
+            if (isLoupeWanted()) {
+                sampleLoupe(x, y, true);
+            }
             invalidate();
         }
 
         void sampleLoupe(float x, float y) {
-            if (!prefOpticalLoupe) return;
+            sampleLoupe(x, y, false);
+        }
+
+        void sampleLoupe(float x, float y, boolean force) {
+            if (!isLoupeWanted()) return;
             long now = SystemClock.elapsedRealtime();
-            if (now - lastLoupeSample < 60) return;
+            if (!force && now - lastLoupeSample < 60) return;
             lastLoupeSample = now;
             if (textureView == null || !textureView.isAvailable()) return;
             try {
                 int tvW = textureView.getWidth();
                 int tvH = textureView.getHeight();
                 if (tvW <= 0 || tvH <= 0) return;
-                int cropW = dp(44);
-                int cropH = dp(44);
-                int left = Math.max(0, Math.min(tvW - cropW, (int) (x - cropW / 2f)));
-                int top = Math.max(0, Math.min(tvH - cropH, (int) (y - cropH / 2f)));
-                int sampleW = Math.min(tvW, Math.max(120, tvW / 4));
-                int sampleH = Math.min(tvH, Math.max(160, tvH / 4));
-                Bitmap full = textureView.getBitmap(sampleW, sampleH);
-                if (full != null) {
-                    int sLeft = Math.max(0, Math.min(full.getWidth() - 32, (left * full.getWidth()) / tvW));
-                    int sTop = Math.max(0, Math.min(full.getHeight() - 32, (top * full.getHeight()) / tvH));
-                    int sSize = Math.min(32, Math.min(full.getWidth() - sLeft, full.getHeight() - sTop));
-                    if (sSize > 6) {
-                        Bitmap crop = Bitmap.createBitmap(full, sLeft, sTop, sSize, sSize);
-                        if (loupeBitmap != null && !loupeBitmap.isRecycled()) loupeBitmap.recycle();
-                        loupeBitmap = crop;
-                        invalidate();
+                RectF frame = framingRect(tvW, tvH);
+                float anchorX = x >= 0f ? x : frame.centerX();
+                float anchorY = y >= 0f ? y : frame.centerY();
+
+                int sampleW = Math.min(tvW, 1280);
+                int sampleH = Math.max(1, Math.round(sampleW * (tvH / (float) tvW)));
+                if (loupeSampleBuffer == null || loupeSampleBuffer.isRecycled()
+                        || loupeSampleBuffer.getWidth() != sampleW || loupeSampleBuffer.getHeight() != sampleH) {
+                    if (loupeSampleBuffer != null && !loupeSampleBuffer.isRecycled()) {
+                        loupeSampleBuffer.recycle();
                     }
-                    full.recycle();
+                    loupeSampleBuffer = Bitmap.createBitmap(sampleW, sampleH, Bitmap.Config.ARGB_8888);
+                }
+                Bitmap full = textureView.getBitmap(loupeSampleBuffer);
+                if (full != null) {
+                    int cropSrcSize = Math.max(24, Math.min(Math.min(full.getWidth(), full.getHeight()),
+                            Math.round(dp(24) * (full.getWidth() / (float) tvW))));
+                    int centerSx = Math.round((anchorX / (float) tvW) * full.getWidth());
+                    int centerSy = Math.round((anchorY / (float) tvH) * full.getHeight());
+                    int sLeft = Math.max(0, Math.min(full.getWidth() - cropSrcSize, centerSx - cropSrcSize / 2));
+                    int sTop = Math.max(0, Math.min(full.getHeight() - cropSrcSize, centerSy - cropSrcSize / 2));
+                    Bitmap crop = Bitmap.createBitmap(full, sLeft, sTop, cropSrcSize, cropSrcSize);
+                    if (loupeBitmap != null && !loupeBitmap.isRecycled()) loupeBitmap.recycle();
+                    loupeBitmap = crop;
+                    invalidate();
                 }
             } catch (Throwable t) {
                 Log.w(TAG, "Failed to sample loupe bitmap", t);
@@ -7490,99 +8069,136 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             invalidate();
         }
 
+        void fadeOutReticle() {
+            if (isLoupeWanted()) {
+                isVisible = false;
+                invalidate();
+            } else {
+                fadeOut();
+            }
+        }
+
         void fadeOut() {
             if (loupeBitmap != null && !loupeBitmap.isRecycled()) {
                 loupeBitmap.recycle();
                 loupeBitmap = null;
             }
+            if (loupeSampleBuffer != null && !loupeSampleBuffer.isRecycled()) {
+                loupeSampleBuffer.recycle();
+                loupeSampleBuffer = null;
+            }
             animate().cancel();
             animate().alpha(0f).setDuration(350).withEndAction(() -> {
                 isVisible = false;
+                reticleX = -1f;
+                reticleY = -1f;
                 setVisibility(View.GONE);
             }).start();
         }
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            if (!isVisible || reticleX < 0 || reticleY < 0) return;
+            boolean drawReticle = isVisible && reticleX >= 0 && reticleY >= 0;
+            boolean drawLoupe = isLoupeWanted() && loupeBitmap != null && !loupeBitmap.isRecycled();
+            if (!drawReticle && !drawLoupe) return;
 
-            float boxSize = dp(56) * reticleScale;
-            float half = boxSize / 2f;
-            float cornerLen = dp(12) * reticleScale;
+            if (drawReticle) {
+                float boxSize = dp(56) * reticleScale;
+                float half = boxSize / 2f;
+                float cornerLen = dp(12) * reticleScale;
 
-            // Draw 4 corner brackets
-            canvas.drawLine(reticleX - half, reticleY - half, reticleX - half + cornerLen, reticleY - half, reticlePaint);
-            canvas.drawLine(reticleX - half, reticleY - half, reticleX - half, reticleY - half + cornerLen, reticlePaint);
-            canvas.drawLine(reticleX + half, reticleY - half, reticleX + half - cornerLen, reticleY - half, reticlePaint);
-            canvas.drawLine(reticleX + half, reticleY - half, reticleX + half, reticleY - half + cornerLen, reticlePaint);
-            canvas.drawLine(reticleX - half, reticleY + half, reticleX - half + cornerLen, reticleY + half, reticlePaint);
-            canvas.drawLine(reticleX - half, reticleY + half, reticleX - half, reticleY + half - cornerLen, reticlePaint);
-            canvas.drawLine(reticleX + half, reticleY + half, reticleX + half - cornerLen, reticleY + half, reticlePaint);
-            canvas.drawLine(reticleX + half, reticleY + half, reticleX + half, reticleY + half - cornerLen, reticlePaint);
+                // Draw 4 corner brackets
+                canvas.drawLine(reticleX - half, reticleY - half, reticleX - half + cornerLen, reticleY - half, reticlePaint);
+                canvas.drawLine(reticleX - half, reticleY - half, reticleX - half, reticleY - half + cornerLen, reticlePaint);
+                canvas.drawLine(reticleX + half, reticleY - half, reticleX + half - cornerLen, reticleY - half, reticlePaint);
+                canvas.drawLine(reticleX + half, reticleY - half, reticleX + half, reticleY - half + cornerLen, reticlePaint);
+                canvas.drawLine(reticleX - half, reticleY + half, reticleX - half + cornerLen, reticleY + half, reticlePaint);
+                canvas.drawLine(reticleX - half, reticleY + half, reticleX - half, reticleY + half - cornerLen, reticlePaint);
+                canvas.drawLine(reticleX + half, reticleY + half, reticleX + half - cornerLen, reticleY + half, reticlePaint);
+                canvas.drawLine(reticleX + half, reticleY + half, reticleX + half, reticleY + half - cornerLen, reticlePaint);
 
-            // Center reticle pip
-            canvas.drawCircle(reticleX, reticleY, dp(1.5f), reticlePaint);
+                // Center reticle pip
+                canvas.drawCircle(reticleX, reticleY, dp(1.5f), reticlePaint);
 
-            if (showEvSlider) {
-                float trackHeight = dp(80);
-                float trackTop = reticleY - trackHeight / 2f;
-                float trackBottom = reticleY + trackHeight / 2f;
+                if (showEvSlider) {
+                    float trackHeight = dp(80);
+                    float trackTop = reticleY - trackHeight / 2f;
+                    float trackBottom = reticleY + trackHeight / 2f;
 
-                // Right-side EV Bias rail (Sun icon)
-                float trackX = reticleX + half + dp(16);
-                reticlePaint.setAlpha(80);
-                canvas.drawLine(trackX, trackTop, trackX, trackBottom, reticlePaint);
-                reticlePaint.setAlpha(255);
+                    // Right-side EV Bias rail (Sun icon)
+                    float trackX = reticleX + half + dp(16);
+                    reticlePaint.setAlpha(80);
+                    canvas.drawLine(trackX, trackTop, trackX, trackBottom, reticlePaint);
+                    reticlePaint.setAlpha(255);
 
-                float normEv = Math.max(-2f, Math.min(2f, evBias)) / 2f;
-                float sunY = reticleY - normEv * (trackHeight / 2f);
+                    float normEv = Math.max(-2f, Math.min(2f, evBias)) / 2f;
+                    float sunY = reticleY - normEv * (trackHeight / 2f);
 
-                sunPaint.setStyle(Paint.Style.FILL);
-                canvas.drawCircle(trackX, sunY, dp(4), sunPaint);
-                sunPaint.setStyle(Paint.Style.STROKE);
-                float r1 = dp(5.5f);
-                float r2 = dp(8.0f);
-                for (int i = 0; i < 6; i++) {
-                    double angle = i * Math.PI / 3.0;
-                    float cosA = (float) Math.cos(angle);
-                    float sinA = (float) Math.sin(angle);
-                    canvas.drawLine(
-                            trackX + cosA * r1,
-                            sunY + sinA * r1,
-                            trackX + cosA * r2,
-                            sunY + sinA * r2,
-                            sunPaint
-                    );
+                    sunPaint.setStyle(Paint.Style.FILL);
+                    canvas.drawCircle(trackX, sunY, dp(4), sunPaint);
+                    sunPaint.setStyle(Paint.Style.STROKE);
+                    float r1 = dp(5.5f);
+                    float r2 = dp(8.0f);
+                    for (int i = 0; i < 6; i++) {
+                        double angle = i * Math.PI / 3.0;
+                        float cosA = (float) Math.cos(angle);
+                        float sinA = (float) Math.sin(angle);
+                        canvas.drawLine(
+                                trackX + cosA * r1,
+                                sunY + sinA * r1,
+                                trackX + cosA * r2,
+                                sunY + sinA * r2,
+                                sunPaint
+                        );
+                    }
+
+                    String evText = Math.abs(evBias) < 0.05f ? "0.0" : String.format(Locale.US, "%+.1f", evBias);
+                    canvas.drawText(evText, trackX + dp(12), sunY + dp(3.5f), textPaint);
+
+                    // Left-side Shadow Depth rail (Contrast / Half-Moon icon — Pixel Dual Exposure style)
+                    float leftTrackX = reticleX - half - dp(16);
+                    reticlePaint.setAlpha(80);
+                    canvas.drawLine(leftTrackX, trackTop, leftTrackX, trackBottom, reticlePaint);
+                    reticlePaint.setAlpha(255);
+
+                    float normSh = (Math.max(0, Math.min(100, shadowDepth)) - 50f) / 50f;
+                    float moonY = reticleY - normSh * (trackHeight / 2f);
+
+                    sunPaint.setStyle(Paint.Style.STROKE);
+                    canvas.drawCircle(leftTrackX, moonY, r1, sunPaint);
+                    sunPaint.setStyle(Paint.Style.FILL);
+                    arcRect.set(leftTrackX - r1, moonY - r1, leftTrackX + r1, moonY + r1);
+                    canvas.drawArc(arcRect, 90f, 180f, true, sunPaint);
+
+                    String shText = shadowDepth + "%";
+                    float shWidth = textPaint.measureText(shText);
+                    canvas.drawText(shText, leftTrackX - dp(10) - shWidth, moonY + dp(3.5f), textPaint);
                 }
-
-                String evText = Math.abs(evBias) < 0.05f ? "0.0" : String.format(Locale.US, "%+.1f", evBias);
-                canvas.drawText(evText, trackX + dp(12), sunY + dp(3.5f), textPaint);
-
-                // Left-side Shadow Depth rail (Contrast / Half-Moon icon — Pixel Dual Exposure style)
-                float leftTrackX = reticleX - half - dp(16);
-                reticlePaint.setAlpha(80);
-                canvas.drawLine(leftTrackX, trackTop, leftTrackX, trackBottom, reticlePaint);
-                reticlePaint.setAlpha(255);
-
-                float normSh = (Math.max(0, Math.min(100, shadowDepth)) - 50f) / 50f;
-                float moonY = reticleY - normSh * (trackHeight / 2f);
-
-                sunPaint.setStyle(Paint.Style.STROKE);
-                canvas.drawCircle(leftTrackX, moonY, r1, sunPaint);
-                sunPaint.setStyle(Paint.Style.FILL);
-                arcRect.set(leftTrackX - r1, moonY - r1, leftTrackX + r1, moonY + r1);
-                canvas.drawArc(arcRect, 90f, 180f, true, sunPaint);
-
-                String shText = shadowDepth + "%";
-                float shWidth = textPaint.measureText(shText);
-                canvas.drawText(shText, leftTrackX - dp(10) - shWidth, moonY + dp(3.5f), textPaint);
             }
 
             // Pro Optical Loupe (5x Magnifier Lens with Leica Gold Ring)
-            if (prefOpticalLoupe && loupeBitmap != null && !loupeBitmap.isRecycled()) {
-                float loupeR = dp(42);
-                float loupeX = Math.max(loupeR + dp(16), Math.min(getWidth() - loupeR - dp(16), reticleX));
-                float loupeY = Math.max(loupeR + dp(72), reticleY - dp(92));
+            if (drawLoupe) {
+                RectF frame = framingRect(getWidth(), getHeight());
+                float ax = reticleX >= 0f ? reticleX : frame.centerX();
+                float ay = reticleY >= 0f ? reticleY : frame.centerY();
+                float loupeR = dp(44);
+                boolean isWide = WindowMetricsHelper.computeWindowSizeInfo(MainActivity.this).isLandscape
+                        || getWidth() >= getHeight();
+                float topGuard = frame.top + loupeR + (isWide ? dp(18) : dp(56));
+                float bottomExtra = (!isWide && manualFocusPanel != null && manualFocusPanel.getVisibility() == View.VISIBLE ? dp(44) : 0f)
+                        + (!isWide && zoomSliderPanel != null && zoomSliderPanel.getVisibility() == View.VISIBLE ? dp(44) : 0f);
+                float bottomGuard = frame.bottom - loupeR - (isWide ? dp(12) : dp(72) + bottomExtra);
+                if (bottomGuard < topGuard) bottomGuard = topGuard;
+
+                float minX = frame.left + loupeR + dp(12);
+                float maxX = Math.max(minX, frame.right - loupeR - dp(12));
+                float loupeX = Math.max(minX, Math.min(maxX, ax));
+                float loupeY = ay - dp(92);
+                if (loupeY < topGuard) {
+                    float belowY = ay + dp(92);
+                    loupeY = (belowY <= bottomGuard) ? belowY : topGuard;
+                }
+                loupeY = Math.max(topGuard, Math.min(bottomGuard, loupeY));
 
                 canvas.drawCircle(loupeX, loupeY + dp(3), loupeR + dp(2), shadowPaint);
 
@@ -7598,7 +8214,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
                 loupeSrc.set(0, 0, loupeBitmap.getWidth(), loupeBitmap.getHeight());
                 loupeDst.set(loupeX - loupeR, loupeY - loupeR, loupeX + loupeR, loupeY + loupeR);
-                canvas.drawBitmap(loupeBitmap, loupeSrc, loupeDst, null);
+                canvas.drawBitmap(loupeBitmap, loupeSrc, loupeDst, loupeBitmapPaint);
 
                 float chArm = dp(14);
                 canvas.drawLine(loupeX - chArm, loupeY, loupeX + chArm, loupeY, chPaint);

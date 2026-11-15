@@ -110,6 +110,7 @@ final class SettingsBackupManager {
         if (key == null || key.trim().isEmpty()) return true;
         return AppSettings.RAW_SUPPORTED.equals(key)
                 || AppSettings.MANUAL_SUPPORTED.equals(key)
+                || AppSettings.MANUAL_FOCUS_SUPPORTED.equals(key)
                 || AppSettings.LAST_CAMERA_ID.equals(key)
                 || AppSettings.LAST_UPDATE_CHECK_TIME.equals(key);
     }
@@ -402,12 +403,15 @@ final class SettingsBackupManager {
         boolean rawSupported = prefs.getBoolean(AppSettings.RAW_SUPPORTED, false);
         boolean hadManual = prefs.contains(AppSettings.MANUAL_SUPPORTED);
         boolean manualSupported = prefs.getBoolean(AppSettings.MANUAL_SUPPORTED, false);
+        boolean hadMf = prefs.contains(AppSettings.MANUAL_FOCUS_SUPPORTED);
+        boolean mfSupported = prefs.getBoolean(AppSettings.MANUAL_FOCUS_SUPPORTED, false);
         String lastCamId = prefs.getString(AppSettings.LAST_CAMERA_ID, null);
         long lastUpdateCheck = prefs.getLong(AppSettings.LAST_UPDATE_CHECK_TIME, 0L);
 
         SharedPreferences.Editor editor = prefs.edit().clear();
         if (hadRaw) editor.putBoolean(AppSettings.RAW_SUPPORTED, rawSupported);
         if (hadManual) editor.putBoolean(AppSettings.MANUAL_SUPPORTED, manualSupported);
+        if (hadMf) editor.putBoolean(AppSettings.MANUAL_FOCUS_SUPPORTED, mfSupported);
         if (lastCamId != null) editor.putString(AppSettings.LAST_CAMERA_ID, lastCamId);
         if (lastUpdateCheck > 0L) editor.putLong(AppSettings.LAST_UPDATE_CHECK_TIME, lastUpdateCheck);
 

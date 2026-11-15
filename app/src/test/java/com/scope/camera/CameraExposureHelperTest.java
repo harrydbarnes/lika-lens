@@ -1,9 +1,13 @@
 package com.scope.camera;
 
 import android.graphics.Rect;
+import android.media.AudioManager;
 import android.util.Range;
 
 import org.junit.Test;
+
+import java.util.Arrays;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -215,6 +219,66 @@ public class CameraExposureHelperTest {
         assertEquals(-1f, CameraExposureHelper.preReconfigAnimationTarget(false, true, 1.0f, 0.5f), 0.0001f);
         assertEquals(-1f, CameraExposureHelper.preReconfigAnimationTarget(false, false, 1.0f, 2.0f), 0.0001f);
         assertEquals(-1f, CameraExposureHelper.preReconfigAnimationTarget(true, true, 0.5f, 0.7f), 0.0001f);
+    }
+
+    @Test
+    public void shutterSoundRespectsRingerModeUnlessPlatformMandatory() {
+        assertTrue(CameraExposureHelper.shouldPlayShutterSound(true, AudioManager.RINGER_MODE_NORMAL, false));
+        assertFalse(CameraExposureHelper.shouldPlayShutterSound(false, AudioManager.RINGER_MODE_NORMAL, false));
+        assertFalse(CameraExposureHelper.shouldPlayShutterSound(true, AudioManager.RINGER_MODE_VIBRATE, false));
+        assertFalse(CameraExposureHelper.shouldPlayShutterSound(true, AudioManager.RINGER_MODE_SILENT, false));
+        assertTrue(CameraExposureHelper.shouldPlayShutterSound(false, AudioManager.RINGER_MODE_SILENT, true));
+    }
+
+    @Test
+    public void shutterAndIsoSupportChecksRespectHardwareRanges() {
+        assertTrue(CameraExposureHelper.isShutterNanosecondsSupported(1_000_000L, 100_000L, 1_000_000_000L));
+        assertFalse(CameraExposureHelper.isShutterNanosecondsSupported(250_000L, 1_000_000L, 1_000_000_000L));
+        assertTrue(CameraExposureHelper.isIsoSupported(100, 100, 3200));
+        assertFalse(CameraExposureHelper.isIsoSupported(50, 100, 3200));
+        assertFalse(CameraExposureHelper.isIsoSupported(6400, 100, 3200));
+    }
+
+    @Test
+    public void defaultLensAndNonRawTeleResolutionPreserveMainCameraId() {
+        List<CameraExposureHelper.LensCandidate> cameras = Arrays.asList(
+                new CameraExposureHelper.LensCandidate("0", true, true, 12_000_000L, 5.0f, 0.5f, 10f),
+                new CameraExposureHelper.LensCandidate("1", false, false, 12_000_000L, 3.0f, 1.0f, 2.0f),
+                new CameraExposureHelper.LensCandidate("2", true, false, 12_000_000L, 2.5f, null, null),
+                new CameraExposureHelper.LensCandidate("3", true, false, 10_000_000L, 15.0f, null, null)
+        );
+
+        CameraExposureHelper.StartupLensChoice wideAuto =
+                CameraExposureHelper.resolveStartupLens(cameras, "Auto / Wide 1×", "1");
+        assertEquals("0", wideAuto.mainCameraId);
+        assertEquals("0", wideAuto.activeCameraId);
+        assertEquals(1.0f, wideAuto.initialZoom, 0.001f);
+
+        CameraExposureHelper.StartupLensChoice lastFront =
+                CameraExposureHelper.resolveStartupLens(cameras, "Last used", "1");
+        assertEquals("0", lastFront.mainCameraId);
+        assertEquals(5.0f, lastFront.primaryFocalLength, 0.001f);
+        assertEquals("1", lastFront.activeCameraId);
+        assertEquals(1.0f, lastFront.initialZoom, 0.001f);
+
+        CameraExposureHelper.StartupLensChoice ultraWide =
+                CameraExposureHelper.resolveStartupLens(cameras, "Ultra-wide .5×", "0");
+        assertEquals("0", ultraWide.mainCameraId);
+        assertEquals("0", ultraWide.activeCameraId);
+        assertEquals(0.5f, ultraWide.initialZoom, 0.001f);
+        assertTrue(ultraWide.forceJpegForWide);
+
+        CameraExposureHelper.StartupLensChoice tele =
+                CameraExposureHelper.resolveStartupLens(cameras, "Telephoto 2×/5×", "0");
+        assertEquals("0", tele.mainCameraId);
+        assertEquals("3", tele.activeCameraId);
+        assertEquals(3.0f, tele.physicalFocalFactor, 0.001f);
+
+        // Non-RAW physical tele must still be selectable during continuous zoom
+        CameraExposureHelper.LensCandidate primary = cameras.get(0);
+        CameraExposureHelper.LensCandidate picked =
+                CameraExposureHelper.selectContinuousPhysicalLens(cameras, primary, 3.5f);
+        assertEquals("3", picked.id);
     }
 
 }

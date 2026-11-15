@@ -45,6 +45,7 @@ public class SettingsBackupManagerTest {
         prefs.put(AppSettings.LAST_UPDATE_CHECK_TIME, 1731654321000L); // excluded transient key
         prefs.put(AppSettings.RAW_SUPPORTED, true); // excluded hardware flag
         prefs.put(AppSettings.MANUAL_SUPPORTED, true); // excluded hardware flag
+        prefs.put(AppSettings.MANUAL_FOCUS_SUPPORTED, true); // excluded hardware flag
         prefs.put(AppSettings.LAST_CAMERA_ID, "0"); // excluded hardware key
         prefs.put(AppSettings.RECIPE_1_NAME, "Neon Night");
         prefs.put(AppSettings.RECIPE_1_DATA, "{\"brain\":\"LIKA / FILM\"}");
@@ -71,6 +72,7 @@ public class SettingsBackupManagerTest {
         // Hardware/transient keys must not leak into backup
         assertFalse(parsed.preferences.containsKey(AppSettings.RAW_SUPPORTED));
         assertFalse(parsed.preferences.containsKey(AppSettings.MANUAL_SUPPORTED));
+        assertFalse(parsed.preferences.containsKey(AppSettings.MANUAL_FOCUS_SUPPORTED));
         assertFalse(parsed.preferences.containsKey(AppSettings.LAST_CAMERA_ID));
         assertFalse(parsed.preferences.containsKey(AppSettings.LAST_UPDATE_CHECK_TIME));
 

@@ -1,9 +1,11 @@
 package com.scope.camera;
 
 import android.graphics.Rect;
+import android.media.AudioManager;
 import android.util.Log;
 import android.util.Range;
 
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -325,6 +327,189 @@ public final class CameraExposureHelper {
             return targetZoom;
         }
         return currentZoom > 1.05f ? 1.0f : -1f;
+    }
+
+    /**
+     * Shutter sound plays only when platform mandates it (e.g. regional MediaActionSound law)
+     * or when the user enabled shutter sound AND the device ringer mode is normal (not silent/vibrate).
+     */
+    static boolean shouldPlayShutterSound(boolean userEnabled, int ringerMode, boolean platformMandatory) {
+        if (platformMandatory) return true;
+        return userEnabled && ringerMode == AudioManager.RINGER_MODE_NORMAL;
+    }
+
+    static boolean isShutterNanosecondsSupported(long ns, Long minNs, Long maxNs) {
+        if (minNs == null || maxNs == null) return true;
+        long lo = Math.min(minNs, maxNs);
+        long hi = Math.max(minNs, maxNs);
+        return ns >= lo && ns <= hi;
+    }
+
+    static boolean isIsoSupported(int iso, Integer minIso, Integer maxIso) {
+        if (minIso == null || maxIso == null) return true;
+        int lo = Math.min(minIso, maxIso);
+        int hi = Math.max(minIso, maxIso);
+        return iso >= lo && iso <= hi;
+    }
+
+    static final class LensCandidate {
+        final String id;
+        final boolean isBack;
+        final boolean hasRaw;
+        final long maxArea;
+        final float focalLength;
+        final Float minZoomRatio;
+        final Float maxZoomRatio;
+
+        LensCandidate(String id, boolean isBack, boolean hasRaw, long maxArea, float focalLength,
+                      Float minZoomRatio, Float maxZoomRatio) {
+            this.id = id;
+            this.isBack = isBack;
+            this.hasRaw = hasRaw;
+            this.maxArea = maxArea;
+            this.focalLength = focalLength > 0f ? focalLength : 1f;
+            this.minZoomRatio = minZoomRatio;
+            this.maxZoomRatio = maxZoomRatio;
+        }
+    }
+
+    static final class StartupLensChoice {
+        final String mainCameraId;
+        final float primaryFocalLength;
+        final String activeCameraId;
+        final float initialZoom;
+        final float physicalFocalFactor;
+        final boolean forceJpegForWide;
+
+        StartupLensChoice(String mainCameraId, float primaryFocalLength, String activeCameraId,
+                          float initialZoom, float physicalFocalFactor, boolean forceJpegForWide) {
+            this.mainCameraId = mainCameraId;
+            this.primaryFocalLength = primaryFocalLength;
+            this.activeCameraId = activeCameraId;
+            this.initialZoom = initialZoom;
+            this.physicalFocalFactor = physicalFocalFactor;
+            this.forceJpegForWide = forceJpegForWide;
+        }
+    }
+
+    static LensCandidate selectPrimaryBackCamera(List<LensCandidate> candidates) {
+        if (candidates == null || candidates.isEmpty()) return null;
+        LensCandidate best = null;
+        for (LensCandidate c : candidates) {
+            if (c == null || !c.isBack) continue;
+            if (best == null) {
+                best = c;
+                continue;
+            }
+            if ((c.hasRaw && !best.hasRaw) || (c.hasRaw == best.hasRaw && c.maxArea > best.maxArea)) {
+                best = c;
+            }
+        }
+        if (best == null) {
+            for (LensCandidate c : candidates) {
+                if (c != null) {
+                    best = c;
+                    break;
+                }
+            }
+        }
+        return best;
+    }
+
+    static StartupLensChoice resolveStartupLens(List<LensCandidate> candidates, String defaultLens, String lastCameraId) {
+        LensCandidate primary = selectPrimaryBackCamera(candidates);
+        if (primary == null) {
+            return new StartupLensChoice(null, 1f, null, 1f, 1f, false);
+        }
+        float primaryFocal = primary.focalLength;
+
+        if ("Last used".equals(defaultLens) && lastCameraId != null) {
+            for (LensCandidate c : candidates) {
+                if (c != null && lastCameraId.equals(c.id)) {
+                    float factor = 1f;
+                    if (c.isBack && !c.id.equals(primary.id)) {
+                        factor = c.focalLength / primaryFocal;
+                    }
+                    return new StartupLensChoice(primary.id, primaryFocal, c.id, Math.max(0.5f, factor), factor, false);
+                }
+            }
+        }
+
+        if (defaultLens != null && defaultLens.contains("Ultra-wide")) {
+            float logicalWide = resolveWideZoomRatio(primary.minZoomRatio, primary.maxZoomRatio, 0.5f);
+            if (logicalWide > 0f) {
+                return new StartupLensChoice(primary.id, primaryFocal, primary.id,
+                        logicalWide, 1f, shouldUseJpegForWideZoom(primary.hasRaw, logicalWide));
+            }
+            LensCandidate bestWide = null;
+            float bestScore = Float.MAX_VALUE;
+            for (LensCandidate c : candidates) {
+                if (c == null || !c.isBack) continue;
+                float physical = c.focalLength / primaryFocal;
+                if (physical >= 0.95f) continue;
+                float score = Math.abs((float) Math.log(physical / 0.5f));
+                boolean betterRaw = c.hasRaw && (bestWide == null || !bestWide.hasRaw);
+                boolean sameRaw = bestWide != null && c.hasRaw == bestWide.hasRaw;
+                if (bestWide == null || betterRaw || (sameRaw && score < bestScore)) {
+                    bestWide = c;
+                    bestScore = score;
+                }
+            }
+            if (bestWide != null) {
+                float factor = bestWide.focalLength / primaryFocal;
+                return new StartupLensChoice(primary.id, primaryFocal, bestWide.id,
+                        Math.max(0.5f, factor), factor, false);
+            }
+        }
+
+        if (defaultLens != null && defaultLens.contains("Telephoto")) {
+            LensCandidate bestTele = null;
+            float bestScore = Float.MAX_VALUE;
+            for (LensCandidate c : candidates) {
+                if (c == null || !c.isBack || c.id.equals(primary.id)) continue;
+                float physical = c.focalLength / primaryFocal;
+                if (physical < 1.7f) continue;
+                float score = Math.abs((float) Math.log(physical / 2.0f));
+                boolean betterRaw = c.hasRaw && (bestTele == null || !bestTele.hasRaw);
+                boolean sameRaw = bestTele != null && c.hasRaw == bestTele.hasRaw;
+                if (bestTele == null || betterRaw || (sameRaw && score < bestScore)) {
+                    bestTele = c;
+                    bestScore = score;
+                }
+            }
+            if (bestTele != null) {
+                float factor = bestTele.focalLength / primaryFocal;
+                return new StartupLensChoice(primary.id, primaryFocal, bestTele.id, factor, factor, false);
+            }
+            if (primary.maxZoomRatio != null && primary.maxZoomRatio >= 2.0f) {
+                return new StartupLensChoice(primary.id, primaryFocal, primary.id, 2.0f, 1f, false);
+            }
+        }
+
+        return new StartupLensChoice(primary.id, primaryFocal, primary.id, 1f, 1f, false);
+    }
+
+    /**
+     * Selects the longest physical rear lens not exceeding requested factor.
+     * Never excludes non-RAW physical lenses; prefers RAW only as a tie-breaker at equivalent focal length.
+     */
+    static LensCandidate selectContinuousPhysicalLens(List<LensCandidate> candidates, LensCandidate primary, float factor) {
+        if (primary == null) return null;
+        LensCandidate best = primary;
+        float bestPhysical = 1f;
+        if (candidates != null) {
+            for (LensCandidate c : candidates) {
+                if (c == null || !c.isBack) continue;
+                float physical = c.focalLength / primary.focalLength;
+                if (physical > factor + 0.001f) continue;
+                if (physical > bestPhysical + 0.05f
+                        || (Math.abs(physical - bestPhysical) <= 0.05f && c.hasRaw && !best.hasRaw)) {
+                    best = c;
+                    bestPhysical = physical;
+                }
+            }
+        }
+        return best;
     }
 
 }
