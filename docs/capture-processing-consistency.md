@@ -49,13 +49,24 @@ can still differ. The six authored looks are not claimed to be measured film-sto
 - Automatic night integration requires a stationary, dim scene (ISO >= 800 and shutter
   >= 25ms), flash off and automatic exposure. It trades sensor ISO for shutter time at the metered
   exposure, capped at 2 seconds. Explicit Always mode retains its long-exposure behaviour.
+- Explicit Advanced tonal/color overrides (`SKIN_PROTECTION_MODE`, `SMART_VIBRANCE_MODE`,
+  `SHADOW_PROFILE`, `HIGHLIGHT_RECOVERY`) are honoured even when `EASY_MODE` is enabled, while
+  defaulting to brain-native / scene-adaptive (`Auto`) behaviour when unpinned.
+- `COLOR_SPACE_P3` runs sRGB→Display P3 output gamut conversion in both `RawDeveloper` exports and
+  `PreviewLookLut` live preview.
+- Under `PHOTO_OUTPUT_JPEG_ONLY` (Option B), processed JPEGs publish to Gallery while app-private
+  `.sraw` originals are retained behind a configurable storage budget (`EDITABLE_ARCHIVE_LIMIT`)
+  for non-destructive brain switching and re-editing. Explicitly requested DNGs and pinned active
+  `.sraw` edits are exempt from LRU cache eviction.
 
 ## Validation and device checklist
 
 Unit coverage includes the four degree-to-TIFF mappings, all eight JPEG transform mappings,
-capture recipe retention, archive v4 compatibility/v5 round trips, all six preview brains,
-off-grid interpolation, LUT strength, warm illuminant metadata, ISO/compensation/manual
-recovery, pre-look metering, night integration and resolution-independent neutral grain.
+capture recipe retention, archive v4 compatibility/v5 round trips, `.sraw` cache pinning & limit
+enforcement, `AppSettings` v1→v2 migration, all six preview brains, off-grid interpolation,
+LUT strength, warm illuminant metadata, ISO/compensation/manual recovery, pre-look metering,
+night integration, resolution-independent neutral grain, `ManualFocusHelper`, `CaptureFileNaming`,
+and `VideoRecordingCoordinator` (25 fps, HLG10 HDR, 180° Auto-ISO, audio zoom, mid-take switches).
 
 Before releasing to users, test a real camera device:
 
@@ -65,7 +76,7 @@ Before releasing to users, test a real camera device:
    Both outputs should retain the submitted shot's settings and orientation.
 3. Photograph the same warm indoor scene with Film, Koda and Neutral, with grain at 0 and 22.
    Compare preview and saved SDR image for brightness and neutral surfaces. Repeat with HDR
-   display enabled to distinguish gallery HDR brightness from the SDR grade.
+   display and Display P3 enabled to distinguish gallery HDR brightness and wide gamut output.
 4. Repeat daylight, skin, foliage and high-contrast window scenes through all six brains.
    Use a tripod and identical exposure/recipe settings, then render the same archived RAW
    through every brain to isolate the colour transform from capture differences.
@@ -73,3 +84,9 @@ Before releasing to users, test a real camera device:
    background/resume the app, and confirm no stale effect or flickering ungraded frames.
 6. Confirm a steady, normally lit scene does not activate night integration. In dim light,
    check that automatic integration reduces ISO without a brightness jump.
+7. Verify Option B `Processed JPEG only` saves only JPEG to MediaStore Gallery, retains private
+   `.sraw` for re-editing, enforces the storage limit without removing open edits or DNGs, and
+   clears unpinned `.sraw` caches cleanly from General settings.
+8. Verify Camera2 manual focus diopter range, optional 5× loupe activation (`LOUPE_ON_MF_ADJUST`
+   and manual pill), 25 fps PAL / HLG10 HDR / 180° shutter Auto-ISO video, and ringer-mode shutter
+   sound compliance.
