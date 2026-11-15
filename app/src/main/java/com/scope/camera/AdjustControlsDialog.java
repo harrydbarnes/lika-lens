@@ -50,12 +50,12 @@ final class AdjustControlsDialog {
 
         TextView reset = UiKit.pill(activity, "RESET", false);
         reset.setPadding(UiKit.dp(activity, 10), 0, UiKit.dp(activity, 10), 0);
-        header.addView(reset, new LinearLayout.LayoutParams(-2, UiKit.dp(32)));
+        header.addView(reset, new LinearLayout.LayoutParams(-2, UiKit.dp(activity, 32)));
 
         TextView done = UiKit.pill(activity, "DONE", true);
         done.setPadding(UiKit.dp(activity, 12), 0, UiKit.dp(activity, 12), 0);
-        LinearLayout.LayoutParams doneLp = new LinearLayout.LayoutParams(-2, UiKit.dp(32));
-        doneLp.leftMargin = UiKit.dp(6);
+        LinearLayout.LayoutParams doneLp = new LinearLayout.LayoutParams(-2, UiKit.dp(activity, 32));
+        doneLp.leftMargin = UiKit.dp(activity, 6);
         header.addView(done, doneLp);
         sheet.addView(header);
 
@@ -63,8 +63,8 @@ final class AdjustControlsDialog {
                 "Choose and reorder which controls appear in the camera Adjust panel.",
                 8.5f, MUTED, false);
         LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(-1, -2);
-        subLp.topMargin = UiKit.dp(4);
-        subLp.bottomMargin = UiKit.dp(10);
+        subLp.topMargin = UiKit.dp(activity, 4);
+        subLp.bottomMargin = UiKit.dp(activity, 10);
         sheet.addView(subtitle, subLp);
 
         ScrollView scroll = new ScrollView(activity);
@@ -86,7 +86,7 @@ final class AdjustControlsDialog {
                     "ACTIVE IN ADJUST (" + enabled.size() + ")", 8.5f, UiKit.ACCENT, true);
             activeHead.setLetterSpacing(.12f);
             LinearLayout.LayoutParams ahLp = new LinearLayout.LayoutParams(-1, -2);
-            ahLp.bottomMargin = UiKit.dp(6);
+            ahLp.bottomMargin = UiKit.dp(activity, 6);
             list.addView(activeHead, ahLp);
 
             for (int i = 0; i < enabled.size(); i++) {
@@ -122,7 +122,7 @@ final class AdjustControlsDialog {
                             renderRef[0].run();
                         });
                 LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, -2);
-                rowLp.bottomMargin = UiKit.dp(5);
+                rowLp.bottomMargin = UiKit.dp(activity, 5);
                 list.addView(row, rowLp);
             }
 
@@ -136,8 +136,8 @@ final class AdjustControlsDialog {
                 TextView availHead = UiKit.text(activity, "AVAILABLE TO ADD", 8.5f, MUTED, true);
                 availHead.setLetterSpacing(.12f);
                 LinearLayout.LayoutParams avLp = new LinearLayout.LayoutParams(-1, -2);
-                avLp.topMargin = UiKit.dp(10);
-                avLp.bottomMargin = UiKit.dp(6);
+                avLp.topMargin = UiKit.dp(activity, 10);
+                avLp.bottomMargin = UiKit.dp(activity, 6);
                 list.addView(availHead, avLp);
 
                 for (String key : remaining) {
@@ -148,7 +148,7 @@ final class AdjustControlsDialog {
                         renderRef[0].run();
                     });
                     LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, -2);
-                    rowLp.bottomMargin = UiKit.dp(5);
+                    rowLp.bottomMargin = UiKit.dp(activity, 5);
                     list.addView(row, rowLp);
                 }
             }

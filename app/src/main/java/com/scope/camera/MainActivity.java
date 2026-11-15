@@ -3417,7 +3417,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         Integer facingObj = targetChars.get(CameraCharacteristics.LENS_FACING);
         int sensorOrientation = sensorObj == null ? 90 : sensorObj;
         boolean front = facingObj != null && facingObj == CameraCharacteristics.LENS_FACING_FRONT;
-        return CaptureOrientation.jpegOrientation(sensorOrientation, front, resolvedClockwiseDeviceRotation());
+        int clockwiseDevice = quantizedDeviceRotation >= 0
+                ? quantizedDeviceRotation
+                : CaptureOrientation.displayRotationToClockwiseDevice(getWindowManager().getDefaultDisplay().getRotation());
+        return CaptureOrientation.calculateCaptureOrientation(sensorOrientation, front, clockwiseDevice);
     }
 
     private Size chooseVideoSize(Size[] sizes) {
