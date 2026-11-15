@@ -197,12 +197,58 @@ public final class CameraExposureHelper {
 
         return makeRect(left, top, right, bottom);
     }
+    static final int NIGHT_STACK_FRAME_COUNT = 4;
+    static final long MAX_NIGHT_STACK_FRAME_NS = 1_000_000_000L;
+
     /** Automatic long integration is only for stable, genuinely dim scenes, never manual exposure. */
     static boolean shouldUseNightIntegration(String setting, boolean stationary, boolean manual,
                                              long exposureNs, int iso) {
         if (manual || setting == null || setting.startsWith("Off")) return false;
         if (setting.startsWith("Always")) return true;
         return stationary && iso >= 800 && exposureNs >= 25_000_000L;
+    }
+
+    /** Flash-aware check shared by capture and viewfinder status indicator. */
+    static boolean shouldUseNightIntegration(String setting, boolean stationary, boolean manual,
+                                             long exposureNs, int iso, String flashMode) {
+        if (flashMode != null && !"Off".equals(flashMode)) return false;
+        return shouldUseNightIntegration(setting, stationary, manual, exposureNs, iso);
+    }
+
+    /**
+     * Computes per-frame exposure (ns), sensitivity (ISO), and burst frame count for multi-frame
+     * night stacking, trading ISO upward only when preserving metered brightness would exceed 1s/frame.
+     */
+    static long[] computeNightStackParameters(String setting, long meteredNs, int meteredIso,
+                                              long minExpNs, long maxExpNs, int minIso, int maxIso) {
+        int lowIso = Math.min(minIso, maxIso);
+        int highIso = Math.max(minIso, maxIso);
+        long lowExp = Math.min(minExpNs, maxExpNs);
+        long highExp = Math.max(minExpNs, maxExpNs);
+        int baseIso = Math.max(lowIso, Math.min(highIso, 200));
+
+        if (setting != null && setting.startsWith("Always") && (meteredNs <= 0L || meteredIso <= 0)) {
+            long exp = Math.max(lowExp, Math.min(highExp, MAX_NIGHT_STACK_FRAME_NS));
+            return new long[]{exp, baseIso, NIGHT_STACK_FRAME_COUNT};
+        }
+
+        if (meteredNs <= 0L || meteredIso <= 0) {
+            long exp = Math.max(lowExp, Math.min(highExp, MAX_NIGHT_STACK_FRAME_NS));
+            return new long[]{exp, baseIso, NIGHT_STACK_FRAME_COUNT};
+        }
+
+        double equivalentNs = meteredNs * (meteredIso / (double) baseIso);
+        long frameExpCap = Math.min(highExp, MAX_NIGHT_STACK_FRAME_NS);
+        int targetIso = baseIso;
+        long targetExp;
+        if (equivalentNs > frameExpCap && frameExpCap > 0L) {
+            long scaledIso = Math.round(baseIso * (equivalentNs / (double) frameExpCap));
+            targetIso = (int) Math.max(lowIso, Math.min(highIso, scaledIso));
+            targetExp = Math.max(lowExp, frameExpCap);
+        } else {
+            targetExp = Math.max(lowExp, Math.min(highExp, Math.round(equivalentNs)));
+        }
+        return new long[]{targetExp, targetIso, NIGHT_STACK_FRAME_COUNT};
     }
 
     static long matchedNightExposure(long meteredNs, int meteredIso, int targetIso, long maxNs) {

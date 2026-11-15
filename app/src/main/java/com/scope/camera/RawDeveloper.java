@@ -984,7 +984,7 @@ final class RawDeveloper {
         return developJpeg(bytes, look, 0);
     }
 
-    public static Bitmap developJpeg(byte[] bytes, Look look, int fallbackOrientation) {
+    static Bitmap decodeOrientedJpegForGrading(byte[] bytes, int fallbackOrientation) {
         if (bytes == null || bytes.length == 0) return null;
         int maxSide = 3000;
         BitmapFactory.Options opts = new BitmapFactory.Options();
@@ -1004,6 +1004,12 @@ final class RawDeveloper {
         Bitmap bitmap = scale < 1 ? Bitmap.createScaledBitmap(source,
                 Math.max(1, Math.round(source.getWidth() * scale)), Math.max(1, Math.round(source.getHeight() * scale)), true) : source;
         if (bitmap != source) source.recycle();
+        return bitmap;
+    }
+
+    public static Bitmap developJpeg(byte[] bytes, Look look, int fallbackOrientation) {
+        Bitmap bitmap = decodeOrientedJpegForGrading(bytes, fallbackOrientation);
+        if (bitmap == null) return null;
         return developBitmap(bitmap, look, true);
     }
 

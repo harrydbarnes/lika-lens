@@ -11,6 +11,7 @@ the camera from taking another photo.
 | --- | --- | --- |
 | Camera open/session creation | RequestEpoch invalidates callbacks from replaced requests; callbacks verify the owning device, session and activity | Old callbacks cannot reopen the camera or replace a new lens session after closing/switching |
 | Photo development | CaptureJobs records DEVELOPING, ARCHIVING, PUBLISHING, SAVED/FAILED by capture ID | The existing five-frame development limit remains independent of shutter state |
+| Night burst stacking | InFlightBurstCapture pairs up to four burst frames by sensor timestamp while NightStackSession owns accumulator/DNG/job release on the single capture processor | Partial bursts develop completed frames; cancellation or camera close disposes pending images and finishes jobs cleanly |
 | Reader resources | ResourceLease moves OPEN → CLOSING → CLOSED and waits for acquired frames | Closing/switching the camera does not invalidate an image still being developed or written as DNG |
 | Countdown, torch and screen flash | Delayed capture epoch invalidates obsolete callbacks; cancellation restores flash brightness | Cancelling/leaving does not fire an old capture or let old pulses interfere with a newer countdown |
 | Photo/video mode and QuickTake permissions | A take ID owns trigger/permission/preparation; PERMISSION_PENDING and PERMISSION_READY are distinct | Releasing QuickTake, changing mode or stopping the activity cancels the appropriate pending intent; a permission prompt alone cannot start the recorder |
@@ -55,7 +56,9 @@ WorkflowStateTest exercises stale callbacks, cancellation/disposal, single-fligh
 terminal job states, take invalidation and permission resolution, paused camera switches,
 segment retention, capture outcomes, output publication guards, reader leases, gesture
 ownership, unlock cancellation, detector cooldowns, motion settling, frozen GIF selections
-and update download ownership. Existing image/colour and state-machine tests also run.
+and update download ownership. NightStackerTest and CameraExposureHelperTest cover multi-frame
+burst timestamp pairing, partial/cancelled burst handling, Bayer/RGB alignment and outlier
+rejection, and night-integration gating. Existing image/colour and state-machine tests also run.
 
 ## Device verification before release
 

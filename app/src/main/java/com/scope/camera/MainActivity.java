@@ -103,6 +103,7 @@ import java.util.Locale;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -326,8 +327,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         float deltaMovement = Math.abs(deviceRollAngle - smoothRollAngle) + Math.abs(devicePitchAngle - smoothPitchAngle);
         deviceStabilityScore = deviceStabilityScore * 0.90f + deltaMovement * 0.10f;
+        boolean wasStationary = motion.stationary();
         long nowUptime = SystemClock.uptimeMillis();
         motion.sample(deviceStabilityScore, nowUptime);
+        if (motion.stationary() != wasStationary && modeNote != null && !videoMode) {
+            runOnUiThread(this::updateContextualStatus);
+        }
 
         if (showLevel && gridOverlay != null) {
             gridOverlay.postInvalidate();
@@ -468,9 +473,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             metadata.exposureTimeNs = exposure == null ? 0L : exposure;
             metadata.sensitivityIso = iso == null ? 0 : iso;
             previewColourMetadata = metadata;
-            if (prefLiveFilmPreview) {
-                runOnUiThread(MainActivity.this::applyLiveFilmPreview);
-            }
+            runOnUiThread(() -> {
+                if (prefLiveFilmPreview) {
+                    applyLiveFilmPreview();
+                }
+                updateContextualStatus();
+            });
         }
     };
     private Surface previewSurface;
@@ -496,6 +504,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     });
     private final Object captureLock = new Object();
     private InFlightCapture<Image, TotalCaptureResult> activeCapture;
+    private InFlightBurstCapture<Image, TotalCaptureResult> activeBurstCapture;
+    private NightStackSession activeBurstSession;
     private final java.util.Map<ImageReader,ResourceLease> readerLeases=new java.util.IdentityHashMap<>();
     private final java.util.Map<Image,ResourceLease> imageLeases=new java.util.IdentityHashMap<>();
     private long nextCaptureId = 1L;
@@ -3695,6 +3705,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         String next = current.startsWith("Off") ? "Auto" : current.startsWith("Auto") ? "Torch" : "Off";
         AppSettings.prefs(this).edit().putString(AppSettings.FLASH, next).apply();
         updateQuickButtons();
+        updateContextualStatus();
         if (front && !"Off".equals(next)) {
             showMessage("RETINA SCREEN FLASH · Warm illumination active");
         }
@@ -4178,6 +4189,50 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         previewRequest = null;
     }
 
+    private void cancelActiveCaptureLocked() {
+        if (activeCapture != null) {
+            activeCapture.cancel(MainActivity.this::releaseCapturedImage);
+            activeCapture = null;
+        }
+        if (activeBurstCapture != null) {
+            activeBurstCapture.cancel(MainActivity.this::releaseCapturedImage);
+            activeBurstCapture = null;
+        }
+        if (activeBurstSession != null) {
+            final NightStackSession sessionToCancel = activeBurstSession;
+            activeBurstSession = null;
+            sessionToCancel.cancel();
+            executeOnProcessor(sessionToCancel::releaseOwnedResources);
+        }
+    }
+
+    private void executeOnProcessor(Runnable task) {
+        try {
+            processor.execute(task);
+        } catch (RejectedExecutionException ignored) {
+            task.run();
+        }
+    }
+
+    private static long safeImageTimestamp(Image image) {
+        if (image == null) return 0L;
+        try {
+            return image.getTimestamp();
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    private static long safeResultTimestamp(TotalCaptureResult result) {
+        if (result == null) return 0L;
+        try {
+            Long ts = result.get(CaptureResult.SENSOR_TIMESTAMP);
+            return ts == null ? 0L : ts;
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
     private void onImageAvailable(ImageReader reader) {
         final Image image;
         synchronized(captureLock) {
@@ -4190,8 +4245,18 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             imageLeases.put(image,lease);
         }
         InFlightCapture.CompletedPair<Image, TotalCaptureResult> pair = null;
+        InFlightBurstCapture.BurstStep<Image, TotalCaptureResult> burstStep = null;
+        NightStackSession burstSession = null;
         synchronized (captureLock) {
-            if (activeCapture != null) {
+            if (activeBurstCapture != null) {
+                burstStep = activeBurstCapture.attachImage(
+                        image, safeImageTimestamp(image), MainActivity.this::releaseCapturedImage);
+                burstSession = activeBurstSession;
+                if (burstStep != null && burstStep.isLast) {
+                    activeBurstCapture = null;
+                    activeBurstSession = null;
+                }
+            } else if (activeCapture != null) {
                 pair = activeCapture.attachImage(image, MainActivity.this::releaseCapturedImage);
                 if (pair != null) {
                     activeCapture = null;
@@ -4202,6 +4267,376 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         if (pair != null) {
             dispatchCompletedCapture(pair.image, pair.result, pair.recipe);
+        } else if (burstStep != null) {
+            handleBurstStep(burstStep, burstSession);
+        }
+    }
+
+    private final class CaptureOutputMeta {
+        final String baseFileStem;
+        final String orgSub;
+        final String archiveKey;
+        final boolean keepEditableSource;
+        final boolean saveDng;
+        final Location captureLocation;
+
+        CaptureOutputMeta(boolean raw, CaptureRecipe recipe) {
+            String stamp = formatCaptureStamp();
+            String format = recipe.format;
+            String dngPolicy = recipe.dngPolicy;
+            this.keepEditableSource = raw && !dngPolicy.startsWith("Do not save RAW")
+                    && recipe.keepRaw
+                    && !"Rendered JPEG only".equals(format);
+            this.saveDng = raw && dngPolicy.startsWith("Save DNG")
+                    && (recipe.keepRaw || "DNG only".equals(format))
+                    && !"Rendered JPEG only".equals(format);
+            this.captureLocation = (saveDng || !raw || !"DNG only".equals(format)) ? getCaptureLocation() : null;
+            String prefix = resolvedFilePrefix();
+            String namingPattern = AppSettings.get(MainActivity.this, AppSettings.FILE_NAMING, "Prefix + Timestamp");
+            if (namingPattern.contains("Film Look")) {
+                String stockName = recipe.look.brain != null ? recipe.look.brain.replaceAll("[^A-Za-z0-9]", "") : "LIKA";
+                this.baseFileStem = stockName + "_" + stamp;
+            } else if (namingPattern.contains("Roll counter")) {
+                int roll = AppSettings.getInt(MainActivity.this, "roll_counter", 1);
+                AppSettings.prefs(MainActivity.this).edit().putInt("roll_counter", roll + 1).apply();
+                this.baseFileStem = prefix + "_ROLL_" + String.format(Locale.US, "%04d", roll);
+            } else {
+                this.baseFileStem = prefix + "_" + stamp;
+            }
+            String folderOrg = AppSettings.get(MainActivity.this, AppSettings.FOLDER_ORG, "Single folder (Pictures/Lika Lens)");
+            if (folderOrg.contains("month")) {
+                this.orgSub = formatMonthFolder();
+            } else if (folderOrg.contains("film look")) {
+                this.orgSub = recipe.look.brain != null
+                        ? recipe.look.brain.replaceAll("[^A-Za-z0-9_ ]", "").replace(' ', '_')
+                        : "LIKA_FILM";
+            } else {
+                this.orgSub = "";
+            }
+            this.archiveKey = prefix + "_" + stamp;
+        }
+    }
+
+    private final class NightStackSession {
+        final long renderJob;
+        final boolean raw;
+        final CaptureRecipe recipe;
+        final AtomicBoolean cancelled = new AtomicBoolean(false);
+        final AtomicBoolean jobFinished = new AtomicBoolean(false);
+
+        // Accessed exclusively on single-threaded `processor`
+        CaptureOutputMeta meta;
+        TotalCaptureResult baseResult;
+        boolean dngSaved;
+        String dngWarning;
+        NightStacker.RawAccumulator rawAccumulator;
+        RawArchive.Frame baseRawFrame;
+        ByteBuffer fallbackRawBuffer;
+        NightStacker.RgbAccumulator rgbAccumulator;
+        Bitmap fallbackJpegBitmap;
+        int stackedFrames;
+
+        NightStackSession(long renderJob, boolean raw, CaptureRecipe recipe) {
+            this.renderJob = renderJob;
+            this.raw = raw;
+            this.recipe = recipe;
+        }
+
+        void prepareMetadataIfNeeded() {
+            if (meta == null) {
+                meta = new CaptureOutputMeta(raw, recipe);
+            }
+        }
+
+        void accumulateFrame(Image image, TotalCaptureResult result) {
+            prepareMetadataIfNeeded();
+            if (raw) {
+                Image.Plane plane = image.getPlanes()[0];
+                int width = image.getWidth();
+                int height = image.getHeight();
+                int pixelStride = plane.getPixelStride() > 0 ? plane.getPixelStride() : 2;
+                int rowStride = plane.getRowStride() > 0 ? plane.getRowStride() : width * pixelStride;
+                if (baseRawFrame == null) {
+                    RawArchive.Frame frame = RawArchive.createFrame(meta.archiveKey, image, recipe.characteristics,
+                            result, recipe.orientation, recipe.look.aspectRatio);
+                    frame.previewMidTarget = recipe.previewMidTarget;
+                    short[] samples = NightStacker.extractRawShorts(
+                            frame.captureBuffer, frame.width, frame.height, frame.rowStride, frame.pixelStride);
+                    frame.captureBuffer = null;
+                    if (meta.saveDng) {
+                        try {
+                            String dngSubfolder = meta.orgSub.isEmpty() ? "RAW" : meta.orgSub + "/RAW";
+                            writeDng(image, result, recipe.characteristics, recipe.orientation,
+                                    meta.baseFileStem + ".dng", dngSubfolder, meta.captureLocation);
+                            dngSaved = true;
+                        } catch (Exception dngError) {
+                            dngWarning = dngError.getClass().getSimpleName();
+                            Log.e(TAG, "DNG export failed; continuing with the Lika Lens render", dngError);
+                        }
+                    }
+                    baseRawFrame = frame;
+                    baseResult = result;
+                    int whiteLevel = frame.dynamicWhiteLevel > 0 ? frame.dynamicWhiteLevel : frame.staticWhiteLevel;
+                    try {
+                        rawAccumulator = new NightStacker.RawAccumulator(frame.width, frame.height, whiteLevel);
+                        rawAccumulator.addFrame(samples);
+                    } catch (OutOfMemoryError oom) {
+                        Log.w(TAG, "Night stack RAW buffer allocation exceeded memory; keeping frame 0", oom);
+                        if (rawAccumulator != null) {
+                            rawAccumulator.release();
+                            rawAccumulator = null;
+                        }
+                        fallbackRawBuffer = NightStacker.toLittleEndianBuffer(samples);
+                    }
+                    stackedFrames = 1;
+                } else if (rawAccumulator != null && width == rawAccumulator.width && height == rawAccumulator.height) {
+                    short[] samples = NightStacker.extractRawShorts(plane.getBuffer(), width, height, rowStride, pixelStride);
+                    rawAccumulator.addFrame(samples);
+                    stackedFrames++;
+                }
+            } else {
+                ByteBuffer buffer = image.getPlanes()[0].getBuffer().duplicate();
+                buffer.position(0);
+                byte[] bytes = new byte[buffer.remaining()];
+                buffer.get(bytes);
+                Bitmap decoded = RawDeveloper.decodeOrientedJpegForGrading(bytes, recipe.orientation);
+                if (decoded == null) return;
+                int w = decoded.getWidth();
+                int h = decoded.getHeight();
+                if (rgbAccumulator == null && fallbackJpegBitmap == null) {
+                    baseResult = result;
+                    try {
+                        int[] pixels = new int[w * h];
+                        decoded.getPixels(pixels, 0, w, 0, 0, w, h);
+                        rgbAccumulator = new NightStacker.RgbAccumulator(w, h);
+                        rgbAccumulator.addFrame(pixels);
+                        decoded.recycle();
+                    } catch (OutOfMemoryError oom) {
+                        Log.w(TAG, "Night stack RGB buffer allocation exceeded memory; keeping frame 0", oom);
+                        if (rgbAccumulator != null) {
+                            rgbAccumulator.release();
+                            rgbAccumulator = null;
+                        }
+                        fallbackJpegBitmap = decoded;
+                    }
+                    stackedFrames = 1;
+                } else if (rgbAccumulator != null && w == rgbAccumulator.width && h == rgbAccumulator.height) {
+                    int[] pixels = new int[w * h];
+                    decoded.getPixels(pixels, 0, w, 0, 0, w, h);
+                    decoded.recycle();
+                    rgbAccumulator.addFrame(pixels);
+                    stackedFrames++;
+                } else {
+                    decoded.recycle();
+                }
+            }
+        }
+
+        void cancel() {
+            cancelled.set(true);
+        }
+
+        void releaseOwnedResources() {
+            baseResult = null;
+            if (baseRawFrame != null) {
+                baseRawFrame.captureBuffer = null;
+                baseRawFrame = null;
+            }
+            fallbackRawBuffer = null;
+            if (rawAccumulator != null) {
+                rawAccumulator.release();
+                rawAccumulator = null;
+            }
+            if (rgbAccumulator != null) {
+                rgbAccumulator.release();
+                rgbAccumulator = null;
+            }
+            if (fallbackJpegBitmap != null && !fallbackJpegBitmap.isRecycled()) {
+                fallbackJpegBitmap.recycle();
+            }
+            fallbackJpegBitmap = null;
+            finishJob(false);
+        }
+
+        void finishJob(boolean succeeded) {
+            if (jobFinished.compareAndSet(false, true)) {
+                captureJobs.finish(renderJob, succeeded);
+                runOnUiThread(MainActivity.this::updateGalleryProcessingUi);
+            }
+        }
+    }
+
+    private Bitmap finishGradedJpegBitmap(Bitmap orientedSource, CaptureRecipe recipe) {
+        if (orientedSource == null) return null;
+        RawDeveloper.Look jpegLook = recipe.look.copy();
+        String savedBorder = jpegLook.frameBorder;
+        jpegLook.frameBorder = "None";
+        Bitmap developed = RawDeveloper.developBitmap(orientedSource, jpegLook, true);
+        if (developed == null) return null;
+        developed = cropToAspect(developed, recipe.look.aspectRatio);
+        if (savedBorder != null && !savedBorder.startsWith("None")) {
+            jpegLook.frameBorder = savedBorder;
+            developed = RawDeveloper.applyFrameBorder(developed, jpegLook, null);
+        }
+        return developed;
+    }
+
+    private void publishDevelopedPhoto(long renderJob, boolean raw, CaptureRecipe recipe,
+                                       CaptureOutputMeta meta, RawArchive.Frame rawFrame,
+                                       TotalCaptureResult exifResult, Bitmap developed,
+                                       boolean dngSaved, String dngWarning, int stackedFrames) throws Exception {
+        if (developed == null) throw new IllegalStateException("Renderer returned no image");
+        if (raw && rawFrame != null && meta.keepEditableSource) {
+            try {
+                captureJobs.move(renderJob, CaptureJobs.Phase.ARCHIVING);
+                RawArchive.writeArchive(this, rawFrame);
+                PhotoEditStore.save(this, meta.archiveKey, recipe.look);
+            } catch (Exception archiveErr) {
+                Log.w(TAG, "Could not save editable RAW archive", archiveErr);
+            }
+        }
+        Bitmap quickThumbnail = null;
+        if (!raw || !"DNG only".equals(recipe.format) || !dngSaved) {
+            captureJobs.move(renderJob, CaptureJobs.Phase.PUBLISHING);
+            writeJpeg(developed, meta.baseFileStem + ".jpg", exifResult, meta.orgSub, true, meta.captureLocation);
+            quickThumbnail = createGalleryThumbnail(developed);
+        }
+        developed.recycle();
+
+        final Bitmap finalThumbnail = quickThumbnail;
+        final String resultMessage;
+        if (stackedFrames > 1) {
+            if (dngWarning != null) {
+                resultMessage = String.format(Locale.US, "✨ Night stacked (%d frames); DNG failed", stackedFrames);
+            } else if ("DNG only".equals(recipe.format) && raw) {
+                resultMessage = "DNG original saved";
+            } else if (dngSaved) {
+                resultMessage = String.format(Locale.US, "✨ Night stacked (%d frames) + DNG saved", stackedFrames);
+            } else {
+                resultMessage = String.format(Locale.US, "✨ Night stacked (%d frames)", stackedFrames);
+            }
+        } else {
+            resultMessage = dngWarning != null ? "Photo rendered; DNG export failed"
+                    : !raw ? "JPEG fallback captured and rendered"
+                    : "DNG only".equals(recipe.format) ? "DNG original saved"
+                    : dngSaved ? "DNG original + Lika Lens render saved" : "Lika Lens RAW render saved";
+        }
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) {
+                if (finalThumbnail != null && !finalThumbnail.isRecycled()) finalThumbnail.recycle();
+                return;
+            }
+            showMessage(resultMessage);
+            if (finalThumbnail != null) applyGalleryThumbnail(finalThumbnail);
+            else updateGalleryButton();
+        });
+    }
+
+    private void handleBurstStep(InFlightBurstCapture.BurstStep<Image, TotalCaptureResult> step,
+                                 NightStackSession session) {
+        if (step.isLast) {
+            stillCaptureState = StillCaptureState.IDLE;
+            runOnUiThread(() -> {
+                if (captureButton != null) captureButton.setAlpha(1f);
+                updateGalleryProcessingUi();
+            });
+        }
+        if (session == null) {
+            if (step.image != null) releaseCapturedImage(step.image);
+            return;
+        }
+        if (step.failed && step.completedCount == 0) {
+            if (step.image != null) releaseCapturedImage(step.image);
+            runOnUiThread(() -> showMessage("Night capture failed. Try again."));
+            executeOnProcessor(session::releaseOwnedResources);
+            return;
+        }
+        final Image frameImage = step.image;
+        final TotalCaptureResult frameResult = step.result;
+        final boolean shouldFinalize = step.isLast;
+        executeOnProcessor(() -> {
+            try {
+                if (session.cancelled.get()) {
+                    return;
+                }
+                if (frameImage != null) {
+                    session.accumulateFrame(frameImage, frameResult);
+                }
+            } catch (Throwable err) {
+                Log.e(TAG, "Night burst frame accumulation failed", err);
+            } finally {
+                if (frameImage != null) {
+                    releaseCapturedImage(frameImage);
+                }
+            }
+            if (shouldFinalize) {
+                if (session.cancelled.get()) {
+                    session.releaseOwnedResources();
+                } else {
+                    finalizeNightStackSession(session);
+                }
+            }
+        });
+    }
+
+    private void finalizeNightStackSession(NightStackSession session) {
+        boolean renderSucceeded = false;
+        try {
+            if (session.cancelled.get()) return;
+            session.prepareMetadataIfNeeded();
+            Bitmap developed = null;
+            if (session.raw) {
+                RawArchive.Frame frame = session.baseRawFrame;
+                if (frame == null) throw new IllegalStateException("No RAW burst frames captured");
+                if (session.rawAccumulator != null) {
+                    short[] stackedShorts = session.rawAccumulator.finishShorts();
+                    session.rawAccumulator = null;
+                    frame.captureBuffer = NightStacker.toLittleEndianBuffer(stackedShorts);
+                    frame.rowStride = frame.width * 2;
+                    frame.pixelStride = 2;
+                } else if (session.fallbackRawBuffer != null) {
+                    frame.captureBuffer = session.fallbackRawBuffer;
+                    frame.rowStride = frame.width * 2;
+                    frame.pixelStride = 2;
+                }
+                try {
+                    developed = RawDeveloper.develop(frame, session.recipe.look, 0);
+                } catch (IllegalArgumentException | OutOfMemoryError resolutionError) {
+                    Log.w(TAG, "Full-resolution stacked RAW render failed; retrying at a safe display size", resolutionError);
+                    developed = RawDeveloper.develop(frame, session.recipe.look, 3000);
+                }
+                publishDevelopedPhoto(session.renderJob, true, session.recipe, session.meta, frame,
+                        session.baseResult, developed, session.dngSaved, session.dngWarning, session.stackedFrames);
+            } else {
+                Bitmap stackedSource = null;
+                if (session.rgbAccumulator != null) {
+                    int w = session.rgbAccumulator.width;
+                    int h = session.rgbAccumulator.height;
+                    int[] pixels = session.rgbAccumulator.finishPixels();
+                    session.rgbAccumulator = null;
+                    stackedSource = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888);
+                } else if (session.fallbackJpegBitmap != null) {
+                    stackedSource = session.fallbackJpegBitmap;
+                    session.fallbackJpegBitmap = null;
+                }
+                developed = finishGradedJpegBitmap(stackedSource, session.recipe);
+                publishDevelopedPhoto(session.renderJob, false, session.recipe, session.meta, null,
+                        session.baseResult, developed, false, null, session.stackedFrames);
+            }
+            renderSucceeded = true;
+        } catch (Exception e) {
+            Log.e(TAG, "Night stacked photo development failed", e);
+            String detail = e.getMessage();
+            if (detail != null) {
+                detail = detail.replace('\n', ' ').trim();
+                if (detail.length() > 72) detail = detail.substring(0, 72);
+            }
+            final String errorDetail = detail;
+            runOnUiThread(() -> showMessage("Photo render failed: " + e.getClass().getSimpleName()
+                    + (errorDetail == null || errorDetail.isEmpty() ? "" : " · " + errorDetail)));
+        } finally {
+            session.finishJob(renderSucceeded);
+            session.releaseOwnedResources();
         }
     }
 
@@ -4216,52 +4651,19 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         int capturedOrientation = recipe.orientation;
         RawDeveloper.Look captureLook = recipe.look;
         String capturedAspect = captureLook.aspectRatio;
-        processor.execute(() -> {
+        executeOnProcessor(() -> {
             boolean renderSucceeded = false;
             boolean raw = image.getFormat() == ImageFormat.RAW_SENSOR;
-            String archiveKey = null;
-            String dngPolicy = recipe.dngPolicy;
-            boolean keepEditableSource = raw && !dngPolicy.startsWith("Do not save RAW")
-                    && recipe.keepRaw
-                    && !"Rendered JPEG only".equals(recipe.format);
+            RawArchive.Frame rawFrame = null;
             try {
-                String stamp = formatCaptureStamp();
-                String format = recipe.format;
-                boolean saveDng = raw && dngPolicy.startsWith("Save DNG")
-                        && (recipe.keepRaw || "DNG only".equals(format))
-                        && !"Rendered JPEG only".equals(format);
-                Location captureLocation = (saveDng || !raw || !"DNG only".equals(format)) ? getCaptureLocation() : null;
-
-                String prefix = resolvedFilePrefix();
-
-                String namingPattern = AppSettings.get(this, AppSettings.FILE_NAMING, "Prefix + Timestamp");
-                String baseFileStem;
-                if (namingPattern.contains("Film Look")) {
-                    String stockName = captureLook.brain != null ? captureLook.brain.replaceAll("[^A-Za-z0-9]", "") : "LIKA";
-                    baseFileStem = stockName + "_" + stamp;
-                } else if (namingPattern.contains("Roll counter")) {
-                    int roll = AppSettings.getInt(this, "roll_counter", 1);
-                    AppSettings.prefs(this).edit().putInt("roll_counter", roll + 1).apply();
-                    baseFileStem = prefix + "_ROLL_" + String.format(Locale.US, "%04d", roll);
-                } else {
-                    baseFileStem = prefix + "_" + stamp;
-                }
-
-                String folderOrg = AppSettings.get(this, AppSettings.FOLDER_ORG, "Single folder (Pictures/Lika Lens)");
-                String orgSub = "";
-                if (folderOrg.contains("month")) {
-                    orgSub = formatMonthFolder();
-                } else if (folderOrg.contains("film look")) {
-                    orgSub = captureLook.brain != null ? captureLook.brain.replaceAll("[^A-Za-z0-9_ ]", "").replace(' ', '_') : "LIKA_FILM";
-                }
-
-                archiveKey = prefix + "_" + stamp;
+                CaptureOutputMeta meta = new CaptureOutputMeta(raw, recipe);
                 boolean dngSaved = false;
                 String dngWarning = null;
-                if (saveDng) {
+                if (meta.saveDng) {
                     try {
-                        String dngSubfolder = orgSub.isEmpty() ? "RAW" : orgSub + "/RAW";
-                        writeDng(image, result, capturedCharacteristics, capturedOrientation, baseFileStem + ".dng", dngSubfolder, captureLocation);
+                        String dngSubfolder = meta.orgSub.isEmpty() ? "RAW" : meta.orgSub + "/RAW";
+                        writeDng(image, result, capturedCharacteristics, capturedOrientation,
+                                meta.baseFileStem + ".dng", dngSubfolder, meta.captureLocation);
                         dngSaved = true;
                     } catch (Exception dngError) {
                         dngWarning = dngError.getClass().getSimpleName();
@@ -4270,62 +4672,24 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 }
                 Bitmap developed;
                 if (raw) {
-                    RawArchive.Frame frame = RawArchive.createFrame(archiveKey, image, capturedCharacteristics,
+                    rawFrame = RawArchive.createFrame(meta.archiveKey, image, capturedCharacteristics,
                             result, capturedOrientation, capturedAspect);
-                    frame.previewMidTarget = recipe.previewMidTarget;
+                    rawFrame.previewMidTarget = recipe.previewMidTarget;
                     try {
-                        developed = RawDeveloper.develop(frame, captureLook, 0);
+                        developed = RawDeveloper.develop(rawFrame, captureLook, 0);
                     } catch (IllegalArgumentException | OutOfMemoryError resolutionError) {
                         Log.w(TAG, "Full-resolution RAW render failed; retrying at a safe display size", resolutionError);
-                        developed = RawDeveloper.develop(frame, captureLook, 3000);
-                    }
-                    if (keepEditableSource) {
-                        try {
-                            captureJobs.move(renderJob, CaptureJobs.Phase.ARCHIVING);
-                            RawArchive.writeArchive(this, frame);
-                            PhotoEditStore.save(this, archiveKey, captureLook);
-                        } catch (Exception archiveErr) {
-                            Log.w(TAG, "Could not save editable RAW archive", archiveErr);
-                        }
+                        developed = RawDeveloper.develop(rawFrame, captureLook, 3000);
                     }
                 } else {
                     ByteBuffer buffer = image.getPlanes()[0].getBuffer();
                     byte[] bytes = new byte[buffer.remaining()];
                     buffer.get(bytes);
-                    RawDeveloper.Look jpegLook = captureLook.copy();
-                    String savedBorder = jpegLook.frameBorder;
-                    jpegLook.frameBorder = "None";
-                    developed = RawDeveloper.developJpeg(bytes, jpegLook, capturedOrientation);
-                    if (developed == null) throw new IllegalStateException("Renderer returned no image");
-                    developed = cropToAspect(developed, capturedAspect);
-                    if (savedBorder != null && !savedBorder.startsWith("None")) {
-                        jpegLook.frameBorder = savedBorder;
-                        developed = RawDeveloper.applyFrameBorder(developed, jpegLook, null);
-                    }
+                    Bitmap oriented = RawDeveloper.decodeOrientedJpegForGrading(bytes, capturedOrientation);
+                    developed = finishGradedJpegBitmap(oriented, recipe);
                 }
-                if (developed == null) throw new IllegalStateException("Renderer returned no image");
-                Bitmap quickThumbnail = null;
-                if (!raw || !"DNG only".equals(format) || !dngSaved) {
-                    captureJobs.move(renderJob, CaptureJobs.Phase.PUBLISHING);
-                    writeJpeg(developed, baseFileStem + ".jpg", result, orgSub, true, captureLocation);
-                    quickThumbnail = createGalleryThumbnail(developed);
-                }
-                developed.recycle();
+                publishDevelopedPhoto(renderJob, raw, recipe, meta, rawFrame, result, developed, dngSaved, dngWarning, 1);
                 renderSucceeded = true;
-                final Bitmap finalThumbnail = quickThumbnail;
-                String resultMessage = dngWarning != null ? "Photo rendered; DNG export failed"
-                        : !raw ? "JPEG fallback captured and rendered"
-                        : "DNG only".equals(format) ? "DNG original saved"
-                        : dngSaved ? "DNG original + Lika Lens render saved" : "Lika Lens RAW render saved";
-                runOnUiThread(() -> {
-                    if (isFinishing() || isDestroyed()) {
-                        if (finalThumbnail != null && !finalThumbnail.isRecycled()) finalThumbnail.recycle();
-                        return;
-                    }
-                    showMessage(resultMessage);
-                    if (finalThumbnail != null) applyGalleryThumbnail(finalThumbnail);
-                    else updateGalleryButton();
-                });
             } catch (Exception e) {
                 Log.e(TAG, "Photo development failed", e);
                 String detail = e.getMessage();
@@ -4334,10 +4698,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     if (detail.length() > 72) detail = detail.substring(0, 72);
                 }
                 final String errorDetail = detail;
-                runOnUiThread(() -> {
-                    showMessage("Photo render failed: " + e.getClass().getSimpleName()
-                            + (errorDetail == null || errorDetail.isEmpty() ? "" : " · " + errorDetail));
-                });
+                runOnUiThread(() -> showMessage("Photo render failed: " + e.getClass().getSimpleName()
+                        + (errorDetail == null || errorDetail.isEmpty() ? "" : " · " + errorDetail)));
             } finally {
                 try { releaseCapturedImage(image); }
                 finally {
@@ -4517,36 +4879,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         InFlightCapture<Image, TotalCaptureResult> captureToken = null;
         try {
-            Surface target = useRawForThisCamera && rawReader != null ? rawReader.getSurface() : jpegReader.getSurface();
-            CaptureRequest.Builder still = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-            still.addTarget(target);
+            boolean rawCapture = useRawForThisCamera && rawReader != null;
+            Surface target = rawCapture ? rawReader.getSurface() : jpegReader.getSurface();
             String astroSetting = AppSettings.get(this, AppSettings.ASTROPHOTOGRAPHY, "Auto (when stationary at night)");
             RawArchive.Frame meteredPreview = previewColourMetadata;
             long meteredExposure = meteredPreview == null ? 0L : meteredPreview.exposureTimeNs;
             int meteredIso = meteredPreview == null ? 0 : meteredPreview.sensitivityIso;
             boolean manualExposure = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual");
-            boolean isAstro = CameraExposureHelper.shouldUseNightIntegration(astroSetting, motion.stationary(),
-                    manualExposure, meteredExposure, meteredIso)
-                    && "Off".equals(AppSettings.get(this, AppSettings.FLASH, "Off"));
-            setExposure(still);
-            if (isAstro && characteristics != null) {
-                Range<Long> expRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
-                Range<Integer> sensRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
-                if (expRange != null && sensRange != null) {
-                    // Auto trades ISO for shutter time at the metered exposure; Always requests up to 2s.
-                    int targetAstroIso = Math.max(sensRange.getLower(), Math.min(sensRange.getUpper(), 200));
-                    long desiredAstroExp = astroSetting.startsWith("Always") ? Math.min(expRange.getUpper(), 2_000_000_000L)
-                            : CameraExposureHelper.matchedNightExposure(meteredExposure, meteredIso, targetAstroIso, expRange.getUpper());
-                    final long targetAstroExp = Math.max(expRange.getLower(), desiredAstroExp);
-                    still.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
-                    still.set(CaptureRequest.SENSOR_EXPOSURE_TIME, targetAstroExp);
-                    still.set(CaptureRequest.SENSOR_SENSITIVITY, targetAstroIso);
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        still.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY);
-                    }
-                    runOnUiThread(() -> showMessage("✨ Night integration exposure: " + String.format(Locale.US, "%.1fs", targetAstroExp / 1_000_000_000f)));
-                }
-            }
+            String flashMode = AppSettings.get(this, AppSettings.FLASH, "Off");
+            boolean isAstro = CameraExposureHelper.shouldUseNightIntegration(
+                    astroSetting, motion.stationary(), manualExposure, meteredExposure, meteredIso, flashMode);
             final int capturedOrientation = jpegOrientation();
             RawDeveloper.Look captureLook = RawDeveloper.Look.fromPreferences(this);
             captureLook.flipHorizontal = isFrontCamera() && AppSettings.getBoolean(this, AppSettings.MIRROR_FRONT, true);
@@ -4554,6 +4896,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     AppSettings.get(this, AppSettings.DNG_POLICY, "Save DNG beside JPEG (Pictures/RAW)"),
                     AppSettings.get(this, AppSettings.CAPTURE_FORMAT, "RAW + rendered JPEG"),
                     AppSettings.getBoolean(this, AppSettings.KEEP_RAW, true), samplePreviewMidTarget());
+            if (isAstro) {
+                performNightBurstCapture(target, rawCapture, recipe, astroSetting, meteredExposure, meteredIso);
+                return;
+            }
+            CaptureRequest.Builder still = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            still.addTarget(target);
+            setExposure(still);
             still.set(CaptureRequest.JPEG_ORIENTATION, capturedOrientation);
             setFocusMode(still);
             setFlash(still, false);
@@ -4563,10 +4912,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             applyZoom(still);
             synchronized (captureLock) {
-                if (activeCapture != null) {
-                    activeCapture.cancel(MainActivity.this::releaseCapturedImage);
-                }
-                captureToken = new InFlightCapture<>(nextCaptureId++, useRawForThisCamera, recipe);
+                cancelActiveCaptureLocked();
+                captureToken = new InFlightCapture<>(nextCaptureId++, rawCapture, recipe);
                 activeCapture = captureToken;
             }
             final InFlightCapture<Image, TotalCaptureResult> submittedCapture = captureToken;
@@ -4595,26 +4942,146 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     }
                     stillCaptureState = StillCaptureState.IDLE;
                     runOnUiThread(() -> {
-                        captureButton.setAlpha(1f);
+                        if (captureButton != null) captureButton.setAlpha(1f);
                         updateGalleryProcessingUi();
                         showMessage("Capture failed. Try again.");
                     });
                 }
             }, cameraHandler);
         } catch (CameraAccessException | IllegalStateException e) {
-            if (captureToken != null) {
-                synchronized (captureLock) {
-                    if (activeCapture == captureToken) {
-                        captureToken.cancel(MainActivity.this::releaseCapturedImage);
-                        activeCapture = null;
-                    }
-                }
+            synchronized (captureLock) {
+                cancelActiveCaptureLocked();
             }
             stillCaptureState = StillCaptureState.IDLE;
-            captureButton.setAlpha(1f);
+            if (captureButton != null) captureButton.setAlpha(1f);
             updateGalleryProcessingUi();
             showMessage("Camera capture failed.");
         }
+    }
+
+    private void performNightBurstCapture(Surface target, boolean rawCapture, CaptureRecipe recipe,
+                                          String astroSetting, long meteredExposure, int meteredIso)
+            throws CameraAccessException {
+        Range<Long> expRange = characteristics == null ? null : characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+        Range<Integer> sensRange = characteristics == null ? null : characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+        long targetExp = 0L;
+        int targetIso = 0;
+        int frameCount = CameraExposureHelper.NIGHT_STACK_FRAME_COUNT;
+        boolean lockManual = expRange != null && sensRange != null;
+        if (lockManual) {
+            long[] params = CameraExposureHelper.computeNightStackParameters(
+                    astroSetting, meteredExposure, meteredIso,
+                    expRange.getLower(), expRange.getUpper(),
+                    sensRange.getLower(), sensRange.getUpper());
+            targetExp = params[0];
+            targetIso = (int) params[1];
+            frameCount = (int) params[2];
+        }
+
+        boolean singleAf = focusMode != FocusMode.LOCKED
+                && AppSettings.get(this, "focus_mode", "Continuous picture autofocus").startsWith("Single");
+
+        List<CaptureRequest> burstRequests = new ArrayList<>(frameCount);
+        for (int i = 0; i < frameCount; i++) {
+            CaptureRequest.Builder frameReq = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            frameReq.addTarget(target);
+            setExposure(frameReq);
+            if (lockManual) {
+                frameReq.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
+                frameReq.set(CaptureRequest.SENSOR_EXPOSURE_TIME, targetExp);
+                frameReq.set(CaptureRequest.SENSOR_SENSITIVITY, targetIso);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    frameReq.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY);
+                }
+            }
+            frameReq.set(CaptureRequest.CONTROL_AWB_LOCK, true);
+            frameReq.set(CaptureRequest.JPEG_ORIENTATION, recipe.orientation);
+            setFocusMode(frameReq);
+            setFlash(frameReq, false);
+            applyOpticalSettings(frameReq, false);
+            if (singleAf) {
+                frameReq.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                        i == 0 ? CaptureRequest.CONTROL_AF_TRIGGER_START : CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+            }
+            applyZoom(frameReq);
+            burstRequests.add(frameReq.build());
+        }
+
+        final long renderJob = captureJobs.begin();
+        final NightStackSession session = new NightStackSession(renderJob, rawCapture, recipe);
+        final InFlightBurstCapture<Image, TotalCaptureResult> burstToken =
+                new InFlightBurstCapture<>(nextCaptureId++, frameCount, rawCapture, recipe);
+
+        synchronized (captureLock) {
+            cancelActiveCaptureLocked();
+            activeBurstCapture = burstToken;
+            activeBurstSession = session;
+        }
+
+        final String toastMsg = lockManual
+                ? String.format(Locale.US, "✨ Stacking %d frames · %.2fs each…", frameCount, targetExp / 1_000_000_000f)
+                : String.format(Locale.US, "✨ Stacking %d night frames…", frameCount);
+        runOnUiThread(() -> {
+            updateGalleryProcessingUi();
+            showMessage(toastMsg);
+        });
+
+        captureSession.captureBurst(burstRequests, new CameraCaptureSession.CaptureCallback() {
+            @Override public void onCaptureCompleted(CameraCaptureSession camSession, CaptureRequest request, TotalCaptureResult result) {
+                InFlightBurstCapture.BurstStep<Image, TotalCaptureResult> step = null;
+                NightStackSession owningSession = null;
+                synchronized (captureLock) {
+                    if (activeBurstCapture == burstToken) {
+                        step = burstToken.attachResult(
+                                result, safeResultTimestamp(result), MainActivity.this::releaseCapturedImage);
+                        owningSession = activeBurstSession;
+                        if (step != null && step.isLast) {
+                            activeBurstCapture = null;
+                            activeBurstSession = null;
+                        }
+                    }
+                }
+                if (step != null) {
+                    handleBurstStep(step, owningSession);
+                }
+            }
+
+            @Override public void onCaptureFailed(CameraCaptureSession camSession, CaptureRequest request, CaptureFailure failure) {
+                InFlightBurstCapture.BurstStep<Image, TotalCaptureResult> step = null;
+                NightStackSession owningSession = null;
+                synchronized (captureLock) {
+                    if (activeBurstCapture == burstToken) {
+                        step = burstToken.markFrameFailed(MainActivity.this::releaseCapturedImage);
+                        owningSession = activeBurstSession;
+                        if (step != null && step.isLast) {
+                            activeBurstCapture = null;
+                            activeBurstSession = null;
+                        }
+                    }
+                }
+                if (step != null) {
+                    handleBurstStep(step, owningSession);
+                }
+            }
+
+            @Override public void onCaptureSequenceAborted(CameraCaptureSession camSession, int sequenceId) {
+                InFlightBurstCapture.BurstStep<Image, TotalCaptureResult> step = null;
+                NightStackSession owningSession = null;
+                synchronized (captureLock) {
+                    if (activeBurstCapture == burstToken) {
+                        step = burstToken.abortSequence(MainActivity.this::releaseCapturedImage);
+                        owningSession = activeBurstSession;
+                        if (step != null && step.isLast) {
+                            activeBurstCapture = null;
+                            activeBurstSession = null;
+                        }
+                    }
+                }
+                if (step != null) {
+                    handleBurstStep(step, owningSession);
+                }
+            }
+        }, cameraHandler);
     }
 
     private float samplePreviewMidTarget() {
@@ -5475,25 +5942,39 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         textureView.invalidate();
     }
 
+    private boolean isNightStackingActive() {
+        String astroSetting = AppSettings.get(this, AppSettings.ASTROPHOTOGRAPHY, "Auto (when stationary at night)");
+        RawArchive.Frame meteredPreview = previewColourMetadata;
+        long meteredExposure = meteredPreview == null ? 0L : meteredPreview.exposureTimeNs;
+        int meteredIso = meteredPreview == null ? 0 : meteredPreview.sensitivityIso;
+        boolean manualExposure = AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual");
+        String flashMode = AppSettings.get(this, AppSettings.FLASH, "Off");
+        return CameraExposureHelper.shouldUseNightIntegration(
+                astroSetting, motion.stationary(), manualExposure, meteredExposure, meteredIso, flashMode);
+    }
+
     private void updateContextualStatus() {
         if (modeNote == null) return;
+        final String status;
         if (videoMode) {
             String fps = AppSettings.get(this, AppSettings.VIDEO_FPS, "24 fps (Cinematic)");
             String fpsTag = fps.startsWith("24") ? "24 FPS CINEMATIC" : fps.startsWith("30") ? "30 FPS" : "60 FPS";
-            modeNote.setText(videoState.isRecordingOrPaused() ? "TAP ⟳ TO SWITCH" : "CINEMATIC VIDEO · " + fpsTag);
-            return;
-        }
-        boolean easy = AppSettings.getBoolean(this, AppSettings.EASY_MODE, true);
-        String astroPref = AppSettings.get(this, AppSettings.ASTROPHOTOGRAPHY, "Auto (when stationary at night)");
-        boolean astroActive = !astroPref.startsWith("Off") && (motion.stationary() || astroPref.startsWith("Always"));
-        if (astroActive) {
-            modeNote.setText("✨ ASTRO / NIGHT STACKING");
-        } else if (isCustomLookActive()) {
-            modeNote.setText("CUSTOM LOOK ACTIVE");
-        } else if (easy) {
-            modeNote.setText("INTELLIGENT AUTO");
+            status = videoState.isRecordingOrPaused() ? "TAP ⟳ TO SWITCH" : "CINEMATIC VIDEO · " + fpsTag;
         } else {
-            modeNote.setText("MANUAL PHOTO · TAP HUD");
+            boolean easy = AppSettings.getBoolean(this, AppSettings.EASY_MODE, true);
+            if (isNightStackingActive()) {
+                status = "✨ ASTRO / NIGHT STACKING";
+            } else if (isCustomLookActive()) {
+                status = "CUSTOM LOOK ACTIVE";
+            } else if (easy) {
+                status = "INTELLIGENT AUTO";
+            } else {
+                status = "MANUAL PHOTO · TAP HUD";
+            }
+        }
+        CharSequence currentText = modeNote.getText();
+        if (currentText == null || !status.contentEquals(currentText)) {
+            modeNote.setText(status);
         }
     }
 
@@ -6318,6 +6799,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
         }
         updateTelemetryVisibility();
+        updateContextualStatus();
     }
 
     private void updateTelemetryVisibility() {
@@ -7344,10 +7826,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         closeReader(rawReader); rawReader = null;
         closeReader(jpegReader); jpegReader = null;
         synchronized (captureLock) {
-            if (activeCapture != null) {
-                activeCapture.cancel(MainActivity.this::releaseCapturedImage);
-                activeCapture = null;
-            }
+            cancelActiveCaptureLocked();
         }
         cameraLifecycleState = CameraLifecycleState.CLOSED;
     }

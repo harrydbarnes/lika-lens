@@ -135,8 +135,32 @@ public class CameraExposureHelperTest {
         assertTrue(CameraExposureHelper.shouldUseNightIntegration("Auto",true,false,33_000_000L,1600));
         assertTrue(CameraExposureHelper.shouldUseNightIntegration("Always",false,false,10_000_000L,100));
         assertFalse(CameraExposureHelper.shouldUseNightIntegration("Off",true,false,33_000_000L,1600));
+        assertFalse(CameraExposureHelper.shouldUseNightIntegration("Auto",true,false,33_000_000L,1600,"Auto"));
+        assertFalse(CameraExposureHelper.shouldUseNightIntegration("Auto",true,false,33_000_000L,1600,"Torch"));
+        assertFalse(CameraExposureHelper.shouldUseNightIntegration("Always",true,false,33_000_000L,1600,"Torch"));
+        assertTrue(CameraExposureHelper.shouldUseNightIntegration("Auto",true,false,33_000_000L,1600,"Off"));
         assertEquals(132_000_000L,CameraExposureHelper.matchedNightExposure(33_000_000L,800,200,2_000_000_000L));
         assertEquals(2_000_000_000L,CameraExposureHelper.matchedNightExposure(500_000_000L,3200,200,2_000_000_000L));
+    }
+
+    @Test public void computeNightStackParametersCapsShutterAndScalesIso() {
+        long[] modDim = CameraExposureHelper.computeNightStackParameters(
+                "Auto", 33_000_000L, 800, 100_000L, 4_000_000_000L, 50, 6400);
+        assertEquals(132_000_000L, modDim[0]);
+        assertEquals(200L, modDim[1]);
+        assertEquals(CameraExposureHelper.NIGHT_STACK_FRAME_COUNT, modDim[2]);
+
+        long[] veryDark = CameraExposureHelper.computeNightStackParameters(
+                "Auto", 500_000_000L, 1600, 100_000L, 4_000_000_000L, 50, 6400);
+        assertEquals(CameraExposureHelper.MAX_NIGHT_STACK_FRAME_NS, veryDark[0]);
+        assertEquals(800L, veryDark[1]);
+        assertEquals(CameraExposureHelper.NIGHT_STACK_FRAME_COUNT, veryDark[2]);
+
+        long[] uncalibrated = CameraExposureHelper.computeNightStackParameters(
+                "Always", 0L, 0, 100_000L, 2_000_000_000L, 100, 3200);
+        assertEquals(CameraExposureHelper.MAX_NIGHT_STACK_FRAME_NS, uncalibrated[0]);
+        assertEquals(200L, uncalibrated[1]);
+        assertEquals(CameraExposureHelper.NIGHT_STACK_FRAME_COUNT, uncalibrated[2]);
     }
 
     @Test
