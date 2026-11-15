@@ -5898,23 +5898,30 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void animateZoomTo(float targetZoom) {
+        animateZoomTo(targetZoom, 260L, null);
+    }
+
+    private void animateZoomTo(float targetZoom, long durationMs, Runnable onComplete) {
         hapticDetent();
         if (zoomAnimator != null) zoomAnimator.cancel();
         if (captureSession == null || previewRequest == null) {
             requestedZoom = targetZoom;
             updateLensButtons(targetZoom);
+            if (onComplete != null) onComplete.run();
             return;
         }
         float startZoom = requestedZoom;
         if (Math.abs(startZoom - targetZoom) < 0.01f) {
             requestedZoom = targetZoom;
             updateLensButtons(targetZoom);
+            if (onComplete != null) onComplete.run();
             return;
         }
         zoomAnimator = ValueAnimator.ofFloat(startZoom, targetZoom);
-        zoomAnimator.setDuration(260);
+        zoomAnimator.setDuration(durationMs);
         zoomAnimator.setInterpolator(new DecelerateInterpolator(1.5f));
         final long[] lastRequestTime = {0L};
+        final boolean[] cancelled = {false};
         zoomAnimator.addUpdateListener(animation -> {
             requestedZoom = (float) animation.getAnimatedValue();
             updateZoomSliderUi();
@@ -5931,7 +5938,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
         });
         zoomAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationCancel(android.animation.Animator animation) {
+                cancelled[0] = true;
+            }
             @Override public void onAnimationEnd(android.animation.Animator animation) {
+                if (cancelled[0]) return;
                 requestedZoom = targetZoom;
                 if (previewRequest != null && captureSession != null) {
                     try {
@@ -5943,6 +5954,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 }
                 updateLensButtons(targetZoom);
                 updateZoomSliderUi();
+                if (onComplete != null) onComplete.run();
             }
         });
         updateLensButtons(targetZoom);
