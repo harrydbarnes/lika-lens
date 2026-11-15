@@ -268,4 +268,17 @@ public final class CameraExposureHelper {
         return Math.max(factor, minZoomRatio);
     }
 
+    /**
+     * Returns a zoom target to animate smoothly in the current session before reconfiguring
+     * streams across RAW/wide-JPEG mode boundaries, or -1f to reconfigure immediately.
+     */
+    static float preReconfigAnimationTarget(boolean currentForceJpegWide, boolean targetForceJpegWide,
+            float currentZoom, float targetZoom) {
+        if (currentForceJpegWide == targetForceJpegWide) return -1f;
+        if (currentForceJpegWide) {
+            return targetZoom;
+        }
+        return currentZoom > 1.05f ? 1.0f : -1f;
+    }
+
 }

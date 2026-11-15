@@ -183,4 +183,14 @@ public class CameraExposureHelperTest {
         assertFalse(CameraExposureHelper.canZoomOnCamera(false, 0.5f, 30.0f, true, 0.5f));
     }
 
+    @Test
+    public void preReconfigAnimationTargetBridgesStreamTransitions() {
+        assertEquals(1.0f, CameraExposureHelper.preReconfigAnimationTarget(true, false, 0.5f, 1.0f), 0.0001f);
+        assertEquals(2.0f, CameraExposureHelper.preReconfigAnimationTarget(true, false, 0.5f, 2.0f), 0.0001f);
+        assertEquals(1.0f, CameraExposureHelper.preReconfigAnimationTarget(false, true, 5.0f, 0.5f), 0.0001f);
+        assertEquals(-1f, CameraExposureHelper.preReconfigAnimationTarget(false, true, 1.0f, 0.5f), 0.0001f);
+        assertEquals(-1f, CameraExposureHelper.preReconfigAnimationTarget(false, false, 1.0f, 2.0f), 0.0001f);
+        assertEquals(-1f, CameraExposureHelper.preReconfigAnimationTarget(true, true, 0.5f, 0.7f), 0.0001f);
+    }
+
 }
