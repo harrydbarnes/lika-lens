@@ -79,16 +79,34 @@ final class UiKit {
         }
     }
 
+    @SuppressWarnings("deprecation")
     static void keepSheetAboveNavigationBar(FrameLayout scrim, View sheet) {
         if (scrim == null || sheet == null) return;
         scrim.setOnApplyWindowInsetsListener((view, insets) -> {
-            int bottomInset = Build.VERSION.SDK_INT >= 30
-                    ? insets.getInsets(WindowInsets.Type.navigationBars()).bottom
-                    : insets.getSystemWindowInsetBottom();
+            int leftInset;
+            int rightInset;
+            int bottomInset;
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets safeInsets = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                leftInset = safeInsets.left;
+                rightInset = safeInsets.right;
+                bottomInset = safeInsets.bottom;
+            } else {
+                leftInset = insets.getSystemWindowInsetLeft();
+                rightInset = insets.getSystemWindowInsetRight();
+                bottomInset = insets.getSystemWindowInsetBottom();
+            }
+
+            // Navigation may occupy the bottom in portrait or either side in landscape.
             ViewGroup.LayoutParams params = sheet.getLayoutParams();
             if (params instanceof FrameLayout.LayoutParams) {
                 FrameLayout.LayoutParams sheetParams = (FrameLayout.LayoutParams) params;
-                if (sheetParams.bottomMargin != bottomInset) {
+                if (sheetParams.leftMargin != leftInset
+                        || sheetParams.rightMargin != rightInset
+                        || sheetParams.bottomMargin != bottomInset) {
+                    sheetParams.leftMargin = leftInset;
+                    sheetParams.rightMargin = rightInset;
                     sheetParams.bottomMargin = bottomInset;
                     sheet.setLayoutParams(sheetParams);
                 }
