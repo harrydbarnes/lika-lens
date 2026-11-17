@@ -1410,6 +1410,7 @@ public class SettingsActivity extends Activity {
                 Gravity.BOTTOM
         );
         scrim.addView(sheet, sheetLp);
+        UiKit.keepSheetAboveNavigationBar(scrim, sheet);
         dialog.setContentView(scrim);
         dialog.show();
     }
