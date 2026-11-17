@@ -5,12 +5,14 @@ import android.app.Dialog;
 import android.content.Context;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
+import android.os.Build;
 import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -77,6 +79,24 @@ final class UiKit {
         }
     }
 
+    static void keepSheetAboveNavigationBar(FrameLayout scrim, View sheet) {
+        if (scrim == null || sheet == null) return;
+        scrim.setOnApplyWindowInsetsListener((view, insets) -> {
+            int bottomInset = Build.VERSION.SDK_INT >= 30
+                    ? insets.getInsets(WindowInsets.Type.navigationBars()).bottom
+                    : insets.getSystemWindowInsetBottom();
+            ViewGroup.LayoutParams params = sheet.getLayoutParams();
+            if (params instanceof FrameLayout.LayoutParams) {
+                FrameLayout.LayoutParams sheetParams = (FrameLayout.LayoutParams) params;
+                if (sheetParams.bottomMargin != bottomInset) {
+                    sheetParams.bottomMargin = bottomInset;
+                    sheet.setLayoutParams(sheetParams);
+                }
+            }
+            return insets;
+        });
+    }
+
     static Dialog createBottomSheetDialog(Activity activity, FrameLayout scrim, LinearLayout sheet, int maxWidthDp) {
         Dialog dialog = new Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar);
         Window window = dialog.getWindow();
@@ -101,6 +121,7 @@ final class UiKit {
                 Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
         );
         scrim.addView(sheet, sheetLp);
+        keepSheetAboveNavigationBar(scrim, sheet);
         dialog.setContentView(scrim);
         return dialog;
     }
