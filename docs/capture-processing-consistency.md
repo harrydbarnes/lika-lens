@@ -11,6 +11,8 @@ travel with the image/result pair rather than being read again after the camera 
 - JPEG fallback honours all eight EXIF transforms before grading/cropping. An explicit NORMAL
   tag means the HAL has already oriented the pixels. Only a missing tag uses the frozen
   Camera2 orientation. Exported JPEG pixels are upright and tagged NORMAL.
+- RAW comparison in the viewer restores `flipHorizontal` from the photo's saved capture recipe,
+  so held selfie originals use the same mirror direction as their developed JPEG.
 - This affects newly captured files. Existing DNG files are not rewritten.
 
 ## Preview
@@ -90,3 +92,5 @@ Before releasing to users, test a real camera device:
 8. Verify Camera2 manual focus diopter range, optional 5× loupe activation (`LOUPE_ON_MF_ADJUST`
    and manual pill), 25 fps PAL / HLG10 HDR / 180° shutter Auto-ISO video, and ringer-mode shutter
    sound compliance.
+9. Capture front-camera selfies with mirroring enabled and disabled; hold to compare the RAW original
+   and confirm its display direction matches the processed JPEG.
