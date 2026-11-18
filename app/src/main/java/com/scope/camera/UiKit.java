@@ -5,12 +5,14 @@ import android.app.Dialog;
 import android.content.Context;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
+import android.os.Build;
 import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -77,6 +79,42 @@ final class UiKit {
         }
     }
 
+    @SuppressWarnings("deprecation")
+    static void keepSheetAboveNavigationBar(FrameLayout scrim, View sheet) {
+        if (scrim == null || sheet == null) return;
+        scrim.setOnApplyWindowInsetsListener((view, insets) -> {
+            int leftInset;
+            int rightInset;
+            int bottomInset;
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets safeInsets = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                leftInset = safeInsets.left;
+                rightInset = safeInsets.right;
+                bottomInset = safeInsets.bottom;
+            } else {
+                leftInset = insets.getSystemWindowInsetLeft();
+                rightInset = insets.getSystemWindowInsetRight();
+                bottomInset = insets.getSystemWindowInsetBottom();
+            }
+
+            // Navigation may occupy the bottom in portrait or either side in landscape.
+            ViewGroup.LayoutParams params = sheet.getLayoutParams();
+            if (params instanceof FrameLayout.LayoutParams) {
+                FrameLayout.LayoutParams sheetParams = (FrameLayout.LayoutParams) params;
+                if (sheetParams.leftMargin != leftInset
+                        || sheetParams.rightMargin != rightInset
+                        || sheetParams.bottomMargin != bottomInset) {
+                    sheetParams.leftMargin = leftInset;
+                    sheetParams.rightMargin = rightInset;
+                    sheetParams.bottomMargin = bottomInset;
+                    sheet.setLayoutParams(sheetParams);
+                }
+            }
+            return insets;
+        });
+    }
+
     static Dialog createBottomSheetDialog(Activity activity, FrameLayout scrim, LinearLayout sheet, int maxWidthDp) {
         Dialog dialog = new Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar);
         Window window = dialog.getWindow();
@@ -101,6 +139,7 @@ final class UiKit {
                 Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
         );
         scrim.addView(sheet, sheetLp);
+        keepSheetAboveNavigationBar(scrim, sheet);
         dialog.setContentView(scrim);
         return dialog;
     }

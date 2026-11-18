@@ -1492,8 +1492,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         focusToggleButton.setOnLongClickListener(v -> { hapticClick(v); toggleQuickManualFocus(); return true; });
 
         loupeToggleButton = pill("5×", false);
-        loupeToggleButton.setMinimumWidth(dp(36));
+        loupeToggleButton.setMinimumWidth(dp(50));
         loupeToggleButton.setPadding(dp(8), 0, dp(8), 0);
+        setPillIcon(loupeToggleButton, R.drawable.ic_focus_loupe, 15, 0xffe9ede6, 4, "5×");
         loupeToggleButton.setContentDescription("Toggle 5× focus loupe");
         loupeToggleButton.setOnClickListener(v -> { hapticClick(v); setManualLoupeActive(!manualLoupeActive); });
 
@@ -4290,8 +4291,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (flashButton != null) {
             boolean flashAvailable = flashSupported || isFrontCamera();
             String flash = AppSettings.get(this, AppSettings.FLASH, "Off");
+            if (!isFrontCamera() && "Max".equalsIgnoreCase(flash)) flash = "Auto";
             String flashLabel = !flashAvailable ? "OFF" : flash.toUpperCase(Locale.US);
-            int flashColor = "Off".equals(flash) || !flashAvailable ? 0xffe9ede6 : ACCENT;
+            int flashColor = "Off".equalsIgnoreCase(flash) || !flashAvailable ? 0xffe9ede6 : ACCENT;
             setPillIcon(flashButton, R.drawable.ic_flash, 16, flashColor, 4, flashLabel);
             flashButton.setAlpha(flashAvailable ? 1f : .72f);
         }
@@ -4311,11 +4313,21 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             return;
         }
         String current = AppSettings.get(this, AppSettings.FLASH, "Off");
-        String next = current.startsWith("Off") ? "Auto" : current.startsWith("Auto") ? "Torch" : "Off";
+        String next;
+        if (front) {
+            next = current.startsWith("Off") ? "Auto"
+                    : current.startsWith("Auto") ? "Torch"
+                    : current.startsWith("Torch") ? "Max" : "Off";
+        } else {
+            if ("Max".equalsIgnoreCase(current)) current = "Auto";
+            next = current.startsWith("Off") ? "Auto" : current.startsWith("Auto") ? "Torch" : "Off";
+        }
         AppSettings.prefs(this).edit().putString(AppSettings.FLASH, next).apply();
         updateQuickButtons();
         updateContextualStatus();
-        if (front && !"Off".equals(next)) {
+        if (front && "Max".equals(next)) {
+            showMessage("MAX SCREEN FLASH · Full white illumination");
+        } else if (front && !"Off".equals(next)) {
             showMessage("RETINA SCREEN FLASH · Warm illumination active");
         }
         refreshPreviewRequest();
@@ -5690,7 +5702,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if(Float.isNaN(originalFlashBrightness)) originalFlashBrightness=lp.screenBrightness;
                 lp.screenBrightness = 1.0f;
                 getWindow().setAttributes(lp);
-                screenFlashOverlay.setAlpha(0.95f);
+                boolean maxScreenFlash = "Max".equalsIgnoreCase(flashMode);
+                screenFlashOverlay.setBackgroundColor(maxScreenFlash ? 0xffffffff : 0xfffff4e0);
+                screenFlashOverlay.setAlpha(maxScreenFlash ? 1f : 0.95f);
                 screenFlashOverlay.setVisibility(View.VISIBLE);
                 cameraHandler.postDelayed(() -> {
                     if (delayedCaptureEpoch.owns(flashTicket) && activityResumed && stillCaptureState == StillCaptureState.SCREEN_FLASH) {
@@ -5705,7 +5719,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                             restoreScreenFlashBrightness();
                         }).start();
                     });
-                }, 320L);
+                }, "Max".equalsIgnoreCase(flashMode) ? 450L : 320L);
             });
         } else {
             stillCaptureState = StillCaptureState.CAPTURING;
@@ -6480,6 +6494,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 Gravity.BOTTOM
         );
         scrim.addView(sheet, sheetLp);
+        UiKit.keepSheetAboveNavigationBar(scrim, sheet);
         dialog.setContentView(scrim);
         dialog.show();
     }
@@ -7682,8 +7697,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void updateLoupeButtonUi() {
         if (loupeToggleButton == null) return;
         boolean active = manualLoupeActive && !videoMode;
-        loupeToggleButton.setTextColor(active ? BG : 0xffe9ede6);
+        int tint = active ? BG : 0xffe9ede6;
         loupeToggleButton.setBackground(round(active ? ACCENT : 0xd8191e1e, 22, active ? ACCENT : 0x556e7872, dp(1)));
+        setPillIcon(loupeToggleButton, R.drawable.ic_focus_loupe, 15, tint, 4, "5×");
     }
 
     private void applyManualFocusToPreview(float diopters, boolean forceSend) {
@@ -8039,6 +8055,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void setFlash(CaptureRequest.Builder builder, boolean preview) {
         String mode = AppSettings.get(this, AppSettings.FLASH, "Off");
+        if (!isFrontCamera() && "Max".equalsIgnoreCase(mode)) mode = "Auto";
         if (!flashSupported) {
             builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
             return;

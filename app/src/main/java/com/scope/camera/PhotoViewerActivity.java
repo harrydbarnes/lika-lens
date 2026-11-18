@@ -315,6 +315,8 @@ public class PhotoViewerActivity extends Activity {
                 if (!RawArchive.exists(appContext, keyForLoad)) return;
                 RawArchive.Frame frame = RawArchive.read(appContext, keyForLoad);
                 RawDeveloper.Look neutral = buildNeutralRawLook(frame);
+                RawDeveloper.Look savedCaptureLook = PhotoEditStore.load(appContext, keyForLoad);
+                neutral.flipHorizontal = savedCaptureLook != null && savedCaptureLook.flipHorizontal;
                 int targetDim = Math.max(1200, Math.max(targetW, targetH));
                 Bitmap rawBmp = RawDeveloper.develop(frame, neutral, targetDim);
                 if (rawBmp != null && targetW > 0 && targetH > 0
