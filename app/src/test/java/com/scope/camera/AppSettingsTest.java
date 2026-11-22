@@ -205,4 +205,23 @@ public class AppSettingsTest {
         assertTrue(updates2.isEmpty());
         assertTrue(removals2.isEmpty());
     }
+
+    @Test
+    public void testLoupeAndHorizonProjectionHelpers() {
+        assertEquals(AppSettings.LOUPE_MODE_OFF, AppSettings.formatLoupeMode(false, false));
+        assertEquals(AppSettings.LOUPE_MODE_MF, AppSettings.formatLoupeMode(true, false));
+        assertEquals(AppSettings.LOUPE_MODE_TAP, AppSettings.formatLoupeMode(false, true));
+        assertEquals(AppSettings.LOUPE_MODE_BOTH, AppSettings.formatLoupeMode(true, true));
+
+        assertEquals(AppSettings.HORIZON_LEVEL_OFF,
+                AppSettings.formatHorizonLevel(false, "Always visible", "Precise (±0.5°)"));
+        assertEquals(AppSettings.HORIZON_LEVEL_SMART_NORMAL,
+                AppSettings.formatHorizonLevel(true, "Smart (near level only)", "Normal (±1.0°)"));
+        assertEquals(AppSettings.HORIZON_LEVEL_SMART_PRECISE,
+                AppSettings.formatHorizonLevel(true, "Smart (near level only)", "Precise (±0.5°)"));
+        assertEquals(AppSettings.HORIZON_LEVEL_ALWAYS_NORMAL,
+                AppSettings.formatHorizonLevel(true, "Always visible", "Normal (±1.0°)"));
+        assertEquals(AppSettings.HORIZON_LEVEL_ALWAYS_PRECISE,
+                AppSettings.formatHorizonLevel(true, "Always visible", "Precise (±0.5°)"));
+    }
 }

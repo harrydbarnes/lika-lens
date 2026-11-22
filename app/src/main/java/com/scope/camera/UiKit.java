@@ -143,4 +143,57 @@ final class UiKit {
         dialog.setContentView(scrim);
         return dialog;
     }
+
+    static Dialog createModalCardDialog(Activity activity, FrameLayout scrim, LinearLayout card,
+                                        int maxWidthDp, float widthFraction) {
+        Dialog dialog = new Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(0));
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+        }
+        scrim.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setBackgroundColor(0x77000000);
+        scrim.setOnClickListener(v -> dialog.dismiss());
+
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setClickable(true);
+        card.setBackground(round(activity, 0xff0e1314, 18, 0xff2a3233, dp(activity, 1)));
+        card.setPadding(dp(activity, 20), dp(activity, 18), dp(activity, 20), dp(activity, 18));
+
+        int dialogWidth = Math.min(dp(activity, maxWidthDp),
+                Math.round(activity.getResources().getDisplayMetrics().widthPixels * widthFraction));
+        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
+                dialogWidth,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+        );
+        scrim.addView(card, boxLp);
+        dialog.setContentView(scrim);
+        return dialog;
+    }
+
+    static LinearLayout createDialogActionRow(Context context,
+                                              String negativeLabel, Runnable onNegative,
+                                              String positiveLabel, Runnable onPositive) {
+        LinearLayout actions = new LinearLayout(context);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        TextView neg = pill(context, negativeLabel, false, 8f, 20f,
+                ACCENT, 0xffd8ded7, 0xff1d1d1a, 0xff202626, ACCENT, 0xff39413e);
+        neg.setPadding(dp(context, 9), 0, dp(context, 9), 0);
+        LinearLayout.LayoutParams negLp = new LinearLayout.LayoutParams(0, dp(context, 36), 1f);
+        negLp.rightMargin = dp(context, 6);
+        actions.addView(neg, negLp);
+        if (onNegative != null) neg.setOnClickListener(v -> onNegative.run());
+
+        TextView pos = pill(context, positiveLabel, true, 8f, 20f,
+                ACCENT, 0xffd8ded7, 0xff1d1d1a, 0xff202626, ACCENT, 0xff39413e);
+        pos.setPadding(dp(context, 9), 0, dp(context, 9), 0);
+        LinearLayout.LayoutParams posLp = new LinearLayout.LayoutParams(0, dp(context, 36), 1f);
+        posLp.leftMargin = dp(context, 6);
+        actions.addView(pos, posLp);
+        if (onPositive != null) pos.setOnClickListener(v -> onPositive.run());
+        return actions;
+    }
 }

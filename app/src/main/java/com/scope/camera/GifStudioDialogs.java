@@ -88,13 +88,12 @@ public final class GifStudioDialogs {
     }
 
     public static ProgressHandle showExportProgressDialog(Activity activity) {
-        Dialog progressDialog = new Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar);
-        progressDialog.setCancelable(false);
         FrameLayout scrim = new FrameLayout(activity);
-        scrim.setBackgroundColor(0x99000000);
-
         LinearLayout card = new LinearLayout(activity);
-        card.setOrientation(LinearLayout.VERTICAL);
+        Dialog progressDialog = UiKit.createModalCardDialog(activity, scrim, card, 360, 0.88f);
+        progressDialog.setCancelable(false);
+        scrim.setBackgroundColor(0x99000000);
+        scrim.setOnClickListener(null);
         card.setBackground(round(activity, SURFACE, 18, BORDER, dp(activity, 1)));
         card.setPadding(dp(activity, 24), dp(activity, 22), dp(activity, 24), dp(activity, 22));
 
@@ -112,12 +111,7 @@ public final class GifStudioDialogs {
         progress.setProgress(5);
         card.addView(progress, new LinearLayout.LayoutParams(-1, dp(activity, 8)));
 
-        int cardW = Math.min(dp(activity, 360), activity.getResources().getDisplayMetrics().widthPixels - dp(activity, 48));
-        FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(cardW, -2, Gravity.CENTER);
-        scrim.addView(card, cardLp);
-        progressDialog.setContentView(scrim);
         progressDialog.show();
-
         return new ProgressHandle(progressDialog, status, progress);
     }
 
@@ -131,12 +125,10 @@ public final class GifStudioDialogs {
             Runnable onViewAction,
             Runnable onCloseAction
     ) {
-        Dialog dialog = new Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar);
         FrameLayout scrim = new FrameLayout(activity);
-        scrim.setBackgroundColor(0xaa000000);
-
         LinearLayout card = new LinearLayout(activity);
-        card.setOrientation(LinearLayout.VERTICAL);
+        Dialog dialog = UiKit.createModalCardDialog(activity, scrim, card, 380, 0.90f);
+        scrim.setBackgroundColor(0xaa000000);
         card.setBackground(round(activity, SURFACE, 20, BORDER, dp(activity, 1)));
         card.setPadding(dp(activity, 22), dp(activity, 20), dp(activity, 22), dp(activity, 20));
 
@@ -184,10 +176,6 @@ public final class GifStudioDialogs {
         });
         card.addView(done);
 
-        int cardW = Math.min(dp(activity, 380), activity.getResources().getDisplayMetrics().widthPixels - dp(activity, 40));
-        FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(cardW, -2, Gravity.CENTER);
-        scrim.addView(card, cardLp);
-        dialog.setContentView(scrim);
         dialog.show();
     }
 }

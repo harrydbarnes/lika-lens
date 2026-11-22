@@ -169,8 +169,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private Runnable timerCountdownRunnable;
     private final RequestEpoch delayedCaptureEpoch = new RequestEpoch();
     private float originalFlashBrightness=Float.NaN;
-    private final InteractionState.Detection dirtyLens = new InteractionState.Detection(6,90000);
-    private final InteractionState.Detection palm = new InteractionState.Detection(4,8000);
+    private final ExposureAidsAnalyzer exposureAidsAnalyzer = new ExposureAidsAnalyzer();
     private TextView zoomSliderValue;
     private final List<TextView> lensButtons = new ArrayList<>();
     private CompositionGrid gridOverlay;
@@ -636,19 +635,24 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private Size videoSize;
 
     // Live exposure aids state (32-bin histogram + 24x24 zebra & peaking grid)
-    private final Object exposureAidLock = new Object();
     private final AtomicBoolean exposureAidBusy = new AtomicBoolean(false);
-    private final int[] liveHistogramBins = new int[32];
-    private final int[] liveHistR = new int[32];
-    private final int[] liveHistG = new int[32];
-    private final int[] liveHistB = new int[32];
-    private boolean liveHighlightClipped = false;
-    private boolean liveShadowClipped = false;
-    private static final int EXPOSURE_GRID_SIZE = 24;
-    private final boolean[] liveZebraCells = new boolean[EXPOSURE_GRID_SIZE * EXPOSURE_GRID_SIZE];
-    private final boolean[] livePeakingCells = new boolean[EXPOSURE_GRID_SIZE * EXPOSURE_GRID_SIZE];
-    private int[] liveSamplePixels = new int[64 * 48];
-    private int[] liveSampleLuma = new int[64 * 48];
+    private static final int EXPOSURE_GRID_SIZE = ExposureAidsAnalyzer.GRID_SIZE;
+    private final ExposureAidsAnalyzer.Callback exposureAidsCallback = new ExposureAidsAnalyzer.Callback() {
+        @Override public void onDirtyLensDetected() {
+            runOnUiThread(() -> showMessage("Wipe lens · Smudge or haze detected"));
+        }
+        @Override public void onPalmDetected() {
+            runOnUiThread(() -> {
+                if (!stillCaptureState.isBusy() && !videoMode && !videoState.isRecordingOrPaused()) {
+                    showMessage("✋ Palm detected · 3s timer");
+                    startTimerCountdown(3);
+                }
+            });
+        }
+        @Override public void onVideo180MeanLuma(double meanLuma) {
+            updateVideo180AutoIsoFromLuma(meanLuma);
+        }
+    };
     private final Runnable exposureAidsSampler = new Runnable() {
         @Override public void run() {
             final TextureView tv = textureView;
@@ -657,7 +661,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 final boolean wantHist = prefHistogram;
                 final boolean wantZebra = prefZebra;
                 final boolean wantPeak = prefFocusPeaking;
-                final boolean wantDirty = prefDirtyLensWarning && !isFrontCamera();
+                final boolean wantDirty = exposureAidsAnalyzer.shouldCheckDirtyLens(
+                        cameraId, prefDirtyLensWarning, isFrontCamera());
                 final boolean wantPalm = prefPalmTimer
                         && !videoMode && !videoState.isRecordingOrPaused() && !stillCaptureState.isBusy();
                 final boolean want180Luma = videoMode && video180Active && !aeLocked && isVideo180Requested();
@@ -678,7 +683,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         final int sampleH = sampleRef.getHeight();
                         ioExecutor.execute(() -> {
                             try {
-                                computeExposureAids(sampleRef, sampleW, sampleH, wantHist, wantZebra, wantPeak, wantDirty, wantPalm, want180Luma);
+                                boolean palmAllowed = !stillCaptureState.isBusy() && !videoMode && !videoState.isRecordingOrPaused();
+                                exposureAidsAnalyzer.analyzeBitmap(sampleRef, sampleW, sampleH,
+                                        wantHist, wantZebra, wantPeak, wantDirty, wantPalm, want180Luma,
+                                        palmAllowed, SystemClock.elapsedRealtime(), exposureAidsCallback);
                                 if (wantHist || wantZebra || wantPeak) {
                                     grid.postInvalidate();
                                 }
@@ -693,235 +701,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         exposureAidBusy.set(false);
                     }
                 }
-                tv.postDelayed(this, (wantHist || wantZebra || wantPeak || wantPalm) ? 120L : want180Luma ? 320L : 450L);
+                long nextDelay = (wantHist || wantZebra || wantPeak || wantPalm) ? 120L
+                        : want180Luma ? 320L : 2000L;
+                tv.postDelayed(this, nextDelay);
                 return;
             }
             if (tv != null) tv.postDelayed(this, 450L);
         }
     };
-
-    private void checkPalmGesture(int[] px, int w, int h) {
-        long now = SystemClock.elapsedRealtime();
-        if (palm.cooling(now) || stillCaptureState.isBusy() || videoMode || videoState.isRecordingOrPaused()) {
-            palm.resetTracking();
-            return;
-        }
-        int yStart = Math.max(2, (int) (h * 0.08f));
-        int yEnd = Math.min(h - 2, (int) (h * 0.78f));
-        int xStart = Math.max(2, (int) (w * 0.08f));
-        int xEnd = Math.min(w - 2, (int) (w * 0.92f));
-        int skinCount = 0;
-        int minX = w, maxX = 0, minY = h, maxY = 0;
-
-        for (int y = yStart; y < yEnd; y++) {
-            int row = y * w;
-            for (int x = xStart; x < xEnd; x++) {
-                int c = px[row + x];
-                int r = (c >> 16) & 0xff;
-                int g = (c >> 8) & 0xff;
-                int b = c & 0xff;
-                if (isSkinTonePixel(r, g, b)) {
-                    skinCount++;
-                    if (x < minX) minX = x;
-                    if (x > maxX) maxX = x;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
-                }
-            }
-        }
-
-        int frameArea = w * h;
-        int boxW = maxX - minX + 1;
-        int boxH = maxY - minY + 1;
-        if (skinCount < frameArea * 0.035f || skinCount > frameArea * 0.30f || boxW < 8 || boxH < 9) {
-            palm.miss();
-            return;
-        }
-
-        float aspect = boxW / (float) boxH;
-        if (aspect < 0.48f || aspect > 1.55f) {
-            palm.miss();
-            return;
-        }
-
-        // Distinguish an open 5-finger raised palm from a solid oval face:
-        // Across the upper third of the hand bounding box (finger region), horizontal scanlines
-        // exhibit multiple skin-to-background finger transitions (>= 3 fingers separated by gaps).
-        int fingerZoneTop = minY + Math.max(1, boxH / 10);
-        int fingerZoneBottom = minY + Math.max(3, (boxH * 42) / 100);
-        int maxRunsInRow = 0;
-        int multiFingerRows = 0;
-        for (int y = fingerZoneTop; y <= fingerZoneBottom && y < h; y++) {
-            int row = y * w;
-            int runs = 0;
-            boolean inSkin = false;
-            for (int x = minX; x <= maxX && x < w; x++) {
-                int c = px[row + x];
-                boolean skin = isSkinTonePixel((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
-                if (skin && !inSkin) {
-                    runs++;
-                    inSkin = true;
-                } else if (!skin) {
-                    inSkin = false;
-                }
-            }
-            if (runs > maxRunsInRow) maxRunsInRow = runs;
-            if (runs >= 3) multiFingerRows++;
-        }
-
-        // Also check palm base solidity in the lower-middle half of the bounding box
-        int palmMidY = minY + (boxH * 62) / 100;
-        int palmSkinPixels = 0;
-        if (palmMidY < h) {
-            int row = palmMidY * w;
-            for (int x = minX; x <= maxX && x < w; x++) {
-                int c = px[row + x];
-                if (isSkinTonePixel((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff)) {
-                    palmSkinPixels++;
-                }
-            }
-        }
-        float palmSolidity = palmSkinPixels / (float) Math.max(1, boxW);
-
-        if (maxRunsInRow >= 3 && multiFingerRows >= 2 && palmSolidity >= 0.35f) {
-            if (palm.hit(now)) {
-                palm.resetTracking();
-
-                runOnUiThread(() -> {
-                    if (!stillCaptureState.isBusy() && !videoMode && !videoState.isRecordingOrPaused()) {
-                        showMessage("✋ Palm detected · 3s timer");
-                        startTimerCountdown(3);
-                    }
-                });
-            }
-        } else {
-            palm.miss();
-        }
-    }
-
-    private static boolean isSkinTonePixel(int r, int g, int b) {
-        int max = Math.max(r, Math.max(g, b));
-        int min = Math.min(r, Math.min(g, b));
-        return r > 85 && g > 38 && b > 20
-                && r > g && g >= (b - 10)
-                && (max - min) > 16
-                && (r - g) >= 10 && (r - b) >= 18;
-    }
-
-    private void checkDirtyLens(int[] luma, int w, int h) {
-        int total = w * h;
-        long sumLuma = 0;
-        int minLuma = 255;
-        int maxLuma = 0;
-        for (int i = 0; i < total; i++) {
-            int y = luma[i];
-            sumLuma += y;
-            if (y < minLuma) minLuma = y;
-            if (y > maxLuma) maxLuma = y;
-        }
-        int meanLuma = (int) (sumLuma / total);
-        if (meanLuma < 55 || meanLuma > 225) {
-            dirtyLens.resetTracking();
-            return;
-        }
-        long gradientSum = 0;
-        int edgeCount = 0;
-        for (int y = 1; y < h - 1; y++) {
-            int row = y * w;
-            for (int x = 1; x < w - 1; x++) {
-                int idx = row + x;
-                gradientSum += Math.abs(luma[idx + 1] - luma[idx - 1]) + Math.abs(luma[idx + w] - luma[idx - w]);
-                edgeCount += 2;
-            }
-        }
-        float avgGradient = edgeCount > 0 ? ((float) gradientSum / edgeCount) : 0f;
-        boolean hasSmudgeBloom = (minLuma > 36 && maxLuma >= 210 && avgGradient < 4.4f);
-        if (hasSmudgeBloom) {
-            if (dirtyLens.hit(SystemClock.elapsedRealtime()))
-                runOnUiThread(() -> showMessage("Wipe lens · Smudge or haze detected"));
-        } else {
-            dirtyLens.miss();
-        }
-    }
-
-    private void computeExposureAids(Bitmap bmp, int w, int h, boolean wantHist, boolean wantZebra, boolean wantPeak, boolean wantDirty, boolean wantPalm, boolean want180Luma) {
-        int total = w * h;
-        if (liveSamplePixels.length < total) {
-            liveSamplePixels = new int[total];
-            liveSampleLuma = new int[total];
-        }
-        int[] px = liveSamplePixels;
-        int[] luma = liveSampleLuma;
-        bmp.getPixels(px, 0, w, 0, 0, w, h);
-
-        int[] localHist = wantHist ? new int[32] : null;
-        int[] localR = wantHist ? new int[32] : null;
-        int[] localG = wantHist ? new int[32] : null;
-        int[] localB = wantHist ? new int[32] : null;
-        int clipHigh = 0;
-        int clipLow = 0;
-        long sumLuma = 0L;
-        for (int i = 0; i < total; i++) {
-            int c = px[i];
-            int r = (c >> 16) & 0xff;
-            int g = (c >> 8) & 0xff;
-            int b = c & 0xff;
-            int y = (r * 77 + g * 150 + b * 29) >> 8;
-            luma[i] = y;
-            if (want180Luma) {
-                sumLuma += y;
-            }
-            if (wantHist) {
-                int bin = Math.min(31, y >> 3);
-                localHist[bin]++;
-                localR[Math.min(31, r >> 3)]++;
-                localG[Math.min(31, g >> 3)]++;
-                localB[Math.min(31, b >> 3)]++;
-                if (y >= 250) clipHigh++;
-                if (y <= 4) clipLow++;
-            }
-        }
-        synchronized (exposureAidLock) {
-            if (wantHist) {
-                System.arraycopy(localHist, 0, liveHistogramBins, 0, 32);
-                System.arraycopy(localR, 0, liveHistR, 0, 32);
-                System.arraycopy(localG, 0, liveHistG, 0, 32);
-                System.arraycopy(localB, 0, liveHistB, 0, 32);
-                liveHighlightClipped = clipHigh > (total * 0.012f);
-                liveShadowClipped = clipLow > (total * 0.020f);
-            }
-            if (wantZebra || wantPeak) {
-                for (int cy = 0; cy < EXPOSURE_GRID_SIZE; cy++) {
-                    int sy = Math.min(h - 1, (cy * h + (h / 2)) / EXPOSURE_GRID_SIZE);
-                    int rowOff = sy * w;
-                    int gridRow = cy * EXPOSURE_GRID_SIZE;
-                    for (int cx = 0; cx < EXPOSURE_GRID_SIZE; cx++) {
-                        int idx = gridRow + cx;
-                        int sx = Math.min(w - 1, (cx * w + (w / 2)) / EXPOSURE_GRID_SIZE);
-                        int pIdx = rowOff + sx;
-                        int yVal = luma[pIdx];
-                        liveZebraCells[idx] = wantZebra && (yVal >= 242);
-                        if (wantPeak && sx > 0 && sx < w - 1 && sy > 0 && sy < h - 1) {
-                            int gx = Math.abs(luma[pIdx + 1] - luma[pIdx - 1]);
-                            int gy = Math.abs(luma[pIdx + w] - luma[pIdx - w]);
-                            livePeakingCells[idx] = (gx + gy) > 52;
-                        } else {
-                            livePeakingCells[idx] = false;
-                        }
-                    }
-                }
-            }
-        }
-        if (wantDirty) {
-            checkDirtyLens(luma, w, h);
-        }
-        if (wantPalm) {
-            checkPalmGesture(px, w, h);
-        }
-        if (want180Luma && total > 0) {
-            updateVideo180AutoIsoFromLuma(sumLuma / (double) total);
-        }
-    }
 
     private final Runnable hideZoomSlider = () -> {
         if (zoomSliderPanel != null && !gesture.is(InteractionState.Gesture.Mode.PINCH) && !gesture.is(InteractionState.Gesture.Mode.ZOOM_ROW) && !gesture.is(InteractionState.Gesture.Mode.ZOOM_SLIDER)) {
@@ -1247,7 +1034,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             videoRecoveryDialog.dismiss();
             videoRecoveryDialog = null;
         }
-        gesture.cancel();motion.reset();palm.resetTracking();dirtyLens.resetTracking();
+        gesture.cancel();motion.reset();exposureAidsAnalyzer.resetDetectors();
         videoLock.cancelHold();
         if(videoState.isQuickTake()) videoState.cancelPermissionPending();
         volumeKeyHandler.removeCallbacks(volumeQuickTakeRunnable);
@@ -6401,22 +6188,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void showCustomBottomSheet(String title, String[] items, String[] subtitles, int selectedIndex, BottomSheetCallback callback) {
-        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
-        }
-
         FrameLayout scrim = new FrameLayout(this);
-        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        scrim.setBackgroundColor(0x77000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
         LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setClickable(true);
-        sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
+        Dialog dialog = UiKit.createBottomSheetDialog(this, scrim, sheet, 600);
         sheet.setPadding(dp(20), dp(16), dp(20), dp(20));
 
         View handle = new View(this);
@@ -6487,15 +6261,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         cancelLp.topMargin = dp(12);
         sheet.addView(cancel, cancelLp);
         cancel.setOnClickListener(v -> dialog.dismiss());
-
-        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM
-        );
-        scrim.addView(sheet, sheetLp);
-        UiKit.keepSheetAboveNavigationBar(scrim, sheet);
-        dialog.setContentView(scrim);
         dialog.show();
     }
 
@@ -9023,24 +8788,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             final boolean showZebra = prefZebra;
             final boolean showPeaking = prefFocusPeaking;
             final boolean showHist = prefHistogram;
-            final boolean shadowClipped;
-            final boolean highlightClipped;
-            synchronized (exposureAidLock) {
-                shadowClipped = liveShadowClipped;
-                highlightClipped = liveHighlightClipped;
-                if (showZebra) {
-                    System.arraycopy(liveZebraCells, 0, drawZebraCells, 0, drawZebraCells.length);
-                }
-                if (showPeaking) {
-                    System.arraycopy(livePeakingCells, 0, drawPeakingCells, 0, drawPeakingCells.length);
-                }
-                if (showHist) {
-                    System.arraycopy(liveHistogramBins, 0, drawHistBins, 0, 32);
-                    System.arraycopy(liveHistR, 0, drawHistR, 0, 32);
-                    System.arraycopy(liveHistG, 0, drawHistG, 0, 32);
-                    System.arraycopy(liveHistB, 0, drawHistB, 0, 32);
-                }
-            }
+            final int clipFlags = exposureAidsAnalyzer.copyForDraw(
+                    showZebra, drawZebraCells,
+                    showPeaking, drawPeakingCells,
+                    showHist, drawHistBins, drawHistR, drawHistG, drawHistB);
+            final boolean shadowClipped = (clipFlags & 1) != 0;
+            final boolean highlightClipped = (clipFlags & 2) != 0;
 
             // Live Zebra Stripes & Focus Peaking Overlays
             if (showZebra || showPeaking) {

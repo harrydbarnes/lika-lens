@@ -175,8 +175,19 @@ final class RawArchive {
 
     static String formatArchiveSummary(Context context, String limitChoice) {
         File dir = archiveDirectory(context);
-        long bytes = calculateDirectoryBytes(dir);
-        int count = countArchives(dir);
+        long bytes = 0L;
+        int count = 0;
+        if (dir != null && dir.isDirectory()) {
+            File[] files = dir.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    if (f != null && f.isFile() && f.getName().endsWith(".sraw")) {
+                        bytes += f.length();
+                        count++;
+                    }
+                }
+            }
+        }
         String countLabel = count == 1 ? "1 editable original" : (count + " editable originals");
         return String.format(Locale.US, "%s used (%s) · Limit: %s", formatBytes(bytes), countLabel, limitChoice);
     }

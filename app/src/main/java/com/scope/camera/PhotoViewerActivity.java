@@ -109,9 +109,7 @@ public class PhotoViewerActivity extends Activity {
             getWindow().setColorMode(android.content.pm.ActivityInfo.COLOR_MODE_HDR);
         }
         if (Build.VERSION.SDK_INT >= 34) {
-            try {
-                Window.class.getMethod("setDesiredHdrHeadroom", float.class).invoke(getWindow(), 3.0f);
-            } catch (Throwable ignored) { }
+            getWindow().setDesiredHdrHeadroom(3.0f);
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(

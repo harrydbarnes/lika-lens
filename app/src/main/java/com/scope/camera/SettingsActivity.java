@@ -264,19 +264,16 @@ public class SettingsActivity extends Activity {
     private void populateLooksSettings() {
         addEditorHero();
         beginSection("LOOK & FILM BRAIN", "Point-and-shoot defaults and film rendering base.");
-        addSwitch("Easy point & shoot mode", "Simple automatic defaults; explicit look adjustments still take precedence", AppSettings.EASY_MODE, true);
+        addSwitch("Easy point & shoot mode", "Adaptive local tone, high-ISO chroma NR, and fluorescent neutralization; explicit look adjustments still take precedence", AppSettings.EASY_MODE, true);
         addChoice("Rendering brain", "Base film emulation for tone, colour, and contrast", AppSettings.BRAIN,
                 AppSettings.BRAIN_CHOICES, AppSettings.BRAIN_LIKA_FILM);
         addChoice("Film push / pull", "Shift contrast, shadow density, and grain like push/pull development", AppSettings.FILM_PUSH_PULL,
                 AppSettings.FILM_PUSH_PULL_CHOICES, AppSettings.FILM_PUSH_PULL_CHOICES[0]);
         addSwitch("Live film preview", "Preview your active film brain, adjustments, and LUT in the viewfinder", AppSettings.LIVE_FILM_PREVIEW, true);
 
-        beginSection("PRIMARY TONE & ADJUST PANEL", "Core exposure, warmth, highlights, shadows, and contrast defaults.");
+        beginSection("PRIMARY TONE & ADJUST PANEL", "Core exposure, warmth, and camera Adjust drawer controls (Highlights, Shadows & Contrast live in Tone Preview above).");
         addSlider("Exposure trim", "Exposure compensation in 0.1 EV steps", AppSettings.EXPOSURE, -20, 20, AppSettings.DEFAULT_EXPOSURE);
         addSlider("Warmth shift", "Shift the selected brain warmer or cooler", AppSettings.WARMTH, 0, 100, AppSettings.DEFAULT_WARMTH);
-        addSlider("Highlights", "Smooth roll-off for bright tones", AppSettings.HIGHLIGHTS, 0, 100, AppSettings.DEFAULT_HIGHLIGHTS);
-        addSlider("Shadows", "Shadow lift or depth control", AppSettings.SHADOWS, 0, 100, AppSettings.DEFAULT_SHADOWS);
-        addSlider("Contrast", "Overall midtone contrast", AppSettings.CONTRAST, 50, 150, AppSettings.DEFAULT_CONTRAST);
         int adjustCount = AppSettings.getAdjustControls(this).size();
         addInfo("Customise Adjust panel…",
                 adjustCount + (adjustCount == 1 ? " control active" : " controls active")
@@ -345,10 +342,6 @@ public class SettingsActivity extends Activity {
                 AppSettings.ASPECT_RATIOS, "4:3");
         addChoice("Default lens", "Camera lens requested on app launch where hardware supports it", AppSettings.DEFAULT_LENS,
                 new String[]{"Auto / Wide 1×", "Ultra-wide .5×", "Telephoto 2×/5×", "Last used"}, "Auto / Wide 1×");
-        addChoice("Flash mode", "Rear LED flash or front warm screen flash", AppSettings.FLASH,
-                new String[]{"Off", "Auto", "Torch"}, "Off");
-        addChoice("Self-timer", "Delay before shutter release", AppSettings.TIMER,
-                new String[]{"Off", "3 seconds", "10 seconds"}, "Off");
         addSwitch("Mirror front camera", "Flip front-camera selfies horizontally to match preview", AppSettings.MIRROR_FRONT, true);
         addChoice("Focus mode", "Autofocus behaviour or manual focus distance", AppSettings.FOCUS_MODE,
                 AppSettings.FOCUS_MODE_CHOICES, AppSettings.FOCUS_CONTINUOUS);
@@ -358,38 +351,44 @@ public class SettingsActivity extends Activity {
         beginSection("COMPOSITION & METERING AIDS", "Viewfinder overlays (not baked into saved photographs).");
         addChoice("Composition grid", "Framing guide inside the viewfinder", AppSettings.GRID_STYLE,
                 new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");
-        addSwitch("Visual level & horizon", "Horizon indicator and top-down flat-lay crosshair", AppSettings.VISUAL_LEVEL, true);
+        String currentHorizon = AppSettings.formatHorizonLevel(
+                AppSettings.getBoolean(this, AppSettings.VISUAL_LEVEL, true),
+                AppSettings.get(this, AppSettings.HORIZON_MODE, "Smart (near level only)"),
+                AppSettings.get(this, AppSettings.HORIZON_SENSITIVITY, "Normal (±1.0°)"));
+        addProjectedChoice("Visual level & horizon", "Horizon indicator visibility and snap tolerance",
+                AppSettings.HORIZON_LEVEL_CHOICES, currentHorizon, choice -> {
+                    android.content.SharedPreferences.Editor ed = AppSettings.prefs(this).edit();
+                    AppSettings.applyHorizonLevel(ed, choice);
+                    ed.apply();
+                });
         addSwitch("Live tonal histogram", "Real-time tonal graph in the viewfinder corner", AppSettings.HISTOGRAM, false);
         addSwitch("Focus peaking", "Highlight sharp high-contrast edges in gold", AppSettings.FOCUS_PEAKING, false);
         addSwitch("Highlight zebra stripes", "Diagonal warning stripes over near-clipped bright areas", AppSettings.ZEBRA, false);
         finishSection();
 
         addAdvancedSection("camera_advanced", "Advanced manual, loupe & hardware controls",
-                "Manual exposure, focus loupe, night mode, gestures, HUD & sensor status", () -> {
-                    addSwitch("Show loupe when adjusting MF", "Automatically open 5× focus magnifier while dragging the manual focus slider", AppSettings.LOUPE_ON_MF_ADJUST, false);
-                    addSwitch("Tap-to-focus optical loupe", "Show 5× focus magnifier while dragging the tap reticle", AppSettings.OPTICAL_LOUPE, false);
-                    addChoice("Exposure mode", "Manual shutter and ISO require camera hardware support", AppSettings.EXPOSURE_MODE,
+                "Focus loupe, exposure mode, night mode, gestures, HUD & sensor status", () -> {
+                    String currentLoupe = AppSettings.formatLoupeMode(
+                            AppSettings.getBoolean(this, AppSettings.LOUPE_ON_MF_ADJUST, false),
+                            AppSettings.getBoolean(this, AppSettings.OPTICAL_LOUPE, false));
+                    addProjectedChoice("Focus loupe", "5× focus magnifier while adjusting manual focus or dragging the tap reticle",
+                            AppSettings.LOUPE_MODE_CHOICES, currentLoupe, choice -> {
+                                android.content.SharedPreferences.Editor ed = AppSettings.prefs(this).edit();
+                                AppSettings.applyLoupeMode(ed, choice);
+                                ed.apply();
+                            });
+                    addChoice("Exposure mode", "Auto exposure or manual shutter/ISO (adjusted in the viewfinder HUD)", AppSettings.EXPOSURE_MODE,
                             new String[]{"Auto exposure", "Manual exposure"}, "Auto exposure");
-                    addChoice("Manual shutter", "Shutter interval when Manual exposure is selected", AppSettings.MANUAL_SHUTTER,
-                            new String[]{"1/30 sec", "1/60 sec", "1/120 sec", "1/240 sec", "1/500 sec", "1/1000 sec", "1/2000 sec", "1/4000 sec"}, "1/120 sec");
-                    addChoice("Manual ISO", "Sensor sensitivity when Manual exposure is selected", AppSettings.MANUAL_ISO,
-                            new String[]{"ISO 50", "ISO 100", "ISO 200", "ISO 400", "ISO 800", "ISO 1600", "ISO 3200"}, "ISO 100");
                     addChoice("RAW capture size", "Resolution of RAW captures and editable sensor originals", AppSettings.RAW_SIZE,
                             new String[]{"Maximum sensor resolution", "12 MP · faster development"}, "Maximum sensor resolution");
                     addChoice("Astrophotography / Night mode", "Extended exposure for low-light stationary captures", AppSettings.ASTROPHOTOGRAPHY,
                             AppSettings.ASTRO_CHOICES, "Auto (when stationary at night)");
-                    addChoice("Stabilization", "Optical and electronic stabilization for preview and video", AppSettings.STABILIZATION,
-                            AppSettings.STABILIZATION_CHOICES, "Cinema OIS + EIS");
                     addChoice("Anti-banding / flicker", "Match mains frequency to prevent artificial lighting flicker", AppSettings.ANTI_BANDING,
                             new String[]{"Auto (50/60 Hz)", "50 Hz (Europe/Asia)", "60 Hz (Americas/Japan)", "Off"}, "Auto (50/60 Hz)");
                     addChoice("Reticle metering", "What a viewfinder tap sets (autofocus, exposure, or both)", AppSettings.RETICLE_METERING,
                             new String[]{"AF + AE Metering", "AF Only (Continuous AE)", "AE Only (Continuous AF)"}, "AF + AE Metering");
                     addChoice("Histogram display style", "Luminance curve, RGB parade, or compact bar", AppSettings.HISTOGRAM_MODE,
                             new String[]{"Luminance", "RGB Parade", "Compact"}, "Luminance");
-                    addChoice("Horizon visibility", "Show horizon line only near level or at all times", AppSettings.HORIZON_MODE,
-                            new String[]{"Smart (near level only)", "Always visible"}, "Smart (near level only)");
-                    addChoice("Horizon sensitivity", "Tolerance for snapping the level indicator to gold", AppSettings.HORIZON_SENSITIVITY,
-                            new String[]{"Normal (±1.0°)", "Precise (±0.5°)"}, "Normal (±1.0°)");
                     addSwitch("Show dirty lens warning", "Alert if haze or low scene contrast suggests smudged glass", AppSettings.DIRTY_LENS_WARNING, true);
                     addSwitch("Timer countdown light", "Pulse rear flash LED during self-timer countdown", AppSettings.TIMER_LIGHT, true);
                     addSwitch("Palm gesture timer", "Start a 3-second countdown when an open palm is detected", AppSettings.PALM_TIMER, false);
@@ -462,15 +461,25 @@ public class SettingsActivity extends Activity {
     }
 
     private void populateGeneralSettings() {
-        String archiveLimit = AppSettings.get(this, AppSettings.EDITABLE_ARCHIVE_LIMIT, AppSettings.EDITABLE_ARCHIVE_512MB);
+        final String archiveLimit = AppSettings.get(this, AppSettings.EDITABLE_ARCHIVE_LIMIT, AppSettings.EDITABLE_ARCHIVE_512MB);
         beginSection("PHOTO OUTPUT & EDITABLE ORIGINALS", "Gallery exports and app-private sensor originals for re-editing.");
         addChoice("Photo output", "Gallery receives JPEGs (with private RAW edit cache); \"DNG original only\" saves to Pictures/Lika Lens/RAW (open in Photos/RAW apps)",
                 AppSettings.PHOTO_OUTPUT, AppSettings.PHOTO_OUTPUT_CHOICES, AppSettings.PHOTO_OUTPUT_JPEG_ONLY);
         addChoice("Editable originals limit", "Maximum app-private RAW cache before oldest unpinned originals are trimmed",
                 AppSettings.EDITABLE_ARCHIVE_LIMIT, AppSettings.EDITABLE_ARCHIVE_LIMIT_CHOICES, AppSettings.EDITABLE_ARCHIVE_512MB);
-        addInfo("Editable originals cache",
-                RawArchive.formatArchiveSummary(this, archiveLimit) + "\nTap to clear cache (Gallery JPEGs & DNGs stay untouched)",
+        final TextView archiveDetailView = addInfoWithDetail("Editable originals cache",
+                "Calculating cache usage…\nTap to clear cache (Gallery JPEGs & DNGs stay untouched)",
                 ACCENT, this::showClearArchiveDialog);
+        final android.content.Context appCtx = getApplicationContext();
+        heroWorker.execute(() -> {
+            String summary = RawArchive.formatArchiveSummary(appCtx, archiveLimit)
+                    + "\nTap to clear cache (Gallery JPEGs & DNGs stay untouched)";
+            mainHandler.post(() -> {
+                if (!isFinishing() && !isDestroyed() && archiveDetailView.isAttachedToWindow()) {
+                    archiveDetailView.setText(summary);
+                }
+            });
+        });
 
         beginSection("FILES, METADATA & ERGONOMICS", "Naming, folder layout, JPEG encoding, GPS, and handedness.");
         addSwitch("Save location (GPS)", "Embed GPS coordinates in exported JPEG, DNG, and video files when permitted", AppSettings.LOCATION, true);
@@ -489,7 +498,15 @@ public class SettingsActivity extends Activity {
         addAdvancedSection("general_advanced", "Advanced metadata, storage & GIF defaults",
                 "EXIF camera metadata, detailed capacity estimate, and GIF export defaults", () -> {
                     addSwitch("Include EXIF shooting params", "Write shutter speed, ISO, aperture, and focal length into JPEG EXIF", AppSettings.EXIF_PARAMS, true);
-                    addInfo("Device storage & roll capacity", AppSettings.formatDetailedStorageBreakdown(this), ACCENT);
+                    final TextView storageDetailView = addInfoWithDetail("Device storage & roll capacity", "Calculating storage capacity…", ACCENT, null);
+                    heroWorker.execute(() -> {
+                        String breakdown = AppSettings.formatDetailedStorageBreakdown(appCtx);
+                        mainHandler.post(() -> {
+                            if (!isFinishing() && !isDestroyed() && storageDetailView.isAttachedToWindow()) {
+                                storageDetailView.setText(breakdown);
+                            }
+                        });
+                    });
                     addChoice("Default GIF frame rate", "Playback cadence for animated GIF exports", AppSettings.GIF_FPS,
                             new String[]{"2 fps · Stop Motion", "5 fps · Retro Cinematic", "10 fps · Smooth (Recommended)", "15 fps · High Fluidity"}, "10 fps · Smooth (Recommended)");
                     addChoice("Default GIF resolution", "Output pixel size for GIF generation", AppSettings.GIF_RESOLUTION,
@@ -576,7 +593,10 @@ public class SettingsActivity extends Activity {
             try { releaseNotesDialog.dismiss(); } catch (Exception ignored) {}
         }
 
-        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        FrameLayout scrim = new FrameLayout(this);
+        LinearLayout sheet = new LinearLayout(this);
+        Dialog dialog = UiKit.createModalCardDialog(this, scrim, sheet, 460, 0.94f);
+        scrim.setBackgroundColor(0x88000000);
         releaseNotesDialog = dialog;
         dialog.setOnDismissListener(d -> {
             releaseNotesJob.cancel();
@@ -584,23 +604,6 @@ public class SettingsActivity extends Activity {
                 releaseNotesDialog = null;
             }
         });
-
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
-        }
-
-        FrameLayout scrim = new FrameLayout(this);
-        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        scrim.setBackgroundColor(0x88000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
-        LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setClickable(true);
-        sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
-        sheet.setPadding(dp(20), dp(18), dp(20), dp(18));
 
         TextView header = text("RECENT RELEASE NOTES", 12, ACCENT, true);
         header.setLetterSpacing(.14f);
@@ -647,16 +650,6 @@ public class SettingsActivity extends Activity {
         closeBtn.setGravity(Gravity.CENTER);
         closeBtn.setOnClickListener(v -> dialog.dismiss());
         sheet.addView(closeBtn, new LinearLayout.LayoutParams(-1, dp(38)));
-
-        int maxDialogW = dp(460);
-        int dialogW = Math.min(getResources().getDisplayMetrics().widthPixels - dp(28), maxDialogW);
-        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
-                dialogW,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-        );
-        scrim.addView(sheet, sheetLp);
-        dialog.setContentView(scrim);
         dialog.show();
 
         final String[] selectedFilter = {"ALL"};
@@ -1160,6 +1153,33 @@ public class SettingsActivity extends Activity {
         return UiKit.round(this, color, radius, strokeColor, strokeWidth);
     }
 
+    private interface OnOptionSelected { void onSelected(String option); }
+
+    private void addProjectedChoice(String title, String subtitle, String[] options,
+                                    String currentValue, OnOptionSelected onSelected) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(14), dp(12), dp(14), dp(12));
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.addView(text(title, 11, 0xffe6eae4, true));
+        if (subtitle != null && !subtitle.isEmpty()) {
+            TextView detail = text(subtitle, 8, 0xff89948e, false);
+            detail.setPadding(0, dp(3), 0, 0);
+            copy.addView(detail);
+        }
+        row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+        final String[] holder = {currentValue};
+        TextView value = pill(shortValue(currentValue), false);
+        row.addView(value, new LinearLayout.LayoutParams(-2, dp(32)));
+        row.setOnClickListener(v -> showProjectedChoiceDialog(title, options, holder[0], value, chosen -> {
+            holder[0] = chosen;
+            if (onSelected != null) onSelected.onSelected(chosen);
+        }));
+        addRowToCurrentCard(row);
+    }
+
     private void addChoice(String title, String subtitle, String key, String[] options, String defaultValue) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -1190,23 +1210,9 @@ public class SettingsActivity extends Activity {
     }
 
     private void showCustomPrefixDialog(TextView valueView) {
-        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
-        }
-
         FrameLayout scrim = new FrameLayout(this);
-        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        scrim.setBackgroundColor(0x77000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
         LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setClickable(true);
-        box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
-        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+        Dialog dialog = UiKit.createModalCardDialog(this, scrim, box, 400, 0.88f);
 
         TextView head = text("CUSTOM FILE PREFIX", 10, ACCENT, true);
         head.setLetterSpacing(.14f);
@@ -1225,19 +1231,7 @@ public class SettingsActivity extends Activity {
         inLp.bottomMargin = dp(14);
         box.addView(input, inLp);
 
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        TextView cancel = pill("CANCEL", false);
-        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
-        cLp.rightMargin = dp(6);
-        actions.addView(cancel, cLp);
-        cancel.setOnClickListener(v -> dialog.dismiss());
-
-        TextView save = pill("SAVE PREFIX", true);
-        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
-        sLp.leftMargin = dp(6);
-        actions.addView(save, sLp);
-        save.setOnClickListener(v -> {
+        LinearLayout actions = UiKit.createDialogActionRow(this, "CANCEL", dialog::dismiss, "SAVE PREFIX", () -> {
             String raw = input.getText() == null ? "" : input.getText().toString().trim().toUpperCase(Locale.US);
             String clean = raw.replaceAll("[^A-Z0-9_-]", "");
             if (clean.isEmpty()) clean = "LIKA";
@@ -1250,15 +1244,6 @@ public class SettingsActivity extends Activity {
             dialog.dismiss();
         });
         box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
-
-        int dialogWidth = Math.min(dp(400), Math.round(getResources().getDisplayMetrics().widthPixels * 0.88f));
-        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
-                dialogWidth,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-        );
-        scrim.addView(box, boxLp);
-        dialog.setContentView(scrim);
         dialog.show();
     }
 
@@ -1276,23 +1261,25 @@ public class SettingsActivity extends Activity {
         return null;
     }
 
+    private void showProjectedChoiceDialog(String title, String[] options, String selected,
+                                           TextView valueView, OnOptionSelected onSelected) {
+        showChoiceSheetInternal(title, null, options, selected, valueView, onSelected);
+    }
+
     private void showChoiceDialog(String title, String key, String[] options, String defaultValue, TextView valueView) {
-        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+        String selected = AppSettings.get(this, key, defaultValue);
+        if (AppSettings.VOLUME_ROCKER.equals(key)) {
+            if ("Shutter release".equals(selected)) selected = "Shutter";
+            else if ("Zoom 1× / 2×".equals(selected)) selected = "Zoom";
         }
+        showChoiceSheetInternal(title, key, options, selected, valueView, null);
+    }
 
+    private void showChoiceSheetInternal(String title, String key, String[] options, String selected,
+                                         TextView valueView, OnOptionSelected customHandler) {
         FrameLayout scrim = new FrameLayout(this);
-        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        scrim.setBackgroundColor(0x77000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
         LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setClickable(true);
-        sheet.setBackground(round(0xff0e1314, 20, 0xff2a3233, dp(1)));
+        Dialog dialog = UiKit.createBottomSheetDialog(this, scrim, sheet, 600);
         sheet.setPadding(dp(20), dp(16), dp(20), dp(20));
 
         View handle = new View(this);
@@ -1315,11 +1302,6 @@ public class SettingsActivity extends Activity {
         LinearLayout optionsList = new LinearLayout(this);
         optionsList.setOrientation(LinearLayout.VERTICAL);
 
-        String selected = AppSettings.get(this, key, defaultValue);
-        if (AppSettings.VOLUME_ROCKER.equals(key)) {
-            if ("Shutter release".equals(selected)) selected = "Shutter";
-            else if ("Zoom 1× / 2×".equals(selected)) selected = "Zoom";
-        }
         boolean hasOptionHints = AppSettings.PHOTO_OUTPUT.equals(key);
         for (String option : options) {
             boolean isCurrent = option.equals(selected);
@@ -1356,6 +1338,12 @@ public class SettingsActivity extends Activity {
                 if (hapticsEnabled) {
                     row.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
                 }
+                if (customHandler != null) {
+                    customHandler.onSelected(option);
+                    valueView.setText(shortValue(option));
+                    dialog.dismiss();
+                    return;
+                }
                 if (AppSettings.FILE_PREFIX.equals(key) && option.startsWith("CUSTOM")) {
                     dialog.dismiss();
                     showCustomPrefixDialog(valueView);
@@ -1385,7 +1373,9 @@ public class SettingsActivity extends Activity {
                 } else {
                     valueView.setText(shortValue(option));
                 }
-                triggerHeroUpdate();
+                if ("LOOKS".equals(activeCategory)) {
+                    triggerHeroUpdate();
+                }
                 dialog.dismiss();
             });
 
@@ -1403,15 +1393,6 @@ public class SettingsActivity extends Activity {
         cancelLp.topMargin = dp(12);
         sheet.addView(cancel, cancelLp);
         cancel.setOnClickListener(v -> dialog.dismiss());
-
-        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM
-        );
-        scrim.addView(sheet, sheetLp);
-        UiKit.keepSheetAboveNavigationBar(scrim, sheet);
-        dialog.setContentView(scrim);
         dialog.show();
     }
 
@@ -1456,7 +1437,9 @@ public class SettingsActivity extends Activity {
                 value.setText(sliderValue(key, selected));
                 if (fromUser) {
                     AppSettings.prefs(SettingsActivity.this).edit().putInt(key, selected).apply();
-                    triggerHeroUpdate();
+                    if ("LOOKS".equals(activeCategory)) {
+                        triggerHeroUpdate();
+                    }
                     if (hapticsEnabled) {
                         boolean isLandmark = false;
                         if (AppSettings.EXPOSURE.equals(key) && selected == 0) isLandmark = true;
@@ -1529,7 +1512,9 @@ public class SettingsActivity extends Activity {
                 }
                 rebuildContent(false);
             }
-            triggerHeroUpdate();
+            if ("LOOKS".equals(activeCategory)) {
+                triggerHeroUpdate();
+            }
         });
         row.addView(toggle);
         addRowToCurrentCard(row);
@@ -1541,7 +1526,7 @@ public class SettingsActivity extends Activity {
         if (requestCode == 1002) {
             boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
             AppSettings.prefs(this).edit().putBoolean(AppSettings.LOCATION, granted).apply();
-            rebuildContent();
+            rebuildContent(false);
         }
     }
 
@@ -1607,11 +1592,13 @@ public class SettingsActivity extends Activity {
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setVisibility(expanded ? View.VISIBLE : View.GONE);
-        if (buildRows != null) {
+        final boolean[] populated = {false};
+        if (expanded && buildRows != null) {
             LinearLayout previousCard = currentSectionCard;
             currentSectionCard = body;
             buildRows.run();
             currentSectionCard = previousCard;
+            populated[0] = true;
         }
         card.addView(body, new LinearLayout.LayoutParams(-1, -2));
 
@@ -1626,6 +1613,13 @@ public class SettingsActivity extends Activity {
             } else {
                 expandedAdvanced.add(advKey);
                 nextExpanded = true;
+                if (!populated[0] && buildRows != null) {
+                    LinearLayout previousCard = currentSectionCard;
+                    currentSectionCard = body;
+                    buildRows.run();
+                    currentSectionCard = previousCard;
+                    populated[0] = true;
+                }
             }
             topDivider.setVisibility(nextExpanded ? View.VISIBLE : View.GONE);
             body.setVisibility(nextExpanded ? View.VISIBLE : View.GONE);
@@ -1698,23 +1692,9 @@ public class SettingsActivity extends Activity {
     }
 
     private void showRenameRecipeDialog(int slot, String currentName, String recipeData) {
-        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
-        }
-
         FrameLayout scrim = new FrameLayout(this);
-        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        scrim.setBackgroundColor(0x77000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
         LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setClickable(true);
-        box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
-        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+        Dialog dialog = UiKit.createModalCardDialog(this, scrim, box, 400, 0.88f);
 
         TextView head = text("RENAME RECIPE " + slot, 10, ACCENT, true);
         head.setLetterSpacing(.14f);
@@ -1734,19 +1714,7 @@ public class SettingsActivity extends Activity {
         inLp.bottomMargin = dp(14);
         box.addView(input, inLp);
 
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        TextView cancel = pill("CANCEL", false);
-        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
-        cLp.rightMargin = dp(6);
-        actions.addView(cancel, cLp);
-        cancel.setOnClickListener(v -> dialog.dismiss());
-
-        TextView save = pill("SAVE NAME", true);
-        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
-        sLp.leftMargin = dp(6);
-        actions.addView(save, sLp);
-        save.setOnClickListener(v -> {
+        LinearLayout actions = UiKit.createDialogActionRow(this, "CANCEL", dialog::dismiss, "SAVE NAME", () -> {
             String nextName = input.getText() == null ? "" : input.getText().toString().trim();
             if (nextName.isEmpty()) nextName = "Recipe " + slot;
             AppSettings.saveCustomRecipe(this, slot, nextName, recipeData);
@@ -1754,22 +1722,10 @@ public class SettingsActivity extends Activity {
             rebuildContent(false);
         });
         box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
-
-        int dialogWidth = Math.min(dp(400), Math.round(getResources().getDisplayMetrics().widthPixels * 0.88f));
-        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
-                dialogWidth,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-        );
-        scrim.addView(box, boxLp);
-        dialog.setContentView(scrim);
         dialog.show();
     }
 
     private void addCustomLutRow(String lutName) {
-        int cubeSize = LutManager.readCubeSize(this, lutName);
-        String sizeLabel = cubeSize > 0 ? (cubeSize + "×" + cubeSize + "×" + cubeSize + " .cube") : "Custom .cube LUT";
-
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -1778,10 +1734,23 @@ public class SettingsActivity extends Activity {
         LinearLayout copy = new LinearLayout(this);
         copy.setOrientation(LinearLayout.VERTICAL);
         copy.addView(text(lutName, 11, 0xffe6eae4, true));
-        TextView detail = text("Custom LUT · " + sizeLabel, 8, 0xff89948e, false);
+        final TextView detail = text("Custom LUT · Custom .cube LUT", 8, 0xff89948e, false);
         detail.setPadding(0, dp(3), 0, 0);
         copy.addView(detail);
         row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        final android.content.Context appContext = getApplicationContext();
+        heroWorker.execute(() -> {
+            int cubeSize = LutManager.readCubeSize(appContext, lutName);
+            if (cubeSize > 0) {
+                String label = "Custom LUT · " + cubeSize + "×" + cubeSize + "×" + cubeSize + " .cube";
+                mainHandler.post(() -> {
+                    if (!isFinishing() && !isDestroyed() && detail.isAttachedToWindow()) {
+                        detail.setText(label);
+                    }
+                });
+            }
+        });
 
         TextView deleteBtn = pill("DELETE", false);
         LinearLayout.LayoutParams delLp = new LinearLayout.LayoutParams(-2, dp(30));
@@ -1798,7 +1767,7 @@ public class SettingsActivity extends Activity {
                         AppSettings.prefs(this).edit().putString(AppSettings.LUT_NAME, "None").apply();
                     }
                     Toast.makeText(this, "Deleted LUT: " + lutName, Toast.LENGTH_SHORT).show();
-                    triggerHeroUpdate();
+                    if ("LOOKS".equals(activeCategory)) triggerHeroUpdate();
                     rebuildContent(false);
                 })
                 .show());
@@ -1809,32 +1778,28 @@ public class SettingsActivity extends Activity {
         if (hapticsEnabled) {
             getWindow().getDecorView().performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
         }
-        String limitChoice = AppSettings.get(this, AppSettings.EDITABLE_ARCHIVE_LIMIT, AppSettings.EDITABLE_ARCHIVE_512MB);
-        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
-        }
-
+        final String limitChoice = AppSettings.get(this, AppSettings.EDITABLE_ARCHIVE_LIMIT, AppSettings.EDITABLE_ARCHIVE_512MB);
         FrameLayout scrim = new FrameLayout(this);
-        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        scrim.setBackgroundColor(0x77000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
         LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setClickable(true);
-        box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
-        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+        Dialog dialog = UiKit.createModalCardDialog(this, scrim, box, 420, 0.90f);
 
         TextView head = text("CLEAR EDITABLE ORIGINALS?", 10, ACCENT, true);
         head.setLetterSpacing(.14f);
         box.addView(head);
 
-        TextView stats = text(RawArchive.formatArchiveSummary(this, limitChoice), 10, 0xfff0f2eb, true);
+        final TextView stats = text("Calculating cache usage…", 10, 0xfff0f2eb, true);
         stats.setPadding(0, dp(8), 0, dp(6));
         box.addView(stats);
+
+        final android.content.Context appCtx = getApplicationContext();
+        heroWorker.execute(() -> {
+            String summary = RawArchive.formatArchiveSummary(appCtx, limitChoice);
+            mainHandler.post(() -> {
+                if (!isFinishing() && !isDestroyed() && dialog.isShowing()) {
+                    stats.setText(summary);
+                }
+            });
+        });
 
         TextView body = text(
                 "Clearing editable originals removes cached app-private .sraw files used for RAW-based re-editing and switching film brains after capture.\n\n"
@@ -1843,23 +1808,10 @@ public class SettingsActivity extends Activity {
         body.setPadding(0, 0, 0, dp(16));
         box.addView(body);
 
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        TextView cancel = pill("CANCEL", false);
-        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
-        cLp.rightMargin = dp(6);
-        actions.addView(cancel, cLp);
-        cancel.setOnClickListener(v -> dialog.dismiss());
-
-        TextView clearBtn = pill("CLEAR CACHE", true);
-        LinearLayout.LayoutParams clLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
-        clLp.leftMargin = dp(6);
-        actions.addView(clearBtn, clLp);
-        clearBtn.setOnClickListener(v -> {
+        LinearLayout actions = UiKit.createDialogActionRow(this, "CANCEL", dialog::dismiss, "CLEAR CACHE", () -> {
             dialog.dismiss();
-            final android.content.Context appContext = getApplicationContext();
             heroWorker.execute(() -> {
-                RawArchive.CleanupResult res = RawArchive.clearEditableOriginals(appContext);
+                RawArchive.CleanupResult res = RawArchive.clearEditableOriginals(appCtx);
                 mainHandler.post(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     String msg;
@@ -1879,15 +1831,6 @@ public class SettingsActivity extends Activity {
             });
         });
         box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
-
-        int dialogWidth = Math.min(dp(420), Math.round(getResources().getDisplayMetrics().widthPixels * 0.90f));
-        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
-                dialogWidth,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-        );
-        scrim.addView(box, boxLp);
-        dialog.setContentView(scrim);
         dialog.show();
     }
 
@@ -1913,26 +1856,12 @@ public class SettingsActivity extends Activity {
     }
 
     private void showBackupNameDialog(boolean shareImmediately) {
-        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+        if (hapticsEnabled) {
             getWindow().getDecorView().performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
         }
-        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
-        }
-
         FrameLayout scrim = new FrameLayout(this);
-        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        scrim.setBackgroundColor(0x77000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
         LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setClickable(true);
-        box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
-        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+        Dialog dialog = UiKit.createModalCardDialog(this, scrim, box, 420, 0.90f);
 
         TextView head = text(shareImmediately ? "SHARE NAMED BACKUP" : "SAVE NAMED BACKUP", 10, ACCENT, true);
         head.setLetterSpacing(.14f);
@@ -1961,44 +1890,34 @@ public class SettingsActivity extends Activity {
         inLp.bottomMargin = dp(14);
         box.addView(input, inLp);
 
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        TextView cancel = pill("CANCEL", false);
-        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
-        cLp.rightMargin = dp(6);
-        actions.addView(cancel, cLp);
-        cancel.setOnClickListener(v -> dialog.dismiss());
-
-        TextView confirm = pill(shareImmediately ? "SHARE" : "SAVE FILE", true);
-        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
-        sLp.leftMargin = dp(6);
-        actions.addView(confirm, sLp);
-        confirm.setOnClickListener(v -> {
-            String chosenName = SettingsBackupManager.sanitizeBackupName(
-                    input.getText() == null ? "" : input.getText().toString());
-            dialog.dismiss();
-            try {
-                String json = SettingsBackupManager.createBackupJson(this, chosenName);
-                if (shareImmediately) {
-                    shareBackupFile(chosenName, json);
-                } else {
-                    launchBackupExportPicker(chosenName, json);
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "Failed to prepare settings backup", e);
-                Toast.makeText(this, "Could not create backup: " + e.getMessage(), Toast.LENGTH_LONG).show();
-            }
-        });
+        LinearLayout actions = UiKit.createDialogActionRow(this, "CANCEL", dialog::dismiss,
+                shareImmediately ? "SHARE" : "SAVE FILE", () -> {
+                    final String chosenName = SettingsBackupManager.sanitizeBackupName(
+                            input.getText() == null ? "" : input.getText().toString());
+                    dialog.dismiss();
+                    final android.content.Context appCtx = getApplicationContext();
+                    heroWorker.execute(() -> {
+                        try {
+                            final String json = SettingsBackupManager.createBackupJson(appCtx, chosenName);
+                            mainHandler.post(() -> {
+                                if (isFinishing() || isDestroyed()) return;
+                                if (shareImmediately) {
+                                    shareBackupFile(chosenName, json);
+                                } else {
+                                    launchBackupExportPicker(chosenName, json);
+                                }
+                            });
+                        } catch (Exception e) {
+                            Log.w(TAG, "Failed to prepare settings backup", e);
+                            mainHandler.post(() -> {
+                                if (!isFinishing() && !isDestroyed()) {
+                                    Toast.makeText(this, "Could not create backup: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                                }
+                            });
+                        }
+                    });
+                });
         box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
-
-        int dialogWidth = Math.min(dp(420), Math.round(getResources().getDisplayMetrics().widthPixels * 0.90f));
-        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
-                dialogWidth,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-        );
-        scrim.addView(box, boxLp);
-        dialog.setContentView(scrim);
         dialog.show();
     }
 
@@ -2019,7 +1938,7 @@ public class SettingsActivity extends Activity {
     }
 
     private void launchBackupImportPicker() {
-        if (AppSettings.getBoolean(this, AppSettings.HAPTICS, true)) {
+        if (hapticsEnabled) {
             getWindow().getDecorView().performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
         }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -2039,38 +1958,39 @@ public class SettingsActivity extends Activity {
     }
 
     private void shareBackupFile(String backupName, String json) {
-        try {
-            Uri uri = SettingsBackupManager.writeBackupForShare(this, backupName, json);
-            Intent share = new Intent(Intent.ACTION_SEND);
-            share.setType("application/json");
-            share.putExtra(Intent.EXTRA_STREAM, uri);
-            share.putExtra(Intent.EXTRA_SUBJECT, "Lika Lens Backup: " + backupName);
-            share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(share, "Share Lika Lens Backup"));
-        } catch (Exception e) {
-            Log.w(TAG, "Failed to share backup", e);
-            Toast.makeText(this, "Could not share backup.", Toast.LENGTH_SHORT).show();
-        }
+        final android.content.Context appCtx = getApplicationContext();
+        heroWorker.execute(() -> {
+            try {
+                final Uri uri = SettingsBackupManager.writeBackupForShare(appCtx, backupName, json);
+                mainHandler.post(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    try {
+                        Intent share = new Intent(Intent.ACTION_SEND);
+                        share.setType("application/json");
+                        share.putExtra(Intent.EXTRA_STREAM, uri);
+                        share.putExtra(Intent.EXTRA_SUBJECT, "Lika Lens Backup: " + backupName);
+                        share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        startActivity(Intent.createChooser(share, "Share Lika Lens Backup"));
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to share backup", e);
+                        Toast.makeText(this, "Could not share backup.", Toast.LENGTH_SHORT).show();
+                    }
+                });
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to write backup for share", e);
+                mainHandler.post(() -> {
+                    if (!isFinishing() && !isDestroyed()) {
+                        Toast.makeText(this, "Could not share backup.", Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        });
     }
 
     private void showBackupSavedDialog(String backupName, String json) {
-        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
-        }
-
         FrameLayout scrim = new FrameLayout(this);
-        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        scrim.setBackgroundColor(0x77000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
         LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setClickable(true);
-        box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
-        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+        Dialog dialog = UiKit.createModalCardDialog(this, scrim, box, 400, 0.88f);
 
         TextView head = text("BACKUP SAVED", 10, ACCENT, true);
         head.setLetterSpacing(.14f);
@@ -2081,53 +2001,18 @@ public class SettingsActivity extends Activity {
         body.setPadding(0, dp(8), 0, dp(16));
         box.addView(body);
 
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        TextView shareBtn = pill("SHARE", false);
-        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
-        sLp.rightMargin = dp(6);
-        actions.addView(shareBtn, sLp);
-        shareBtn.setOnClickListener(v -> {
+        LinearLayout actions = UiKit.createDialogActionRow(this, "SHARE", () -> {
             dialog.dismiss();
             shareBackupFile(backupName, json);
-        });
-
-        TextView doneBtn = pill("DONE", true);
-        LinearLayout.LayoutParams dLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
-        dLp.leftMargin = dp(6);
-        actions.addView(doneBtn, dLp);
-        doneBtn.setOnClickListener(v -> dialog.dismiss());
+        }, "DONE", dialog::dismiss);
         box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
-
-        int dialogWidth = Math.min(dp(400), Math.round(getResources().getDisplayMetrics().widthPixels * 0.88f));
-        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
-                dialogWidth,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-        );
-        scrim.addView(box, boxLp);
-        dialog.setContentView(scrim);
         dialog.show();
     }
 
     private void showImportConfirmDialog(SettingsBackupManager.BackupData data) {
-        Dialog dialog = new Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
-        }
-
         FrameLayout scrim = new FrameLayout(this);
-        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        scrim.setBackgroundColor(0x77000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
         LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setClickable(true);
-        box.setBackground(round(0xff0e1314, 18, 0xff2a3233, dp(1)));
-        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+        Dialog dialog = UiKit.createModalCardDialog(this, scrim, box, 420, 0.90f);
 
         TextView head = text("RESTORE BACKUP?", 10, ACCENT, true);
         head.setLetterSpacing(.14f);
@@ -2146,44 +2031,33 @@ public class SettingsActivity extends Activity {
         body.setPadding(0, dp(2), 0, dp(16));
         box.addView(body);
 
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        TextView cancel = pill("CANCEL", false);
-        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
-        cLp.rightMargin = dp(6);
-        actions.addView(cancel, cLp);
-        cancel.setOnClickListener(v -> dialog.dismiss());
-
-        TextView restore = pill("RESTORE", true);
-        LinearLayout.LayoutParams rLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
-        rLp.leftMargin = dp(6);
-        actions.addView(restore, rLp);
-        restore.setOnClickListener(v -> {
+        LinearLayout actions = UiKit.createDialogActionRow(this, "CANCEL", dialog::dismiss, "RESTORE", () -> {
             dialog.dismiss();
-            try {
-                SettingsBackupManager.RestoreResult res = SettingsBackupManager.restoreBackup(this, data);
-                hapticsEnabled = AppSettings.getBoolean(this, AppSettings.HAPTICS, true);
-                rebuildContent();
-                String msg = "Restored \"" + res.backupName + "\"";
-                if (res.failedLuts > 0) {
-                    msg += " (" + res.failedLuts + " LUT failed)";
+            final android.content.Context appCtx = getApplicationContext();
+            heroWorker.execute(() -> {
+                try {
+                    final SettingsBackupManager.RestoreResult res = SettingsBackupManager.restoreBackup(appCtx, data);
+                    mainHandler.post(() -> {
+                        if (isFinishing() || isDestroyed()) return;
+                        hapticsEnabled = AppSettings.getBoolean(this, AppSettings.HAPTICS, true);
+                        rebuildContent();
+                        String msg = "Restored \"" + res.backupName + "\"";
+                        if (res.failedLuts > 0) {
+                            msg += " (" + res.failedLuts + " LUT failed)";
+                        }
+                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+                    });
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to restore backup", e);
+                    mainHandler.post(() -> {
+                        if (!isFinishing() && !isDestroyed()) {
+                            Toast.makeText(this, "Could not restore backup: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                        }
+                    });
                 }
-                Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
-            } catch (Exception e) {
-                Log.w(TAG, "Failed to restore backup", e);
-                Toast.makeText(this, "Could not restore backup: " + e.getMessage(), Toast.LENGTH_LONG).show();
-            }
+            });
         });
         box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
-
-        int dialogWidth = Math.min(dp(420), Math.round(getResources().getDisplayMetrics().widthPixels * 0.90f));
-        FrameLayout.LayoutParams boxLp = new FrameLayout.LayoutParams(
-                dialogWidth,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-        );
-        scrim.addView(box, boxLp);
-        dialog.setContentView(scrim);
         dialog.show();
     }
 
@@ -2207,28 +2081,52 @@ public class SettingsActivity extends Activity {
                 });
             });
         } else if (requestCode == REQUEST_CODE_EXPORT_BACKUP) {
-            String exportName = pendingBackupName;
-            String exportJson = pendingBackupJson;
+            final String exportName = pendingBackupName;
+            final String exportJson = pendingBackupJson;
             pendingBackupName = null;
             pendingBackupJson = null;
             if (resultCode == RESULT_OK && data != null && data.getData() != null && exportJson != null) {
-                try {
-                    SettingsBackupManager.writeTextToUri(this, data.getData(), exportJson);
-                    showBackupSavedDialog(exportName != null ? exportName : "Lika Lens Backup", exportJson);
-                } catch (Exception e) {
-                    Log.w(TAG, "Failed to write backup file", e);
-                    Toast.makeText(this, "Could not save backup: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                }
+                final Uri targetUri = data.getData();
+                final android.content.Context appCtx = getApplicationContext();
+                heroWorker.execute(() -> {
+                    try {
+                        SettingsBackupManager.writeTextToUri(appCtx, targetUri, exportJson);
+                        mainHandler.post(() -> {
+                            if (!isFinishing() && !isDestroyed()) {
+                                showBackupSavedDialog(exportName != null ? exportName : "Lika Lens Backup", exportJson);
+                            }
+                        });
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to write backup file", e);
+                        mainHandler.post(() -> {
+                            if (!isFinishing() && !isDestroyed()) {
+                                Toast.makeText(this, "Could not save backup: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                            }
+                        });
+                    }
+                });
             }
         } else if (requestCode == REQUEST_CODE_IMPORT_BACKUP && resultCode == RESULT_OK && data != null && data.getData() != null) {
-            try {
-                String json = SettingsBackupManager.readTextFromUri(this, data.getData());
-                SettingsBackupManager.BackupData parsed = SettingsBackupManager.parseBackup(json);
-                showImportConfirmDialog(parsed);
-            } catch (Exception e) {
-                Log.w(TAG, "Failed to read/parse imported backup", e);
-                Toast.makeText(this, "Invalid backup file: " + e.getMessage(), Toast.LENGTH_LONG).show();
-            }
+            final Uri sourceUri = data.getData();
+            final android.content.Context appCtx = getApplicationContext();
+            heroWorker.execute(() -> {
+                try {
+                    String json = SettingsBackupManager.readTextFromUri(appCtx, sourceUri);
+                    final SettingsBackupManager.BackupData parsed = SettingsBackupManager.parseBackup(json);
+                    mainHandler.post(() -> {
+                        if (!isFinishing() && !isDestroyed()) {
+                            showImportConfirmDialog(parsed);
+                        }
+                    });
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to read/parse imported backup", e);
+                    mainHandler.post(() -> {
+                        if (!isFinishing() && !isDestroyed()) {
+                            Toast.makeText(this, "Invalid backup file: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            });
         }
     }
 
@@ -2360,10 +2258,13 @@ public class SettingsActivity extends Activity {
             }
             if (event.getAction() == MotionEvent.ACTION_MOVE && tracking) {
                 lastY = event.getY();
-                if (fineMode) value = Math.max(min, Math.min(max,
-                        fineStartValue + Math.round((fineStartY - lastY) / Math.max(1f, dp(3)))));
-                else updateFromPosition(lastY);
-                if (listener != null) listener.onChanged(value);
+                if (fineMode) {
+                    value = Math.max(min, Math.min(max,
+                            fineStartValue + Math.round((fineStartY - lastY) / Math.max(1f, dp(3)))));
+                    if (listener != null) listener.onChanged(value);
+                } else {
+                    updateFromPosition(lastY);
+                }
                 invalidate();
                 return true;
             }

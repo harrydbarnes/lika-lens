@@ -20,6 +20,7 @@ final class RawDeveloper {
     private static final int MAX_RENDER_PIXELS = 50_000_000;
     private static final int[] SRGB_LUT = buildSrgbLut();
     private static final float[] SRGB_FLOAT_LUT = buildSrgbFloatLut();
+    private static final float[] SRGB_TO_LINEAR_256 = buildSrgbToLinear256Lut();
     private RawDeveloper() { }
 
     static final class Look {
@@ -249,6 +250,9 @@ final class RawDeveloper {
     private static final int HL_HARD = 3;
 
     private static final float INV_LOG1P_7 = 1.0f / (float) Math.log1p(7.0);
+    private static final int TONE_LUT_SIZE = 2048;
+    private static final float TONE_LUT_MAX_Y = 4.0f;
+    private static final float TONE_LUT_INV_MAX_Y = 1.0f / TONE_LUT_MAX_Y;
 
     /** Precomputed frame-invariant look constants to eliminate per-pixel String checks and redundant math. */
     static final class PreparedLook {
@@ -287,6 +291,7 @@ final class RawDeveloper {
         final float lutIntensity;
         final float exposureScale;
         final float displayWbShift;
+        final float[] toneLut;
 
         PreparedLook(Look look, RawArchive.Frame frame, LutManager.Lut3D lut) {
             this(look, frame, lut, false, false);
@@ -565,6 +570,43 @@ final class RawDeveloper {
             this.uniformGrain = gResp.startsWith("Uniform");
             this.lut = lut;
             this.lutIntensity = this.look.lutIntensity;
+            this.toneLut = buildToneLut();
+        }
+
+        private float[] buildToneLut() {
+            if (this.curveId == CURVE_LINEAR) return null;
+            float[] table = new float[TONE_LUT_SIZE];
+            float invMaxIdx = 1.0f / (TONE_LUT_SIZE - 1);
+            for (int i = 0; i < TONE_LUT_SIZE; i++) {
+                float u = i * invMaxIdx;
+                float y = TONE_LUT_MAX_Y * u * u;
+                table[i] = evalToneCurveExact(y);
+            }
+            return table;
+        }
+
+        float evalToneCurveExact(float oldY) {
+            if (curveId == CURVE_LINEAR) return oldY;
+            if (oldY <= 0f) return 0f;
+            if (curveId == CURVE_LOG) {
+                float logY = (float) Math.log1p(oldY * 7.0f) * INV_LOG1P_7;
+                return logY <= 0f ? 0f : logPivot * (float) Math.pow(logY * invSafeLogPivot, logContrast);
+            }
+            float gamma = oldY < safePivot ? toeContrast : safeContrast;
+            return safePivot * (float) Math.pow(oldY / safePivot, gamma);
+        }
+
+        float evalToneCurve(float oldY) {
+            if (curveId == CURVE_LINEAR) return oldY;
+            if (oldY <= 0f) return 0f;
+            if (toneLut != null && oldY <= TONE_LUT_MAX_Y) {
+                float pos = (float) Math.sqrt(oldY * TONE_LUT_INV_MAX_Y) * (TONE_LUT_SIZE - 1);
+                int idx = (int) pos;
+                if (idx >= TONE_LUT_SIZE - 1) return toneLut[TONE_LUT_SIZE - 1];
+                float frac = pos - idx;
+                return toneLut[idx] + (toneLut[idx + 1] - toneLut[idx]) * frac;
+            }
+            return evalToneCurveExact(oldY);
         }
     }
 
@@ -676,6 +718,82 @@ final class RawDeveloper {
         return rawShorts;
     }
 
+    private static void sampleSensorLinearRgb(short[] rawShorts, RawArchive.Frame frame, float white,
+                                              int width, int height, int orientation, float dx, float dy,
+                                              boolean useQuad, boolean applyLsm,
+                                              float gainR, float gainG, float gainB,
+                                              boolean hasCct, float[] cct, float[] cameraToXyz,
+                                              float[] rgb, float[] lsm, float[] outLinear) {
+        int sx, sy;
+        switch (orientation) {
+            case 90: sx = Math.min(width - 1, (int) dy); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dx)); break;
+            case 180: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dx)); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dy)); break;
+            case 270: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dy)); sy = Math.min(height - 1, (int) dx); break;
+            default: sx = Math.min(width - 1, (int) dx); sy = Math.min(height - 1, (int) dy); break;
+        }
+        if (useQuad) sampleQuad(rawShorts, frame, white, sx, sy, rgb);
+        else demosaicPixel(rawShorts, frame, white, sx, sy, rgb);
+        float r = rgb[0], g = rgb[1], b = rgb[2];
+        if (applyLsm) {
+            sampleLsm(frame, sx, sy, lsm);
+            float sig = Math.max(r, Math.max(g, b));
+            float lsmWeight = smoothstep(0.003f, 0.030f, sig);
+            r *= 1f + (lsm[0] - 1f) * lsmWeight;
+            g *= 1f + ((lsm[1] + lsm[2]) * 0.5f - 1f) * lsmWeight;
+            b *= 1f + (lsm[3] - 1f) * lsmWeight;
+        }
+        r *= gainR;
+        g *= gainG;
+        b *= gainB;
+        if (hasCct) {
+            outLinear[0] = cct[0] * r + cct[1] * g + cct[2] * b;
+            outLinear[1] = cct[3] * r + cct[4] * g + cct[5] * b;
+            outLinear[2] = cct[6] * r + cct[7] * g + cct[8] * b;
+        } else {
+            float x = cameraToXyz[0] * r + cameraToXyz[1] * g + cameraToXyz[2] * b;
+            float y = cameraToXyz[3] * r + cameraToXyz[4] * g + cameraToXyz[5] * b;
+            float z = cameraToXyz[6] * r + cameraToXyz[7] * g + cameraToXyz[8] * b;
+            // XYZ D50 to linear sRGB. The camera profile is kept separate from the authored look.
+            outLinear[0] = 3.1339f * x - 1.6169f * y - .4906f * z;
+            outLinear[1] = -.9785f * x + 1.9160f * y + .0333f * z;
+            outLinear[2] = .0720f * x - .2290f * y + 1.4057f * z;
+        }
+    }
+
+    private static int gradeLinearPixel(float lr, float lg, float lb,
+                                        float[] localGainGrid, int lgW, int lgH,
+                                        int ox, int oy, int outW, int outH, float nySq,
+                                        float vigAmount, PreparedLook prep, int seed) {
+        if (localGainGrid != null) {
+            float lgain = sampleLocalGain(localGainGrid, lgW, lgH, ox, oy, outW, outH);
+            if (lgain > 1.0f) {
+                float pixY = Math.max(0f, .2126f * Math.max(0f, lr) + .7152f * Math.max(0f, lg) + .0722f * Math.max(0f, lb));
+                float signalGate = smoothstep(0.0020f, 0.012f, pixY);
+                lgain = 1.0f + (lgain - 1.0f) * signalGate;
+            }
+            lr *= lgain;
+            lg *= lgain;
+            lb *= lgain;
+        }
+        int color = renderPreparedLook(lr, lg, lb, prep, ox, oy, seed);
+        if (vigAmount > 0f) {
+            float nx = outW <= 1 ? 0f : ox / (float) (outW - 1) * 2f - 1f;
+            float falloff = Math.max(.72f, 1f - vigAmount * .18f * (nx * nx + nySq));
+            color = scaleColor(color, falloff);
+        }
+        return color;
+    }
+
+    private static float resolveEffectiveChromaNr(Look look, RawArchive.Frame frame) {
+        float effectiveChromaNr = look.chromaNr;
+        if (look.easyMode && frame.sensitivityIso >= 400
+                && Math.abs(effectiveChromaNr - AppSettings.DEFAULT_COLOR_NR / 100f) < 0.01f) {
+            effectiveChromaNr = Math.max(effectiveChromaNr,
+                    .25f + .15f * (1f - shadowRecoveryConfidence(frame.sensitivityIso)));
+        }
+        return effectiveChromaNr;
+    }
+
     static LinearSceneCache prepareLinearScene(RawArchive.Frame frame, Look look, int maxDimension) {
         if (frame == null || (frame.rawSamples == null && frame.captureBuffer == null)) return null;
         if (look == null) look = new Look();
@@ -715,47 +833,16 @@ final class RawDeveloper {
             int rowBase = oy * outW * 3;
             float[] rgb = new float[3];
             float[] lsm = applyLsm ? new float[4] : null;
+            float[] linear = new float[3];
             for (int ox = 0; ox < outW; ox++) {
                 float effectiveOx = flipH ? (outW - 1 - ox) : ox;
                 float dx = Math.min(crop[0] + cropWidth - .5f, crop[0] + (effectiveOx + .5f) * cropWidth / outW);
-                int sx, sy;
-                switch (orientation) {
-                    case 90: sx = Math.min(width - 1, (int) dy); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dx)); break;
-                    case 180: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dx)); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dy)); break;
-                    case 270: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dy)); sy = Math.min(height - 1, (int) dx); break;
-                    default: sx = Math.min(width - 1, (int) dx); sy = Math.min(height - 1, (int) dy); break;
-                }
-                if (useQuad) sampleQuad(rawShorts, frame, white, sx, sy, rgb);
-                else demosaicPixel(rawShorts, frame, white, sx, sy, rgb);
-                float r = rgb[0], g = rgb[1], b = rgb[2];
-                if (applyLsm) {
-                    sampleLsm(frame, sx, sy, lsm);
-                    float sig = Math.max(r, Math.max(g, b));
-                    float lsmWeight = smoothstep(0.003f, 0.030f, sig);
-                    r *= 1f + (lsm[0] - 1f) * lsmWeight;
-                    g *= 1f + ((lsm[1] + lsm[2]) * 0.5f - 1f) * lsmWeight;
-                    b *= 1f + (lsm[3] - 1f) * lsmWeight;
-                }
-                r *= gainR;
-                g *= gainG;
-                b *= gainB;
-                float lr, lg, lb;
-                if (hasCct) {
-                    lr = cct[0] * r + cct[1] * g + cct[2] * b;
-                    lg = cct[3] * r + cct[4] * g + cct[5] * b;
-                    lb = cct[6] * r + cct[7] * g + cct[8] * b;
-                } else {
-                    float x = cameraToXyz[0] * r + cameraToXyz[1] * g + cameraToXyz[2] * b;
-                    float y = cameraToXyz[3] * r + cameraToXyz[4] * g + cameraToXyz[5] * b;
-                    float z = cameraToXyz[6] * r + cameraToXyz[7] * g + cameraToXyz[8] * b;
-                    lr = 3.1339f * x - 1.6169f * y - .4906f * z;
-                    lg = -.9785f * x + 1.9160f * y + .0333f * z;
-                    lb = .0720f * x - .2290f * y + 1.4057f * z;
-                }
+                sampleSensorLinearRgb(rawShorts, frame, white, width, height, orientation, dx, dy,
+                        useQuad, applyLsm, gainR, gainG, gainB, hasCct, cct, cameraToXyz, rgb, lsm, linear);
                 int idx = rowBase + ox * 3;
-                baseRgb[idx] = lr;
-                baseRgb[idx + 1] = lg;
-                baseRgb[idx + 2] = lb;
+                baseRgb[idx] = linear[0];
+                baseRgb[idx + 1] = linear[1];
+                baseRgb[idx + 2] = linear[2];
             }
         });
 
@@ -789,37 +876,14 @@ final class RawDeveloper {
             float nySq = ny * ny;
             for (int ox = 0; ox < outW; ox++) {
                 int rIdx = rgbRowBase + ox * 3;
-                float lr = baseRgb[rIdx] * evScale;
-                float lg = baseRgb[rIdx + 1] * evScale;
-                float lb = baseRgb[rIdx + 2] * evScale;
-                if (localGainGrid != null) {
-                    float lgain = sampleLocalGain(localGainGrid, lgW, lgH, ox, oy, outW, outH);
-                    if (lgain > 1.0f) {
-                        float pixY = Math.max(0f, .2126f * Math.max(0f, lr) + .7152f * Math.max(0f, lg) + .0722f * Math.max(0f, lb));
-                        float signalGate = smoothstep(0.0020f, 0.012f, pixY);
-                        lgain = 1.0f + (lgain - 1.0f) * signalGate;
-                    }
-                    lr *= lgain;
-                    lg *= lgain;
-                    lb *= lgain;
-                }
-                int color = renderPreparedLook(lr, lg, lb, prep, ox, oy, scene.seed);
-                if (vigAmount > 0f) {
-                    float nx = outW <= 1 ? 0f : ox / (float) (outW - 1) * 2f - 1f;
-                    float falloff = Math.max(.72f, 1f - vigAmount * .18f * (nx * nx + nySq));
-                    color = scaleColor(color, falloff);
-                }
-                allPixels[rowOffset + ox] = color;
+                allPixels[rowOffset + ox] = gradeLinearPixel(
+                        baseRgb[rIdx] * evScale, baseRgb[rIdx + 1] * evScale, baseRgb[rIdx + 2] * evScale,
+                        localGainGrid, lgW, lgH, ox, oy, outW, outH, nySq, vigAmount, prep, scene.seed);
             }
         });
 
-        float effectiveChromaNr = look.chromaNr;
-        if (look.easyMode && scene.frame.sensitivityIso >= 400
-                && Math.abs(effectiveChromaNr - AppSettings.DEFAULT_COLOR_NR / 100f) < 0.01f) {
-            effectiveChromaNr = Math.max(effectiveChromaNr,
-                    .25f + .15f * (1f - shadowRecoveryConfidence(scene.frame.sensitivityIso)));
-        }
-        applyPostGradeEffects(allPixels, outW, outH, look, prep, scene.frame, scene.seed, effectiveChromaNr);
+        applyPostGradeEffects(allPixels, outW, outH, look, prep, scene.frame, scene.seed,
+                resolveEffectiveChromaNr(look, scene.frame));
         return allPixels;
     }
 
@@ -854,6 +918,22 @@ final class RawDeveloper {
             outSize[0] = outW;
             outSize[1] = outH;
         }
+        final int seed = frame.key == null ? width * 31 + height : frame.key.hashCode();
+        final LutManager.Lut3D lut = (look.lutName != null && !look.lutName.equals("None") && look.lutIntensity > 0.001f)
+                ? LutManager.get(look.lutName) : null;
+        final PreparedLook prep = new PreparedLook(look, frame, lut);
+        final int[] allPixels = demosaicAndGradePixels(
+                frame, look, prep, orientation, crop, cropWidth, cropHeight, step, outW, outH, seed);
+
+        applyPostGradeEffects(allPixels, outW, outH, look, prep, frame, seed,
+                resolveEffectiveChromaNr(look, frame));
+        return allPixels;
+    }
+
+    private static int[] demosaicAndGradePixels(RawArchive.Frame frame, Look look, PreparedLook prep,
+                                                int orientation, float[] crop, float cropWidth, float cropHeight,
+                                                int step, int outW, int outH, int seed) {
+        final int width = frame.width, height = frame.height;
         final short[] rawShorts = extractRawShorts(frame, frame.rawBuffer());
         final float[] cameraToXyz = profileFor(frame, look.whiteBalanceKelvin);
         final float rawWhite = frame.dynamicWhiteLevel > 0 ? frame.dynamicWhiteLevel : frame.staticWhiteLevel;
@@ -864,10 +944,6 @@ final class RawDeveloper {
                 crop, orientation, applyLsm, look);
         final float exposureScale = (float) Math.pow(2.0, look.exposureEv) * autoSceneGain;
         final int[] allPixels = new int[outW * outH];
-        final int seed = frame.key == null ? width * 31 + height : frame.key.hashCode();
-        final LutManager.Lut3D lut = (look.lutName != null && !look.lutName.equals("None") && look.lutIntensity > 0.001f)
-                ? LutManager.get(look.lutName) : null;
-        final PreparedLook prep = new PreparedLook(look, frame, lut);
         final boolean hasCct = frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9;
         final float[] cct = frame.colorCorrectionTransform;
         final boolean flipH = look.flipHorizontal;
@@ -892,74 +968,18 @@ final class RawDeveloper {
             float nySq = ny * ny;
             float[] rgb = new float[3];
             float[] lsm = applyLsm ? new float[4] : null;
+            float[] linear = new float[3];
             for (int ox = 0; ox < outW; ox++) {
                 float effectiveOx = flipH ? (outW - 1 - ox) : ox;
                 float dx = Math.min(crop[0] + cropWidth - .5f,
                         crop[0] + (effectiveOx + .5f) * cropWidth / outW);
-                int sx, sy;
-                switch (orientation) {
-                    case 90: sx = Math.min(width - 1, (int) dy); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dx)); break;
-                    case 180: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dx)); sy = Math.max(0, Math.min(height - 1, height - 1 - (int) dy)); break;
-                    case 270: sx = Math.max(0, Math.min(width - 1, width - 1 - (int) dy)); sy = Math.min(height - 1, (int) dx); break;
-                    default: sx = Math.min(width - 1, (int) dx); sy = Math.min(height - 1, (int) dy); break;
-                }
-                if (useQuad) sampleQuad(rawShorts, frame, white, sx, sy, rgb);
-                else demosaicPixel(rawShorts, frame, white, sx, sy, rgb);
-                float r = rgb[0], g = rgb[1], b = rgb[2];
-                if (applyLsm) {
-                    sampleLsm(frame, sx, sy, lsm);
-                    float sig = Math.max(r, Math.max(g, b));
-                    float lsmWeight = smoothstep(0.003f, 0.030f, sig);
-                    r *= 1f + (lsm[0] - 1f) * lsmWeight;
-                    g *= 1f + ((lsm[1] + lsm[2]) * 0.5f - 1f) * lsmWeight;
-                    b *= 1f + (lsm[3] - 1f) * lsmWeight;
-                }
-                r *= gainR;
-                g *= gainG;
-                b *= gainB;
-
-                float lr, lg, lb;
-                if (hasCct) {
-                    lr = cct[0] * r + cct[1] * g + cct[2] * b;
-                    lg = cct[3] * r + cct[4] * g + cct[5] * b;
-                    lb = cct[6] * r + cct[7] * g + cct[8] * b;
-                } else {
-                    float x = cameraToXyz[0] * r + cameraToXyz[1] * g + cameraToXyz[2] * b;
-                    float y = cameraToXyz[3] * r + cameraToXyz[4] * g + cameraToXyz[5] * b;
-                    float z = cameraToXyz[6] * r + cameraToXyz[7] * g + cameraToXyz[8] * b;
-                    // XYZ D50 to linear sRGB. The camera profile is kept separate from the authored look.
-                    lr = 3.1339f * x - 1.6169f * y - .4906f * z;
-                    lg = -.9785f * x + 1.9160f * y + .0333f * z;
-                    lb = .0720f * x - .2290f * y + 1.4057f * z;
-                }
-                if (localGainGrid != null) {
-                    float lgain = sampleLocalGain(localGainGrid, lgW, lgH, ox, oy, outW, outH);
-                    if (lgain > 1.0f) {
-                        float pixY = Math.max(0f, .2126f * Math.max(0f, lr) + .7152f * Math.max(0f, lg) + .0722f * Math.max(0f, lb));
-                        float signalGate = smoothstep(0.0020f, 0.012f, pixY);
-                        lgain = 1.0f + (lgain - 1.0f) * signalGate;
-                    }
-                    lr *= lgain;
-                    lg *= lgain;
-                    lb *= lgain;
-                }
-                int color = renderPreparedLook(lr, lg, lb, prep, ox, oy, seed);
-                if (vigAmount > 0f) {
-                    float nx = outW <= 1 ? 0f : ox / (float) (outW - 1) * 2f - 1f;
-                    float falloff = Math.max(.72f, 1f - vigAmount * .18f * (nx * nx + nySq));
-                    color = scaleColor(color, falloff);
-                }
-                allPixels[rowOffset + ox] = color;
+                sampleSensorLinearRgb(rawShorts, frame, white, width, height, orientation, dx, dy,
+                        useQuad, applyLsm, gainR, gainG, gainB, hasCct, cct, cameraToXyz, rgb, lsm, linear);
+                allPixels[rowOffset + ox] = gradeLinearPixel(
+                        linear[0], linear[1], linear[2],
+                        localGainGrid, lgW, lgH, ox, oy, outW, outH, nySq, vigAmount, prep, seed);
             }
         });
-
-        float effectiveChromaNr = look.chromaNr;
-        if (look.easyMode && frame.sensitivityIso >= 400
-                && Math.abs(effectiveChromaNr - AppSettings.DEFAULT_COLOR_NR / 100f) < 0.01f) {
-            effectiveChromaNr = Math.max(effectiveChromaNr,
-                    .25f + .15f * (1f - shadowRecoveryConfidence(frame.sensitivityIso)));
-        }
-        applyPostGradeEffects(allPixels, outW, outH, look, prep, frame, seed, effectiveChromaNr);
         return allPixels;
     }
 
@@ -1158,8 +1178,7 @@ final class RawDeveloper {
             float nySq = ny * ny;
             for (int x = 0; x < w; x++) {
                 int c = pixels[rowOffset + x];
-                int rendered = renderDisplayRgb(((c >> 16) & 0xff) / 255f,
-                        ((c >> 8) & 0xff) / 255f, (c & 0xff) / 255f, prep);
+                int rendered = renderDisplayRgb8((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff, prep);
                 if (vigAmount > 0f) {
                     float nx = w <= 1 ? 0f : x / (float) (w - 1) * 2f - 1f;
                     float falloff = Math.max(.72f, 1f - vigAmount * .18f * (nx * nx + nySq));
@@ -1224,9 +1243,17 @@ final class RawDeveloper {
     }
 
     static int renderDisplayRgb(float r, float g, float b, PreparedLook prep) {
-        float lr = srgbToLinear(r) * prep.exposureScale * prep.displayWbShift;
-        float lg = srgbToLinear(g) * prep.exposureScale;
-        float lb = srgbToLinear(b) * prep.exposureScale / prep.displayWbShift;
+        return renderDisplayLinear(srgbToLinear(r), srgbToLinear(g), srgbToLinear(b), prep);
+    }
+
+    static int renderDisplayRgb8(int r8, int g8, int b8, PreparedLook prep) {
+        return renderDisplayLinear(srgbByteToLinear(r8), srgbByteToLinear(g8), srgbByteToLinear(b8), prep);
+    }
+
+    private static int renderDisplayLinear(float linR, float linG, float linB, PreparedLook prep) {
+        float lr = linR * prep.exposureScale * prep.displayWbShift;
+        float lg = linG * prep.exposureScale;
+        float lb = linB * prep.exposureScale / prep.displayWbShift;
         float y = .2126f * lr + .7152f * lg + .0722f * lb;
         if (y > 0.55f) {
             // Display-referred Camera2/JPEG inputs have already been ISP-compressed below 1.0;
@@ -1250,9 +1277,9 @@ final class RawDeveloper {
         int count = 0;
         for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
             int c = pixels[y * w + x];
-            float luma = .2126f * srgbToLinear(((c >> 16) & 255) / 255f)
-                    + .7152f * srgbToLinear(((c >> 8) & 255) / 255f)
-                    + .0722f * srgbToLinear((c & 255) / 255f);
+            float luma = .2126f * srgbByteToLinear((c >> 16) & 255)
+                    + .7152f * srgbByteToLinear((c >> 8) & 255)
+                    + .0722f * srgbByteToLinear(c & 255);
             if (luma >= .92f) continue;
             int weight = x >= w / 4 && x < w * 3 / 4 && y >= h / 4 && y < h * 3 / 4 ? 3 : 1;
             for (int i = 0; i < weight; i++) values[count++] = luma;
@@ -1914,18 +1941,7 @@ final class RawDeveloper {
         }
 
         float oldY = Math.max(.0001f, .2126f * r + .7152f * g + .0722f * b);
-
-        float contrasted;
-        if (prep.curveId == CURVE_LINEAR) {
-            contrasted = oldY;
-        } else if (prep.curveId == CURVE_LOG) {
-            float logY = (float) Math.log1p(oldY * 7.0f) * INV_LOG1P_7;
-            contrasted = logY <= 0f ? 0f : prep.logPivot * (float) Math.pow(logY * prep.invSafeLogPivot, prep.logContrast);
-        } else {
-            // Filmic S-Curve: power-law toe around pivot preserves shadow gradation down to true black without exploding read noise
-            float gamma = oldY < prep.safePivot ? prep.toeContrast : prep.safeContrast;
-            contrasted = oldY <= 0f ? 0f : prep.safePivot * (float) Math.pow(oldY / prep.safePivot, gamma);
-        }
+        float contrasted = prep.evalToneCurve(oldY);
 
         float shadowWeight = 1f - smoothstep(.02f, .44f, contrasted);
         if (prep.liftedShadows) {
@@ -2134,9 +2150,9 @@ final class RawDeveloper {
         if (prep.lut != null) {
             int argb = prep.lut.applyToRgb(toSrgbFloat(outR), toSrgbFloat(outG), toSrgbFloat(outB), prep.lutIntensity);
             if (prep.outputDisplayP3) {
-                float lr = srgbToLinear(((argb >> 16) & 0xFF) / 255f);
-                float lg = srgbToLinear(((argb >> 8) & 0xFF) / 255f);
-                float lb = srgbToLinear((argb & 0xFF) / 255f);
+                float lr = srgbByteToLinear((argb >> 16) & 0xFF);
+                float lg = srgbByteToLinear((argb >> 8) & 0xFF);
+                float lb = srgbByteToLinear(argb & 0xFF);
                 float p3R = 0.8224620f * lr + 0.1775380f * lg;
                 float p3G = 0.0331942f * lr + 0.9668058f * lg;
                 float p3B = 0.0170826f * lr + 0.0723974f * lg + 0.9105199f * lb;
@@ -2482,7 +2498,20 @@ final class RawDeveloper {
         int index = Math.max(0, Math.min(65535, Math.round(clamp(linear, 0f, 1f) * 65535f)));
         return SRGB_FLOAT_LUT[index];
     }
-    private static float srgbToLinear(float encoded) {
+    private static float[] buildSrgbToLinear256Lut() {
+        float[] lut = new float[256];
+        for (int i = 0; i < 256; i++) {
+            float encoded = i / 255f;
+            lut[i] = encoded <= .04045f ? encoded / 12.92f : (float) Math.pow((encoded + .055f) / 1.055f, 2.4);
+        }
+        return lut;
+    }
+
+    static float srgbByteToLinear(int channel) {
+        return SRGB_TO_LINEAR_256[Math.max(0, Math.min(255, channel))];
+    }
+
+    static float srgbToLinear(float encoded) {
         return encoded <= .04045f ? encoded / 12.92f : (float) Math.pow((encoded + .055f) / 1.055f, 2.4);
     }
 }

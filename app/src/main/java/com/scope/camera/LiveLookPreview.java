@@ -30,7 +30,11 @@ final class LiveLookPreview {
                 }
             });
 
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "lika-live-look");
+        t.setDaemon(true);
+        return t;
+    });
     private final Handler main = new Handler(Looper.getMainLooper());
     private final AtomicInteger generation = new AtomicInteger();
     private Runnable pending;
@@ -202,14 +206,20 @@ final class LiveLookPreview {
                 + " half3 wsOut = half3(fromLinearSrgb(srgbToLin(srgbOut)));"
                 + " return half4(wsOut * c.a, c.a); }";
 
+        private static RuntimeShader cachedShader;
+
         static void apply(TextureView view, PreviewLookLut table) {
             Bitmap bitmap = Bitmap.createBitmap(table.pixels, PreviewLookLut.SIZE * PreviewLookLut.SIZE,
                     PreviewLookLut.SIZE, Bitmap.Config.ARGB_8888);
             BitmapShader cube = new BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
             cube.setFilterMode(BitmapShader.FILTER_MODE_NEAREST);
-            RuntimeShader shader = new RuntimeShader(PROGRAM);
+            RuntimeShader shader = cachedShader;
+            if (shader == null) {
+                shader = new RuntimeShader(PROGRAM);
+                shader.setFloatUniform("size", (float) PreviewLookLut.SIZE);
+                cachedShader = shader;
+            }
             shader.setInputBuffer("cube", cube);
-            shader.setFloatUniform("size", (float) PreviewLookLut.SIZE);
             // Clear the older matrix paint so the look is applied exactly once.
             view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
             view.setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "camera"));

@@ -1165,22 +1165,6 @@ public final class AppUpdateManager {
             } catch (Exception ignored) {}
         }
 
-        Dialog dialog = new Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar);
-        sCurrentUpdateDialog = dialog;
-        dialogOwner = new java.lang.ref.WeakReference<>(activity);
-        dialog.setOnDismissListener(d -> {
-            if (sCurrentUpdateDialog == dialog) {
-                sCurrentUpdateDialog = null;
-                dialogOwner.clear();
-            }
-        });
-
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        }
-
         float density = activity.getResources().getDisplayMetrics().density;
         int screenH = activity.getResources().getDisplayMetrics().heightPixels;
         int dp20 = Math.round(20 * density);
@@ -1192,13 +1176,17 @@ public final class AppUpdateManager {
         int dp4 = Math.round(4 * density);
 
         FrameLayout scrim = new FrameLayout(activity);
-        scrim.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        scrim.setBackgroundColor(0x88000000);
-        scrim.setOnClickListener(v -> dialog.dismiss());
-
         LinearLayout sheet = new LinearLayout(activity);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setClickable(true);
+        Dialog dialog = UiKit.createModalCardDialog(activity, scrim, sheet, 440, 0.90f);
+        scrim.setBackgroundColor(0x88000000);
+        sCurrentUpdateDialog = dialog;
+        dialogOwner = new java.lang.ref.WeakReference<>(activity);
+        dialog.setOnDismissListener(d -> {
+            if (sCurrentUpdateDialog == dialog) {
+                sCurrentUpdateDialog = null;
+                dialogOwner.clear();
+            }
+        });
 
         GradientDrawable sheetBg = new GradientDrawable();
         sheetBg.setColor(BG_DIALOG);
@@ -1378,14 +1366,6 @@ public final class AppUpdateManager {
             });
         });
 
-        int maxDialogW = Math.round(440 * density);
-        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(
-                Math.min(activity.getResources().getDisplayMetrics().widthPixels - dp20 * 2, maxDialogW),
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-        );
-        scrim.addView(sheet, sheetLp);
-        dialog.setContentView(scrim);
         dialog.show();
     }
 

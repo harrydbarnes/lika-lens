@@ -6,16 +6,19 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.LruCache;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
+import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -36,7 +39,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class GalleryActivity extends Activity {
     private static final int BG = 0xff0b0d0e;
     private static final int IMPORT_REQUEST = 50;
-    private LinearLayout list;
+    private ListView listView;
+    private LinearLayout emptyStateView;
+    private TextView emptyTitleView;
+    private TextView emptyHintView;
+    private GalleryRowAdapter adapter;
     private TextView countView;
     private LinearLayout filters;
     private String activeFilter = "All";
@@ -50,29 +57,18 @@ public class GalleryActivity extends Activity {
     });
     private final AtomicInteger loadGeneration = new AtomicInteger();
     private final SimpleDateFormat dayFormat = new SimpleDateFormat("EEEE, d MMMM", Locale.getDefault());
-    private final List<TileHolder> visibleTiles = new ArrayList<>();
     private volatile List<PhotoRepository.Photo> cachedAllPhotos = Collections.emptyList();
     private LruCache<String, Bitmap> thumbCache;
-    private ScrollView scroll;
-    private int savedScrollY;
+    private int savedFirstVisiblePos;
+    private int savedTopOffset;
+    private String lastRenderedSignature;
 
     private final List<Uri> selectedUris = new ArrayList<>();
+    private final Map<Uri, Integer> selectionOrderMap = new HashMap<>();
     private enum SelectionMode { BROWSING, SELECTING }
     private SelectionMode selectionMode = SelectionMode.BROWSING;
     private LinearLayout selectionBar;
     private TextView selectionCountView;
-
-    private static final class TileHolder {
-        final FrameLayout tile;
-        final TextView seqBadge;
-        final Uri uri;
-
-        TileHolder(FrameLayout tile, TextView seqBadge, Uri uri) {
-            this.tile = tile;
-            this.seqBadge = seqBadge;
-            this.uri = uri;
-        }
-    }
 
     private static final class FilteredEntry {
         final PhotoRepository.Photo photo;
@@ -81,6 +77,49 @@ public class GalleryActivity extends Activity {
         FilteredEntry(PhotoRepository.Photo photo, String dayLabel) {
             this.photo = photo;
             this.dayLabel = dayLabel;
+        }
+    }
+
+    private static final class GridRow {
+        final String headerLabel;
+        final PhotoRepository.Photo[] photos;
+
+        GridRow(String headerLabel) {
+            this.headerLabel = headerLabel;
+            this.photos = null;
+        }
+
+        GridRow(PhotoRepository.Photo[] photos) {
+            this.headerLabel = null;
+            this.photos = photos;
+        }
+
+        boolean isHeader() {
+            return headerLabel != null;
+        }
+    }
+
+    private static final class TileSlotHolder {
+        final FrameLayout tile;
+        final ImageView image;
+        final TextView gifBadge;
+        final TextView numBadge;
+
+        TileSlotHolder(FrameLayout tile, ImageView image, TextView gifBadge, TextView numBadge) {
+            this.tile = tile;
+            this.image = image;
+            this.gifBadge = gifBadge;
+            this.numBadge = numBadge;
+        }
+    }
+
+    private static final class RowHolder {
+        final int columns;
+        final TileSlotHolder[] slots;
+
+        RowHolder(int columns, TileSlotHolder[] slots) {
+            this.columns = columns;
+            this.slots = slots;
         }
     }
 
@@ -105,8 +144,16 @@ public class GalleryActivity extends Activity {
     }
 
     @Override protected void onPause() {
-        if (scroll != null) savedScrollY = scroll.getScrollY();
+        saveScrollPosition();
         super.onPause();
+    }
+
+    private void saveScrollPosition() {
+        if (listView != null) {
+            savedFirstVisiblePos = listView.getFirstVisiblePosition();
+            View first = listView.getChildAt(0);
+            savedTopOffset = first != null ? first.getTop() - listView.getPaddingTop() : 0;
+        }
     }
 
     @Override
@@ -169,14 +216,36 @@ public class GalleryActivity extends Activity {
         refreshFilters();
         page.addView(filters);
 
-        scroll = new ScrollView(this);
-        scroll.setFillViewport(false);
-        scroll.setVerticalScrollBarEnabled(false);
-        list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(dp(14), dp(3), dp(14), dp((selectionMode == SelectionMode.SELECTING) ? 110 : 25));
-        scroll.addView(list);
-        page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        FrameLayout contentArea = new FrameLayout(this);
+        listView = new ListView(this);
+        listView.setDivider(null);
+        listView.setDividerHeight(0);
+        listView.setSelector(new ColorDrawable(0));
+        listView.setVerticalScrollBarEnabled(false);
+        listView.setClipToPadding(false);
+        listView.setCacheColorHint(BG);
+        WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
+        int horizontalPad = Math.max(dp(14), windowInfo.widthDp >= 840 ? dp(48) : dp(14));
+        listView.setPadding(horizontalPad, dp(3), horizontalPad, dp((selectionMode == SelectionMode.SELECTING) ? 110 : 25));
+        adapter = new GalleryRowAdapter();
+        listView.setAdapter(adapter);
+        contentArea.addView(listView, new FrameLayout.LayoutParams(-1, -1));
+
+        emptyStateView = new LinearLayout(this);
+        emptyStateView.setOrientation(LinearLayout.VERTICAL);
+        emptyStateView.setGravity(Gravity.CENTER);
+        emptyStateView.setPadding(dp(28), dp(82), dp(28), dp(40));
+        emptyTitleView = text("NO PHOTOS YET", 13, 0xffd8ded6, true);
+        emptyTitleView.setGravity(Gravity.CENTER);
+        emptyStateView.addView(emptyTitleView);
+        emptyHintView = text("Capture a photo or tap Import to start your library.", 12, 0xff89948e, false);
+        emptyHintView.setGravity(Gravity.CENTER);
+        emptyHintView.setPadding(0, dp(10), 0, 0);
+        emptyStateView.addView(emptyHintView);
+        emptyStateView.setVisibility(View.GONE);
+        contentArea.addView(emptyStateView, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+
+        page.addView(contentArea, new LinearLayout.LayoutParams(-1, 0, 1));
         root.addView(page, new FrameLayout.LayoutParams(-1, -1));
 
         // Floating Selection Bar
@@ -221,7 +290,7 @@ public class GalleryActivity extends Activity {
     }
 
     private void loadPhotos() {
-        if (list == null) return;
+        if (listView == null) return;
         final int generation = loadGeneration.incrementAndGet();
         final String filter = activeFilter;
         final Context appContext = getApplicationContext();
@@ -248,178 +317,284 @@ public class GalleryActivity extends Activity {
                 }
             }
             mainHandler.post(() -> {
-                if (generation != loadGeneration.get() || isFinishing() || isDestroyed() || list == null) return;
+                if (generation != loadGeneration.get() || isFinishing() || isDestroyed() || listView == null) return;
                 renderPhotoGrid(filtered, filter, generation);
             });
         });
     }
 
+    private static String computeGridSignature(List<FilteredEntry> entries, String filter, int columns) {
+        int n = entries.size();
+        if (n == 0) return filter + "|" + columns + "|0";
+        PhotoRepository.Photo first = entries.get(0).photo;
+        PhotoRepository.Photo last = entries.get(n - 1).photo;
+        return filter + "|" + columns + "|" + n + "|" + first.uri + "|" + first.timestampMillis
+                + "|" + last.uri + "|" + last.timestampMillis;
+    }
+
     private void renderPhotoGrid(List<FilteredEntry> entries, String filter, int generation) {
-        visibleTiles.clear();
-        list.removeAllViews();
-        list.setPadding(list.getPaddingLeft(), dp(3), list.getPaddingRight(), dp((selectionMode == SelectionMode.SELECTING) ? 110 : 25));
         countView.setText(String.format(Locale.US, "%02d %s", entries.size(), entries.size() == 1 ? "PHOTO" : "PHOTOS"));
+        WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
+        int columns = WindowMetricsHelper.calculateGalleryColumns(windowInfo.widthDp);
+        String signature = computeGridSignature(entries, filter, columns);
+        if (signature.equals(lastRenderedSignature)) {
+            return;
+        }
+        lastRenderedSignature = signature;
+
+        listView.setPadding(listView.getPaddingLeft(), dp(3), listView.getPaddingRight(),
+                dp((selectionMode == SelectionMode.SELECTING) ? 110 : 25));
+
         if (entries.isEmpty()) {
-            LinearLayout empty = new LinearLayout(this);
-            empty.setOrientation(LinearLayout.VERTICAL);
-            empty.setGravity(Gravity.CENTER);
-            empty.setPadding(dp(28), dp(82), dp(28), dp(40));
-            TextView title = text("All".equals(filter) ? "NO PHOTOS YET" : ("GIFs".equals(filter) ? "NO GIFS YET" : "NO " + filter.toUpperCase(Locale.US) + " PHOTOS"), 13, 0xffd8ded6, true);
-            title.setGravity(Gravity.CENTER);
-            empty.addView(title);
-            TextView hint = text("All".equals(filter) ? "Capture a photo or tap Import to start your library." : "Choose All to see the rest of your library.", 12, 0xff89948e, false);
-            hint.setGravity(Gravity.CENTER);
-            hint.setPadding(0, dp(10), 0, 0);
-            empty.addView(hint);
-            list.addView(empty);
-            if (scroll != null) scroll.post(() -> scroll.scrollTo(0, savedScrollY));
+            adapter.setData(Collections.emptyList(), columns, dp(112), dp(112), generation);
+            emptyTitleView.setText("All".equals(filter) ? "NO PHOTOS YET"
+                    : ("GIFs".equals(filter) ? "NO GIFS YET" : "NO " + filter.toUpperCase(Locale.US) + " PHOTOS"));
+            emptyHintView.setText("All".equals(filter)
+                    ? "Capture a photo or tap Import to start your library."
+                    : "Choose All to see the rest of your library.");
+            emptyStateView.setVisibility(View.VISIBLE);
+            listView.setVisibility(View.GONE);
             return;
         }
 
-        WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
-        int columns = WindowMetricsHelper.calculateGalleryColumns(windowInfo.widthDp);
+        emptyStateView.setVisibility(View.GONE);
+        listView.setVisibility(View.VISIBLE);
+
         int rowHeight = columns >= 5 ? dp(130) : dp(112);
-        int thumbTargetPx = rowHeight;
+        List<GridRow> rows = new ArrayList<>();
         String currentDay = "";
-        LinearLayout row = null;
+        List<PhotoRepository.Photo> currentRow = null;
         for (FilteredEntry entry : entries) {
             if (!entry.dayLabel.equals(currentDay)) {
-                completeRow(row, columns);
+                if (currentRow != null && !currentRow.isEmpty()) {
+                    rows.add(new GridRow(currentRow.toArray(new PhotoRepository.Photo[0])));
+                }
                 currentDay = entry.dayLabel;
-                TextView heading = text(currentDay, 11, 0xffbbc1ba, true);
-                heading.setLetterSpacing(.12f);
-                LinearLayout.LayoutParams headingLp = new LinearLayout.LayoutParams(-1, dp(30));
-                headingLp.topMargin = dp(4);
-                list.addView(heading, headingLp);
-                row = null;
+                rows.add(new GridRow(currentDay));
+                currentRow = new ArrayList<>(columns);
             }
-            if (row == null || row.getChildCount() == columns) {
-                row = new LinearLayout(this);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, rowHeight);
-                rowLp.bottomMargin = dp(3);
-                list.addView(row, rowLp);
+            if (currentRow == null || currentRow.size() == columns) {
+                if (currentRow != null && !currentRow.isEmpty()) {
+                    rows.add(new GridRow(currentRow.toArray(new PhotoRepository.Photo[0])));
+                }
+                currentRow = new ArrayList<>(columns);
             }
-            addPhotoTile(row, entry.photo, thumbTargetPx, generation);
+            currentRow.add(entry.photo);
         }
-        completeRow(row, columns);
-        if (scroll != null) scroll.post(() -> scroll.scrollTo(0, savedScrollY));
+        if (currentRow != null && !currentRow.isEmpty()) {
+            rows.add(new GridRow(currentRow.toArray(new PhotoRepository.Photo[0])));
+        }
+
+        adapter.setData(rows, columns, rowHeight, rowHeight, generation);
+        if (savedFirstVisiblePos > 0 || savedTopOffset != 0) {
+            final int pos = Math.min(savedFirstVisiblePos, Math.max(0, rows.size() - 1));
+            final int off = savedTopOffset;
+            listView.post(() -> {
+                if (listView != null) listView.setSelectionFromTop(pos, off);
+            });
+        }
     }
 
     @Override
     public void onConfigurationChanged(android.content.res.Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        if (list != null) {
+        saveScrollPosition();
+        lastRenderedSignature = null;
+        if (listView != null) {
             WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
             int horizontalPad = Math.max(dp(14), windowInfo.widthDp >= 840 ? dp(48) : dp(14));
-            list.setPadding(horizontalPad, dp(3), horizontalPad, dp((selectionMode == SelectionMode.SELECTING) ? 110 : 25));
+            listView.setPadding(horizontalPad, dp(3), horizontalPad, dp((selectionMode == SelectionMode.SELECTING) ? 110 : 25));
         }
         loadPhotos();
     }
 
-    private void addPhotoTile(LinearLayout row, PhotoRepository.Photo photo, int thumbTargetPx, int generation) {
-        FrameLayout tile = new FrameLayout(this);
-        boolean selecting = selectionMode == SelectionMode.SELECTING;
-        int seqIdx = selecting ? selectedUris.indexOf(photo.uri) : -1;
-        boolean isSelected = seqIdx >= 0;
-        tile.setBackground(round(0xff202626, 9, isSelected ? 0xffd7b574 : 0xff293031, isSelected ? dp(2) : dp(1)));
-        tile.setClipToOutline(true);
+    private final class GalleryRowAdapter extends BaseAdapter {
+        private static final int TYPE_HEADER = 0;
+        private static final int TYPE_PHOTO_ROW = 1;
 
-        ImageView image = new ImageView(this);
-        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        image.setTag(photo.uri);
-        tile.addView(image, new FrameLayout.LayoutParams(-1, -1));
+        private List<GridRow> rows = Collections.emptyList();
+        private int columns = 3;
+        private int rowHeightPx = dp(112);
+        private int thumbTargetPx = dp(112);
+        private int generation = 0;
 
-        String cacheKey = photo.uri.toString();
-        Bitmap cached = thumbCache != null ? thumbCache.get(cacheKey) : null;
-        if (cached != null && !cached.isRecycled()) {
-            image.setImageBitmap(cached);
-        } else {
-            final Context appContext = getApplicationContext();
-            loadExecutor.execute(() -> {
-                if (generation != loadGeneration.get()) return;
-                Bitmap decoded = decodeThumbnail(appContext, photo.uri, thumbTargetPx);
-                if (decoded == null) return;
-                if (thumbCache != null) thumbCache.put(cacheKey, decoded);
-                mainHandler.post(() -> {
-                    if (generation != loadGeneration.get() || isFinishing() || isDestroyed()) return;
-                    if (photo.uri.equals(image.getTag())) {
-                        image.setImageBitmap(decoded);
+        void setData(List<GridRow> newRows, int columns, int rowHeightPx, int thumbTargetPx, int generation) {
+            this.rows = newRows != null ? newRows : Collections.emptyList();
+            this.columns = Math.max(1, columns);
+            this.rowHeightPx = rowHeightPx;
+            this.thumbTargetPx = thumbTargetPx;
+            this.generation = generation;
+            notifyDataSetChanged();
+        }
+
+        @Override public int getCount() { return rows.size(); }
+        @Override public GridRow getItem(int position) { return rows.get(position); }
+        @Override public long getItemId(int position) { return position; }
+        @Override public int getViewTypeCount() { return 2; }
+        @Override public int getItemViewType(int position) {
+            return rows.get(position).isHeader() ? TYPE_HEADER : TYPE_PHOTO_ROW;
+        }
+        @Override public boolean isEnabled(int position) { return false; }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            GridRow item = rows.get(position);
+            if (item.isHeader()) {
+                TextView heading;
+                if (convertView instanceof TextView) {
+                    heading = (TextView) convertView;
+                } else {
+                    heading = text("", 11, 0xffbbc1ba, true);
+                    heading.setLetterSpacing(.12f);
+                    heading.setPadding(0, dp(4), 0, 0);
+                    heading.setLayoutParams(new ListView.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, dp(34)));
+                }
+                heading.setText(item.headerLabel);
+                return heading;
+            }
+
+            LinearLayout rowView;
+            RowHolder holder;
+            if (convertView instanceof LinearLayout && convertView.getTag() instanceof RowHolder
+                    && ((RowHolder) convertView.getTag()).columns == columns) {
+                rowView = (LinearLayout) convertView;
+                holder = (RowHolder) convertView.getTag();
+            } else {
+                rowView = new LinearLayout(GalleryActivity.this);
+                rowView.setOrientation(LinearLayout.HORIZONTAL);
+                rowView.setPadding(0, 0, 0, dp(3));
+                rowView.setLayoutParams(new ListView.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, rowHeightPx + dp(3)));
+                TileSlotHolder[] slots = new TileSlotHolder[columns];
+                for (int c = 0; c < columns; c++) {
+                    FrameLayout tile = new FrameLayout(GalleryActivity.this);
+                    tile.setClipToOutline(true);
+
+                    ImageView image = new ImageView(GalleryActivity.this);
+                    image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                    tile.addView(image, new FrameLayout.LayoutParams(-1, -1));
+
+                    TextView gifBadge = text("GIF", 7, 0xffd7b574, true);
+                    gifBadge.setBackground(round(0xdd0b0d0e, 6, 0xffd7b574, dp(1)));
+                    gifBadge.setPadding(dp(5), dp(2), dp(5), dp(2));
+                    FrameLayout.LayoutParams gLp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.RIGHT);
+                    gLp.setMargins(0, dp(4), dp(4), 0);
+                    gifBadge.setVisibility(View.GONE);
+                    tile.addView(gifBadge, gLp);
+
+                    TextView numBadge = text("", 8, 0xff0b0d0e, true);
+                    numBadge.setBackground(round(0xffd7b574, 8, 0xffd7b574, 0));
+                    numBadge.setGravity(Gravity.CENTER);
+                    numBadge.setVisibility(View.GONE);
+                    FrameLayout.LayoutParams nLp = new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP | Gravity.LEFT);
+                    nLp.setMargins(dp(4), dp(4), 0, 0);
+                    tile.addView(numBadge, nLp);
+
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, rowHeightPx, 1f);
+                    if (c < columns - 1) lp.rightMargin = dp(3);
+                    rowView.addView(tile, lp);
+                    slots[c] = new TileSlotHolder(tile, image, gifBadge, numBadge);
+                }
+                holder = new RowHolder(columns, slots);
+                rowView.setTag(holder);
+            }
+
+            boolean selecting = selectionMode == SelectionMode.SELECTING;
+            int pad2 = dp(2);
+            int pad1 = dp(1);
+            int bindGen = generation;
+            int targetPx = thumbTargetPx;
+            for (int c = 0; c < columns; c++) {
+                TileSlotHolder slot = holder.slots[c];
+                if (item.photos == null || c >= item.photos.length) {
+                    slot.tile.setVisibility(View.INVISIBLE);
+                    slot.tile.setOnClickListener(null);
+                    slot.tile.setOnLongClickListener(null);
+                    slot.image.setTag(null);
+                    slot.image.setImageDrawable(null);
+                    continue;
+                }
+                final PhotoRepository.Photo photo = item.photos[c];
+                slot.tile.setVisibility(View.VISIBLE);
+
+                Integer order = selecting ? selectionOrderMap.get(photo.uri) : null;
+                boolean isSelected = order != null;
+                slot.tile.setBackground(round(0xff202626, 9, isSelected ? 0xffd7b574 : 0xff293031, isSelected ? pad2 : pad1));
+                slot.gifBadge.setVisibility(photo.isGif ? View.VISIBLE : View.GONE);
+                if (isSelected) {
+                    slot.numBadge.setText(String.valueOf(order));
+                    slot.numBadge.setVisibility(View.VISIBLE);
+                } else {
+                    slot.numBadge.setVisibility(View.GONE);
+                }
+
+                slot.image.setTag(photo.uri);
+                String cacheKey = photo.uri.toString();
+                Bitmap cached = thumbCache != null ? thumbCache.get(cacheKey) : null;
+                if (cached != null && !cached.isRecycled()) {
+                    slot.image.setImageBitmap(cached);
+                } else {
+                    slot.image.setImageDrawable(null);
+                    final Context appContext = getApplicationContext();
+                    final ImageView targetImage = slot.image;
+                    loadExecutor.execute(() -> {
+                        if (bindGen != loadGeneration.get()) return;
+                        if (!photo.uri.equals(targetImage.getTag())) return;
+                        Bitmap decoded = decodeThumbnail(appContext, photo.uri, targetPx);
+                        if (decoded == null) return;
+                        if (thumbCache != null) thumbCache.put(cacheKey, decoded);
+                        mainHandler.post(() -> {
+                            if (bindGen != loadGeneration.get() || isFinishing() || isDestroyed()) return;
+                            if (photo.uri.equals(targetImage.getTag())) {
+                                targetImage.setImageBitmap(decoded);
+                            }
+                        });
+                    });
+                }
+
+                slot.tile.setOnClickListener(v -> {
+                    hapticClick(v);
+                    if (selectionMode == SelectionMode.SELECTING) {
+                        if (selectedUris.contains(photo.uri)) {
+                            selectedUris.remove(photo.uri);
+                        } else {
+                            selectedUris.add(photo.uri);
+                        }
+                        refreshSelectionStates();
+                    } else {
+                        openPhoto(photo);
                     }
                 });
-            });
-        }
 
-        if (photo.isGif) {
-            TextView gifBadge = text("GIF", 7, 0xffd7b574, true);
-            gifBadge.setBackground(round(0xdd0b0d0e, 6, 0xffd7b574, dp(1)));
-            gifBadge.setPadding(dp(5), dp(2), dp(5), dp(2));
-            FrameLayout.LayoutParams gLp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.RIGHT);
-            gLp.setMargins(0, dp(4), dp(4), 0);
-            tile.addView(gifBadge, gLp);
-        }
-
-        TextView numBadge = text(isSelected ? String.valueOf(seqIdx + 1) : "", 8, 0xff0b0d0e, true);
-        numBadge.setBackground(round(0xffd7b574, 8, 0xffd7b574, 0));
-        numBadge.setGravity(Gravity.CENTER);
-        numBadge.setVisibility(isSelected ? View.VISIBLE : View.GONE);
-        FrameLayout.LayoutParams nLp = new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP | Gravity.LEFT);
-        nLp.setMargins(dp(4), dp(4), 0, 0);
-        tile.addView(numBadge, nLp);
-
-        visibleTiles.add(new TileHolder(tile, numBadge, photo.uri));
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
-        lp.rightMargin = dp(3);
-        row.addView(tile, lp);
-
-        tile.setOnClickListener(v -> {
-            hapticClick(v);
-            if ((selectionMode == SelectionMode.SELECTING)) {
-                if (selectedUris.contains(photo.uri)) {
-                    selectedUris.remove(photo.uri);
-                } else {
-                    selectedUris.add(photo.uri);
-                }
-                refreshSelectionStates();
-            } else {
-                openPhoto(photo);
+                slot.tile.setOnLongClickListener(v -> {
+                    hapticClick(v);
+                    if (selectionMode != SelectionMode.SELECTING) {
+                        selectionMode = SelectionMode.SELECTING;
+                        selectedUris.add(photo.uri);
+                        refreshSelectionStates();
+                        Toast.makeText(GalleryActivity.this, "Photo selected. Tap more photos, then choose Actions.", Toast.LENGTH_SHORT).show();
+                    }
+                    return true;
+                });
             }
-        });
-
-        tile.setOnLongClickListener(v -> {
-            hapticClick(v);
-            if (!(selectionMode == SelectionMode.SELECTING)) {
-                selectionMode = SelectionMode.SELECTING;
-                selectedUris.add(photo.uri);
-                refreshSelectionStates();
-                Toast.makeText(this, "Photo selected. Tap more photos, then choose Actions.", Toast.LENGTH_SHORT).show();
-            }
-            return true;
-        });
+            return rowView;
+        }
     }
 
     private void refreshSelectionStates() {
         boolean selecting = selectionMode == SelectionMode.SELECTING;
-        Map<Uri, Integer> orderMap = new HashMap<>(selectedUris.size() * 2);
-        for (int i = 0; i < selectedUris.size(); i++) {
-            orderMap.put(selectedUris.get(i), i + 1);
-        }
-        int pad2 = dp(2);
-        int pad1 = dp(1);
-        for (TileHolder h : visibleTiles) {
-            Integer order = selecting ? orderMap.get(h.uri) : null;
-            boolean selected = order != null;
-            h.tile.setBackground(round(0xff202626, 9, selected ? 0xffd7b574 : 0xff293031, selected ? pad2 : pad1));
-            if (selected) {
-                h.seqBadge.setText(String.valueOf(order));
-                h.seqBadge.setVisibility(View.VISIBLE);
-            } else {
-                h.seqBadge.setVisibility(View.GONE);
+        selectionOrderMap.clear();
+        if (selecting) {
+            for (int i = 0; i < selectedUris.size(); i++) {
+                selectionOrderMap.put(selectedUris.get(i), i + 1);
             }
         }
-        if (list != null) {
-            list.setPadding(list.getPaddingLeft(), dp(3), list.getPaddingRight(), dp(selecting ? 110 : 25));
+        if (listView != null) {
+            listView.setPadding(listView.getPaddingLeft(), dp(3), listView.getPaddingRight(), dp(selecting ? 110 : 25));
+        }
+        if (adapter != null) {
+            adapter.notifyDataSetChanged();
         }
         updateSelectionBar();
     }
@@ -485,15 +660,10 @@ public class GalleryActivity extends Activity {
     }
 
     private void confirmDeleteTile(PhotoRepository.Photo photo) {
-        GalleryDialogs.showDeleteFrameDialog(this, photo, this::loadPhotos);
-    }
-
-    private void completeRow(LinearLayout row, int columns) {
-        if (row == null) return;
-        while (row.getChildCount() < columns) {
-            View spacer = new View(this);
-            row.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
-        }
+        GalleryDialogs.showDeleteFrameDialog(this, photo, () -> {
+            lastRenderedSignature = null;
+            loadPhotos();
+        });
     }
 
     private static Bitmap decodeThumbnail(Context context, Uri uri, int targetPx) {
@@ -645,7 +815,9 @@ public class GalleryActivity extends Activity {
             filter.setOnClickListener(v -> {
                 hapticClick(v);
                 activeFilter = name;
-                savedScrollY = 0;
+                savedFirstVisiblePos = 0;
+                savedTopOffset = 0;
+                lastRenderedSignature = null;
                 refreshFilters();
                 loadPhotos();
             });

@@ -243,6 +243,64 @@ final class AppSettings {
     static final String MANUAL_FOCUS_DISTANCE = "manual_focus_distance";
     static final String LOUPE_ON_MF_ADJUST = "loupe_on_mf_adjust";
 
+    // Consolidated UI projections backed by existing loupe & horizon keys
+    static final String LOUPE_MODE_OFF = "Off";
+    static final String LOUPE_MODE_MF = "Manual focus only";
+    static final String LOUPE_MODE_TAP = "Tap reticle only";
+    static final String LOUPE_MODE_BOTH = "Both";
+    static final String[] LOUPE_MODE_CHOICES = {
+            LOUPE_MODE_OFF,
+            LOUPE_MODE_MF,
+            LOUPE_MODE_TAP,
+            LOUPE_MODE_BOTH
+    };
+
+    static final String HORIZON_LEVEL_OFF = "Off";
+    static final String HORIZON_LEVEL_SMART_NORMAL = "Smart · ±1.0°";
+    static final String HORIZON_LEVEL_SMART_PRECISE = "Smart · ±0.5°";
+    static final String HORIZON_LEVEL_ALWAYS_NORMAL = "Always · ±1.0°";
+    static final String HORIZON_LEVEL_ALWAYS_PRECISE = "Always · ±0.5°";
+    static final String[] HORIZON_LEVEL_CHOICES = {
+            HORIZON_LEVEL_OFF,
+            HORIZON_LEVEL_SMART_NORMAL,
+            HORIZON_LEVEL_SMART_PRECISE,
+            HORIZON_LEVEL_ALWAYS_NORMAL,
+            HORIZON_LEVEL_ALWAYS_PRECISE
+    };
+
+    static String formatLoupeMode(boolean mfLoupe, boolean tapLoupe) {
+        if (mfLoupe && tapLoupe) return LOUPE_MODE_BOTH;
+        if (mfLoupe) return LOUPE_MODE_MF;
+        if (tapLoupe) return LOUPE_MODE_TAP;
+        return LOUPE_MODE_OFF;
+    }
+
+    static void applyLoupeMode(SharedPreferences.Editor editor, String choice) {
+        boolean mf = LOUPE_MODE_MF.equals(choice) || LOUPE_MODE_BOTH.equals(choice);
+        boolean tap = LOUPE_MODE_TAP.equals(choice) || LOUPE_MODE_BOTH.equals(choice);
+        editor.putBoolean(LOUPE_ON_MF_ADJUST, mf).putBoolean(OPTICAL_LOUPE, tap);
+    }
+
+    static String formatHorizonLevel(boolean enabled, String mode, String sensitivity) {
+        if (!enabled) return HORIZON_LEVEL_OFF;
+        boolean always = mode != null && mode.startsWith("Always");
+        boolean precise = sensitivity != null && sensitivity.startsWith("Precise");
+        if (always) return precise ? HORIZON_LEVEL_ALWAYS_PRECISE : HORIZON_LEVEL_ALWAYS_NORMAL;
+        return precise ? HORIZON_LEVEL_SMART_PRECISE : HORIZON_LEVEL_SMART_NORMAL;
+    }
+
+    static void applyHorizonLevel(SharedPreferences.Editor editor, String choice) {
+        if (choice == null || HORIZON_LEVEL_OFF.equals(choice)) {
+            editor.putBoolean(VISUAL_LEVEL, false);
+            return;
+        }
+        boolean always = choice.startsWith("Always");
+        boolean precise = choice.contains("0.5");
+        editor.putBoolean(VISUAL_LEVEL, true)
+                .putString(HORIZON_MODE, always ? "Always visible" : "Smart (near level only)")
+                .putString(HORIZON_SENSITIVITY, precise ? "Precise (±0.5°)" : "Normal (±1.0°)");
+    }
+
     // Viewfinder & Camera Shooting Keys
     static final String VIEWFINDER_LONG_PRESS = "viewfinder_long_press";
     static final String VIEWFINDER_DOUBLE_TAP = "viewfinder_double_tap";

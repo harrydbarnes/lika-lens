@@ -53,15 +53,19 @@ final class PhotoRepository {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             String[] columns = {MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME,
                     MediaStore.Images.Media.DATE_ADDED, MediaStore.Images.Media.DATE_MODIFIED};
-            try (Cursor cursor = context.getContentResolver().query(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, columns,
+            android.os.Bundle queryArgs = new android.os.Bundle();
+            queryArgs.putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION,
                     "(" + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ? OR "
                             + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ?) AND ("
                             + MediaStore.Images.Media.MIME_TYPE + "=? OR "
-                            + MediaStore.Images.Media.MIME_TYPE + "=?)",
+                            + MediaStore.Images.Media.MIME_TYPE + "=?)");
+            queryArgs.putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
                     new String[]{Environment.DIRECTORY_PICTURES + "/Lika Lens/%",
-                            Environment.DIRECTORY_PICTURES + "/SCOPE/%", "image/jpeg", "image/gif"},
-                    MEDIASTORE_SORT_ORDER)) {
+                            Environment.DIRECTORY_PICTURES + "/SCOPE/%", "image/jpeg", "image/gif"});
+            queryArgs.putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, MEDIASTORE_SORT_ORDER);
+            queryArgs.putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, 1);
+            try (Cursor cursor = context.getContentResolver().query(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, columns, queryArgs, null)) {
                 if (cursor != null && cursor.moveToFirst()) {
                     long id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID));
                     String name = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME));

@@ -764,4 +764,29 @@ public class RawDeveloperTest {
         org.junit.Assert.assertNotEquals(kAuto, RawDeveloper.displayLookKey(vibOn, null));
     }
 
+    @Test
+    public void testSrgbByteToLinearMatchesExactFormula() {
+        for (int i = 0; i <= 255; i++) {
+            assertEquals(RawDeveloper.srgbToLinear(i / 255f), RawDeveloper.srgbByteToLinear(i), 1e-6f);
+        }
+    }
+
+    @Test
+    public void testToneCurveLutMatchesExactAcrossFilmicAndLog() {
+        String[] curves = {"Filmic S-Curve", "Log / Flat", "Linear Response"};
+        for (String curve : curves) {
+            RawDeveloper.Look look = new RawDeveloper.Look();
+            look.toneCurve = curve;
+            look.contrast = 1.28f;
+            look.pivot = 0.22f;
+            RawDeveloper.PreparedLook prep = new RawDeveloper.PreparedLook(look, null, null);
+            for (int step = 0; step <= 4000; step++) {
+                float y = step * 0.00125f; // covers [0, 5.0] including fallback > 4.0
+                float exact = prep.evalToneCurveExact(y);
+                float fast = prep.evalToneCurve(y);
+                assertEquals("Tone LUT mismatch for " + curve + " at y=" + y, exact, fast, 0.0015f);
+            }
+        }
+    }
+
 }
