@@ -293,4 +293,15 @@ public class CameraExposureHelperTest {
         assertEquals(-1f, CameraExposureHelper.postReconfigZoomTarget(false, 1.0f, 1.0f, false), 0.0001f);
     }
 
+    @Test
+    public void logarithmicZoomInterpolationMatchesGeometricMidpoint() {
+        assertEquals(1.0f, CameraExposureHelper.interpolateZoom(1.0f, 0.5f, 0.0f), 0.0001f);
+        assertEquals(0.5f, CameraExposureHelper.interpolateZoom(1.0f, 0.5f, 1.0f), 0.0001f);
+        assertEquals((float) Math.sqrt(0.5), CameraExposureHelper.interpolateZoom(1.0f, 0.5f, 0.5f), 0.0001f);
+        assertEquals((float) Math.sqrt(0.5), CameraExposureHelper.interpolateZoom(0.5f, 1.0f, 0.5f), 0.0001f);
+        // Clamping out-of-range fractions
+        assertEquals(1.0f, CameraExposureHelper.interpolateZoom(1.0f, 0.5f, -0.5f), 0.0001f);
+        assertEquals(0.5f, CameraExposureHelper.interpolateZoom(1.0f, 0.5f, 1.5f), 0.0001f);
+    }
+
 }

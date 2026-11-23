@@ -538,4 +538,18 @@ public final class CameraExposureHelper {
         return -1f;
     }
 
+    /**
+     * Interpolates between two positive zoom ratios in logarithmic space so perceived
+     * magnification / FOV changes at a constant optical rate across the transition.
+     */
+    static float interpolateZoom(float startZoom, float targetZoom, float fraction) {
+        float t = Math.max(0f, Math.min(1f, fraction));
+        if (startZoom <= 0f || targetZoom <= 0f) {
+            return startZoom + (targetZoom - startZoom) * t;
+        }
+        if (t <= 0f) return startZoom;
+        if (t >= 1f) return targetZoom;
+        return (float) (startZoom * Math.pow(targetZoom / startZoom, t));
+    }
+
 }
