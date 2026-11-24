@@ -304,4 +304,13 @@ public class CameraExposureHelperTest {
         assertEquals(0.5f, CameraExposureHelper.interpolateZoom(1.0f, 0.5f, 1.5f), 0.0001f);
     }
 
+    @Test
+    public void wideBridgeScaleComputesFovMatchingFactor() {
+        assertEquals(2.0f, CameraExposureHelper.wideBridgeScale(1.0f, 0.5f), 0.0001f);
+        assertEquals(2.0f, CameraExposureHelper.wideBridgeScale(0.5f, 1.0f), 0.0001f);
+        assertEquals(1.0f, CameraExposureHelper.wideBridgeScale(1.0f, 1.0f), 0.0001f);
+        assertEquals(2.5f, CameraExposureHelper.wideBridgeScale(1.0f, 0.25f), 0.0001f);
+        assertEquals(1.0f, CameraExposureHelper.wideBridgeScale(0.0f, 0.5f), 0.0001f);
+    }
+
 }

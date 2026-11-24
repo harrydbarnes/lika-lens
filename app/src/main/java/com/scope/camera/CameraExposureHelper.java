@@ -552,4 +552,15 @@ public final class CameraExposureHelper {
         return (float) (startZoom * Math.pow(targetZoom / startZoom, t));
     }
 
+    /**
+     * Computes the GPU TextureView scale factor needed to match the previous FOV across a
+     * wide/main session reconfiguration (e.g. 1.0x -> 0.5x starts the 0.5x feed at 2.0x scale
+     * and eases to 1.0x; 0.5x -> 1.0x eases the 0.5x feed from 1.0x to 2.0x before switching).
+     */
+    static float wideBridgeScale(float fromZoom, float toZoom) {
+        if (fromZoom <= 0f || toZoom <= 0f) return 1.0f;
+        float ratio = Math.max(fromZoom, toZoom) / Math.min(fromZoom, toZoom);
+        return Math.max(1.0f, Math.min(2.5f, ratio));
+    }
+
 }

@@ -493,7 +493,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 }
             }
             if (session != captureSession) return;
-            if (pendingPostConfigZoom > 0f && pendingPostConfigSessionTicket >= 0L) {
+            if (pendingPostConfigSessionTicket >= 0L
+                    && (pendingWideBridgeStartScale > 1.01f || pendingWideBridgeResetScale || pendingPostConfigZoom > 0f)) {
                 triggerPendingPostConfigZoom(session, pendingPostConfigSessionTicket);
             }
             Long exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
@@ -611,6 +612,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private volatile long lastVideo180StepAt = 0L;
     private float pendingZoomSettleScale = 1.0f;
     private volatile float pendingPostConfigZoom = -1f;
+    private volatile float pendingWideBridgeStartScale = -1f;
+    private volatile boolean pendingWideBridgeResetScale = false;
     private volatile long pendingPostConfigSessionTicket = -1L;
     private Runnable pendingPostConfigFallback;
     private final AtomicBoolean pendingZoomRequest = new AtomicBoolean(false);
@@ -4728,7 +4731,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                                 }
                                 applyLiveFilmPreview();
                             }
-                            if (pendingPostConfigZoom > 0f && captureSession == session && previewRequest != null) {
+                            if ((pendingWideBridgeStartScale > 1.01f || pendingWideBridgeResetScale || pendingPostConfigZoom > 0f)
+                                    && captureSession == session && previewRequest != null) {
                                 pendingPostConfigSessionTicket = sessionTicket;
                                 if (pendingPostConfigFallback != null) {
                                     cameraUiHandler.removeCallbacks(pendingPostConfigFallback);
@@ -6929,24 +6933,61 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             restartCameraForLens(resolvedFactor);
         } else if (mustReconfigureSession) {
             if (videoState.isRecordingOrPaused() || videoState.isPreparing() || videoState.isSwitchingCamera()) {
-                pendingPostConfigZoom = -1f;
+                clearPendingPostConfigZoom();
                 forceJpegForWide = jpegWide;
                 animateZoomTo(resolvedFactor);
             } else if (isInteractive) {
+                clearPendingPostConfigZoom();
                 forceJpegForWide = jpegWide;
                 reconfigureSessionForZoom(resolvedFactor, true);
-            } else {
-                float preZoomTarget = CameraExposureHelper.preReconfigAnimationTarget(
-                        prevForceJpegForWide, jpegWide, requestedZoom, resolvedFactor);
-                if (preZoomTarget > 0f && captureSession != null && previewRequest != null) {
-                    long animMs = jpegWide ? 130L : 220L;
-                    animateZoomTo(preZoomTarget, animMs, () -> {
+            } else if (jpegWide) {
+                // Entering wide (e.g. 1x -> 0.5x): reconfigure directly to 0.5x and bridge with
+                // a hardware-accelerated 120fps TextureView scale (2.0x -> 1.0x) on the first frame.
+                final float bridgeFrom = Math.min(1.0f, Math.max(0.5f, requestedZoom));
+                final float bridgeScale = CameraExposureHelper.wideBridgeScale(bridgeFrom, resolvedFactor);
+                if (requestedZoom > 1.05f && captureSession != null && previewRequest != null) {
+                    animateZoomTo(1.0f, 120L, () -> {
                         if (!activityResumed || !id.equals(cameraId)) return;
-                        forceJpegForWide = jpegWide;
+                        forceJpegForWide = true;
+                        pendingWideBridgeStartScale = bridgeScale;
+                        pendingWideBridgeResetScale = false;
                         reconfigureSessionForZoom(resolvedFactor, false);
                     }, false);
                 } else {
-                    forceJpegForWide = jpegWide;
+                    hapticDetent();
+                    forceJpegForWide = true;
+                    pendingWideBridgeStartScale = bridgeScale;
+                    pendingWideBridgeResetScale = false;
+                    reconfigureSessionForZoom(resolvedFactor, false);
+                }
+            } else {
+                // Leaving wide (e.g. 0.5x -> 1x): smoothly zoom-in on the GPU at 120fps first,
+                // then reconfigure to the 1x RAW session and reset scale on the first 1x frame.
+                hapticDetent();
+                final float targetScale = CameraExposureHelper.wideBridgeScale(
+                        requestedZoom, Math.min(1.0f, resolvedFactor));
+                if (textureView != null && targetScale > 1.01f && textureView.getWidth() > 0) {
+                    updateLensButtons(resolvedFactor);
+                    textureView.animate().cancel();
+                    textureView.setPivotX(textureView.getWidth() * 0.5f);
+                    textureView.setPivotY(textureView.getHeight() * 0.5f);
+                    textureView.animate()
+                            .scaleX(targetScale)
+                            .scaleY(targetScale)
+                            .setDuration(200L)
+                            .setInterpolator(new android.view.animation.PathInterpolator(0.22f, 1.0f, 0.36f, 1.0f))
+                            .withEndAction(() -> {
+                                if (!activityResumed || !id.equals(cameraId)) return;
+                                forceJpegForWide = false;
+                                pendingWideBridgeStartScale = -1f;
+                                pendingWideBridgeResetScale = true;
+                                reconfigureSessionForZoom(resolvedFactor, false);
+                            })
+                            .start();
+                } else {
+                    forceJpegForWide = false;
+                    pendingWideBridgeStartScale = -1f;
+                    pendingWideBridgeResetScale = false;
                     reconfigureSessionForZoom(resolvedFactor, false);
                 }
             }
@@ -6961,15 +7002,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             zoomAnimator.cancel();
             zoomAnimator = null;
         }
-        float sessionStartZoom = CameraExposureHelper.sessionInitialZoomForReconfig(
-                forceJpegForWide, requestedZoom, targetFactor, interactiveGesture);
-        pendingPostConfigZoom = CameraExposureHelper.postReconfigZoomTarget(
-                forceJpegForWide, sessionStartZoom, targetFactor, interactiveGesture);
-        requestedZoom = sessionStartZoom;
+        pendingPostConfigZoom = -1f;
+        requestedZoom = targetFactor;
         updateLensButtons(targetFactor);
         useRawForThisCamera = rawSupported && !forceJpegForWide;
         if (cameraLifecycleState == CameraLifecycleState.OPENING) {
-            pendingPostConfigZoom = -1f;
+            clearPendingPostConfigZoom();
             requestedZoom = targetFactor;
             if (textureView != null) textureView.setAlpha(.82f);
             closeCamera(videoState.isSwitchingCamera());
@@ -6980,7 +7018,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 || cameraLifecycleState == CameraLifecycleState.CLOSED
                 || cameraLifecycleState == CameraLifecycleState.CLOSING
                 || cameraLifecycleState == CameraLifecycleState.ERROR) {
-            pendingPostConfigZoom = -1f;
+            clearPendingPostConfigZoom();
             requestedZoom = targetFactor;
             return;
         }
@@ -7101,7 +7139,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void updateZoomSliderUi() {
-        if (zoomSliderValue != null) zoomSliderValue.setText(String.format(Locale.US, "%.1f×", requestedZoom));
+        if (zoomSliderValue != null) {
+            String label = String.format(Locale.US, "%.1f×", requestedZoom);
+            if (!label.contentEquals(zoomSliderValue.getText())) {
+                zoomSliderValue.setText(label);
+            }
+        }
         if (zoomSlider != null) {
             int progress = zoomProgressFor(requestedZoom);
             if (zoomSlider.getProgress() != progress) zoomSlider.setProgress(progress);
@@ -7118,6 +7161,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void clearPendingPostConfigZoom() {
         pendingPostConfigZoom = -1f;
+        pendingWideBridgeStartScale = -1f;
+        pendingWideBridgeResetScale = false;
         pendingPostConfigSessionTicket = -1L;
         Runnable fallback = pendingPostConfigFallback;
         pendingPostConfigFallback = null;
@@ -7127,8 +7172,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void triggerPendingPostConfigZoom(CameraCaptureSession session, long ticket) {
+        if (pendingPostConfigSessionTicket != ticket || !sessionEpoch.owns(ticket)) {
+            return;
+        }
+        final float bridgeStartScale = pendingWideBridgeStartScale;
+        final boolean bridgeResetScale = pendingWideBridgeResetScale;
         final float postZoom = pendingPostConfigZoom;
-        if (postZoom <= 0f || pendingPostConfigSessionTicket != ticket || !sessionEpoch.owns(ticket)) {
+        if (bridgeStartScale <= 1.01f && !bridgeResetScale && postZoom <= 0f) {
             return;
         }
         clearPendingPostConfigZoom();
@@ -7139,7 +7189,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     || previewRequest == null) {
                 return;
             }
-            animateZoomTo(postZoom, 300L, null, false);
+            if (bridgeStartScale > 1.01f && textureView != null) {
+                textureView.animate().cancel();
+                textureView.setPivotX(textureView.getWidth() * 0.5f);
+                textureView.setPivotY(textureView.getHeight() * 0.5f);
+                textureView.setScaleX(bridgeStartScale);
+                textureView.setScaleY(bridgeStartScale);
+                textureView.animate()
+                        .scaleX(1f)
+                        .scaleY(1f)
+                        .setDuration(260L)
+                        .setInterpolator(new android.view.animation.PathInterpolator(0.22f, 1.0f, 0.36f, 1.0f))
+                        .start();
+            } else if (bridgeResetScale && textureView != null) {
+                textureView.animate().cancel();
+                textureView.setScaleX(1f);
+                textureView.setScaleY(1f);
+            } else if (postZoom > 0f) {
+                animateZoomTo(postZoom, 300L, null, false);
+            }
         });
     }
 
