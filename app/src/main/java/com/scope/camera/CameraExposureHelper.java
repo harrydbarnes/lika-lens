@@ -563,4 +563,22 @@ public final class CameraExposureHelper {
         return Math.max(1.0f, Math.min(2.5f, ratio));
     }
 
+    /**
+     * Determines whether a SurfaceTexture frame timestamp belongs to the newly configured
+     * capture session rather than a buffered frame from the previous session.
+     */
+    static boolean isNewSessionSurfaceFrame(boolean newSessionStarted, long surfaceTimestampNs,
+            long expectedFirstFrameTimestampNs, long preReconfigSurfaceTimestampNs) {
+        if (!newSessionStarted) return false;
+        if (expectedFirstFrameTimestampNs > 0L) {
+            if (surfaceTimestampNs >= expectedFirstFrameTimestampNs) {
+                return true;
+            }
+            // Fallback when SurfaceTexture and SENSOR_TIMESTAMP use different clock domains (>10s apart).
+            return Math.abs(surfaceTimestampNs - expectedFirstFrameTimestampNs) > 10_000_000_000L
+                    && surfaceTimestampNs != preReconfigSurfaceTimestampNs;
+        }
+        return surfaceTimestampNs != preReconfigSurfaceTimestampNs;
+    }
+
 }

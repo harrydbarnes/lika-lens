@@ -313,4 +313,17 @@ public class CameraExposureHelperTest {
         assertEquals(1.0f, CameraExposureHelper.wideBridgeScale(0.0f, 0.5f), 0.0001f);
     }
 
+    @Test
+    public void newSessionSurfaceFrameMatchesExactOrDifferentClockDomain() {
+        assertFalse(CameraExposureHelper.isNewSessionSurfaceFrame(false, 2000L, 1500L, 1000L));
+        // Old session frame still arriving before first new session timestamp
+        assertFalse(CameraExposureHelper.isNewSessionSurfaceFrame(true, 1400L, 1500L, 1000L));
+        // Exact match on first new session frame
+        assertTrue(CameraExposureHelper.isNewSessionSurfaceFrame(true, 1500L, 1500L, 1000L));
+        assertTrue(CameraExposureHelper.isNewSessionSurfaceFrame(true, 1600L, 1500L, 1000L));
+        // Different clock domain (>10s offset): waits for SurfaceTexture timestamp to advance
+        assertFalse(CameraExposureHelper.isNewSessionSurfaceFrame(true, 1000L, 50_000_000_000L, 1000L));
+        assertTrue(CameraExposureHelper.isNewSessionSurfaceFrame(true, 1033L, 50_000_000_000L, 1000L));
+    }
+
 }

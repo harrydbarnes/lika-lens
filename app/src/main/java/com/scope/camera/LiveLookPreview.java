@@ -159,6 +159,23 @@ final class LiveLookPreview {
         return true;
     }
 
+    void mirrorActiveEffectTo(View target) {
+        if (target == null) return;
+        if (Build.VERSION.SDK_INT >= 33 && phase == Phase.ACTIVE && currentKey != null) {
+            PreviewLookLut cached = getCachedLut(currentKey);
+            if (cached != null) {
+                try {
+                    Api33.applyToView(target, cached);
+                    return;
+                } catch (RuntimeException ignored) {
+                }
+            }
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            Api33.clearView(target);
+        }
+    }
+
     void clear() {
         generation.incrementAndGet();
         if(phase!=Phase.DISPOSED) phase=Phase.DISABLED;
@@ -209,6 +226,10 @@ final class LiveLookPreview {
         private static RuntimeShader cachedShader;
 
         static void apply(TextureView view, PreviewLookLut table) {
+            applyToView(view, table);
+        }
+
+        static void applyToView(View view, PreviewLookLut table) {
             Bitmap bitmap = Bitmap.createBitmap(table.pixels, PreviewLookLut.SIZE * PreviewLookLut.SIZE,
                     PreviewLookLut.SIZE, Bitmap.Config.ARGB_8888);
             BitmapShader cube = new BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
@@ -227,6 +248,8 @@ final class LiveLookPreview {
             // RenderEffect retains its shader/bitmap. Let GC reclaim them when the effect is replaced.
         }
 
-        static void clear(TextureView view) { view.setRenderEffect(null); }
+        static void clear(TextureView view) { clearView(view); }
+
+        static void clearView(View view) { view.setRenderEffect(null); }
     }
 }
