@@ -1262,7 +1262,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         });
         root.addView(textureView, new FrameLayout.LayoutParams(-1, -1));
         lensTransitionOverlay = new ImageView(this);
-        lensTransitionOverlay.setScaleType(ImageView.ScaleType.FIT_XY);
+        lensTransitionOverlay.setScaleType(ImageView.ScaleType.MATRIX);
         lensTransitionOverlay.setVisibility(View.GONE);
         lensTransitionOverlay.setClickable(false);
         lensTransitionOverlay.setFocusable(false);
@@ -7260,6 +7260,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         clearLensTransitionOverlay();
         lensTransitionBitmap = snap;
         lensTransitionOverlay.setImageBitmap(snap);
+        Matrix previewTransform = new Matrix();
+        textureView.getTransform(previewTransform);
+        lensTransitionOverlay.setImageMatrix(previewTransform);
         if (prefLiveFilmPreview) {
             if (Build.VERSION.SDK_INT >= 33) {
                 liveLookPreview.mirrorActiveEffectTo(lensTransitionOverlay);
