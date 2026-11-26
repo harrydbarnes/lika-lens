@@ -14,4 +14,4 @@ Lika Lens (`com.scope.camera`) is a pure Java 17 Android film camera and RAW dar
   - Keep I/O, LUT decoding, `BitmapFactory`, and gallery indexing off the main thread; shut down executors in `onDestroy()`; never recycle bitmaps in `LruCache.entryRemoved()` if UI views may still reference them.
 - **R8 & Unit Tests**:
   - Release builds use `android.enableR8.fullMode = true` + resource shrinking; update `app/proguard-rules.pro` if reflection is added.
-  - Run/update JUnit tests in `app/src/test/java/com/scope/camera/` (`./gradlew testDebugUnitTest`) alongside any pipeline or state-machine change.
+  - Run/update JUnit tests in `app/src/test/java/com/scope/camera/` (`gradle testDebugUnitTest`) alongside any pipeline or state-machine change.

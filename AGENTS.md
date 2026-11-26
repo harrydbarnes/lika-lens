@@ -35,7 +35,7 @@ Follow [`docs/workflow-state-machines.md`](docs/workflow-state-machines.md) and 
 
 ## 4. Build, R8 Shrinker & Testing Gates
 - **R8 Full Mode & Lint**: Release builds enable `isMinifyEnabled = true`, `isShrinkResources = true`, and `android.enableR8.fullMode = true`. Any new reflection (`Class.forName`, `getMethod`, `getIdentifier`) must have corresponding rules in `app/proguard-rules.pro`. Guard all API 27+ APIs cleanly so `lintVitalRelease` stays clean.
-- **Tests must stay up to date**: Keep `app/src/test/java/com/scope/camera/` (`./gradlew testDebugUnitTest`) compiling and passing cleanly. Whenever you alter colour math, `LinearSceneCache`, LUT parsing/generation, GIF encoding, capture orientation, or workflow state machines, update or add deterministic unit tests and update relevant `docs/` checklists.
+- **Tests must stay up to date**: Keep `app/src/test/java/com/scope/camera/` (`gradle testDebugUnitTest`, Gradle 9.6.0) compiling and passing cleanly. Whenever you alter colour math, `LinearSceneCache`, LUT parsing/generation, GIF encoding, capture orientation, or workflow state machines, update or add deterministic unit tests and update relevant `docs/` checklists.
 
 <!-- desloppify-begin -->
 <!-- desloppify-skill-version: 7 -->
