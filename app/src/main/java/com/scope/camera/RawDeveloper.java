@@ -451,6 +451,9 @@ final class RawDeveloper {
 
             float shoulder = clamp(this.look.highlights, 0f, 1f);
             if (pull1) shoulder = Math.min(1.0f, shoulder + 0.18f);
+            if (this.brainId == BRAIN_ID_FUJI_ETERNA) {
+                shoulder = Math.min(1.0f, shoulder + 0.08f);
+            }
 
             String hlRec = this.look.highlightRecovery == null ? AppSettings.HL_REC_AUTO : this.look.highlightRecovery;
             if (hlRec.startsWith("Hard")) {
@@ -475,7 +478,9 @@ final class RawDeveloper {
 
             float sb = this.look.saturation;
             if (this.brainId == BRAIN_ID_BLEACH) {
-                sb *= 0.30f;
+                // ENR silver-retention base: midtones retain gritty muted dye bleed-through while
+                // renderPreparedLook suppresses chroma further in dense silver shadows.
+                sb *= 0.44f;
             } else if (this.brainId == BRAIN_ID_KODACHROME) {
                 sb *= 1.18f;
             } else if (this.brainId == BRAIN_ID_FUJI_ETERNA) {
@@ -592,8 +597,11 @@ final class RawDeveloper {
                 float logY = (float) Math.log1p(oldY * 7.0f) * INV_LOG1P_7;
                 return logY <= 0f ? 0f : logPivot * (float) Math.pow(logY * invSafeLogPivot, logContrast);
             }
-            float gamma = oldY < safePivot ? toeContrast : safeContrast;
-            return safePivot * (float) Math.pow(oldY / safePivot, gamma);
+            // C1-continuous H&D filmic transition across the midtone pivot (no derivative kink at safePivot).
+            float rel = oldY / safePivot;
+            float blend = smoothstep(0.45f, 1.85f, rel);
+            float gamma = toeContrast + (safeContrast - toeContrast) * blend;
+            return safePivot * (float) Math.pow(rel, gamma);
         }
 
         float evalToneCurve(float oldY) {
@@ -718,6 +726,22 @@ final class RawDeveloper {
         return rawShorts;
     }
 
+    static boolean isValidColorMatrix(float[] m) {
+        if (m == null || m.length < 9) return false;
+        for (int i = 0; i < 9; i++) {
+            if (!Float.isFinite(m[i])) return false;
+        }
+        if (m[0] <= 0.30f || m[4] <= 0.30f || m[8] <= 0.30f) return false;
+        float r0 = m[0] + m[1] + m[2];
+        float r1 = m[3] + m[4] + m[5];
+        float r2 = m[6] + m[7] + m[8];
+        if (r0 < 0.65f || r0 > 1.35f || r1 < 0.65f || r1 > 1.35f || r2 < 0.65f || r2 > 1.35f) return false;
+        float det = m[0] * (m[4] * m[8] - m[5] * m[7])
+                - m[1] * (m[3] * m[8] - m[5] * m[6])
+                + m[2] * (m[3] * m[7] - m[4] * m[6]);
+        return Math.abs(det) > 0.05f;
+    }
+
     private static void sampleSensorLinearRgb(short[] rawShorts, RawArchive.Frame frame, float white,
                                               int width, int height, int orientation, float dx, float dy,
                                               boolean useQuad, boolean applyLsm,
@@ -733,7 +757,8 @@ final class RawDeveloper {
         }
         if (useQuad) sampleQuad(rawShorts, frame, white, sx, sy, rgb);
         else demosaicPixel(rawShorts, frame, white, sx, sy, rgb);
-        float r = rgb[0], g = rgb[1], b = rgb[2];
+        float rawR = rgb[0], rawG = rgb[1], rawB = rgb[2];
+        float r = rawR, g = rawG, b = rawB;
         if (applyLsm) {
             sampleLsm(frame, sx, sy, lsm);
             float sig = Math.max(r, Math.max(g, b));
@@ -745,6 +770,29 @@ final class RawDeveloper {
         r *= gainR;
         g *= gainG;
         b *= gainB;
+        // Sensor highlight clipping reconstruction: when one or more Bayer channels saturate at the
+        // photosite (most commonly Green before Red/Blue under daylight WB), multiplying by WB gains
+        // creates magenta/pink highlights. Smoothly reconstruct clipped channels toward unclipped
+        // channel energy (or peak neutral when all 3 clip), preserving monotonic highlight roll-off.
+        if (rawR > 0.92f || rawG > 0.92f || rawB > 0.92f) {
+            float cR = smoothstep(0.92f, 0.995f, rawR);
+            float cG = smoothstep(0.92f, 0.995f, rawG);
+            float cB = smoothstep(0.92f, 0.995f, rawB);
+            float uR = 1f - cR, uG = 1f - cG, uB = 1f - cB;
+            float unclippedW = uR + uG + uB;
+            float peakWb = Math.max(r, Math.max(g, b));
+            float ref;
+            if (unclippedW > 0.05f) {
+                float unclippedMean = (uR * r + uG * g + uB * b) / unclippedW;
+                float allClipBlend = smoothstep(0.60f, 0.05f, unclippedW);
+                ref = unclippedMean + (peakWb - unclippedMean) * allClipBlend;
+            } else {
+                ref = peakWb;
+            }
+            if (cR > 0f && r < ref) r += (ref - r) * cR;
+            if (cG > 0f && g < ref) g += (ref - g) * cG;
+            if (cB > 0f && b < ref) b += (ref - b) * cB;
+        }
         if (hasCct) {
             outLinear[0] = cct[0] * r + cct[1] * g + cct[2] * b;
             outLinear[1] = cct[3] * r + cct[4] * g + cct[5] * b;
@@ -819,7 +867,7 @@ final class RawDeveloper {
         final boolean applyLsm = look.opticalCorrection && frame.lsmGains != null && frame.lsmCols > 1 && frame.lsmRows > 1;
         final float autoSceneGain = computeSceneExposureGain(rawShorts, frame, white, gains, cameraToXyz,
                 crop, orientation, applyLsm, look);
-        final boolean hasCct = frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9;
+        final boolean hasCct = isValidColorMatrix(frame.colorCorrectionTransform);
         final float[] cct = frame.colorCorrectionTransform;
         final boolean flipH = look.flipHorizontal;
         final boolean useQuad = step >= 2 && width >= 2 && height >= 2;
@@ -944,7 +992,7 @@ final class RawDeveloper {
                 crop, orientation, applyLsm, look);
         final float exposureScale = (float) Math.pow(2.0, look.exposureEv) * autoSceneGain;
         final int[] allPixels = new int[outW * outH];
-        final boolean hasCct = frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9;
+        final boolean hasCct = isValidColorMatrix(frame.colorCorrectionTransform);
         final float[] cct = frame.colorCorrectionTransform;
         final boolean flipH = look.flipHorizontal;
         final float vigAmount = look.vignette;
@@ -997,8 +1045,12 @@ final class RawDeveloper {
                                               PreparedLook prep, RawArchive.Frame frame, int seed,
                                               float effectiveChromaNr) {
         if (effectiveChromaNr > 0f) applyChromaDenoise(pixels, outW, outH, effectiveChromaNr);
-        if (look.halation > 0f) applyHalation(pixels, outW, outH, look.halation, look.aspectRatio != null ? look.aspectRatio : (frame != null ? frame.aspectRatio : null));
-        if (look.sharpening > 0f) applySharpen(pixels, outW, outH, Math.min(.14f, look.sharpening * .14f));
+        if (look.halation > 0f) {
+            applyHalation(pixels, outW, outH, look.halation,
+                    look.aspectRatio != null ? look.aspectRatio : (frame != null ? frame.aspectRatio : null),
+                    prep.brainId);
+        }
+        if (look.sharpening > 0f) applySharpen(pixels, outW, outH, Math.min(.18f, look.sharpening * .18f));
         applyFilmGrain(pixels, outW, outH, prep, seed);
     }
 
@@ -1057,14 +1109,14 @@ final class RawDeveloper {
         try {
             int gw = Math.max(4, targetW / 4);
             int gh = Math.max(4, targetH / 4);
-            byte[] gainBytes = new byte[gw * gh];
+            float[] gainField = new float[gw * gh];
             int photoGw = Math.max(1, (w * gw + targetW / 2) / targetW);
             int photoGh = Math.max(1, (h * gh + targetH / 2) / targetH);
             int gx0 = Math.max(0, (padLeft * gw + targetW / 2) / targetW);
             int gy0 = Math.max(0, (padTop * gh + targetH / 2) / targetH);
             int gxEnd = Math.min(gw, gx0 + photoGw);
             int gyEnd = Math.min(gh, gy0 + photoGh);
-            float halBoost = 1.0f + clamp(look.halation, 0f, 1f) * 0.45f;
+            float halBoost = 1.0f + clamp(look.halation, 0f, 1f) * 0.40f;
             for (int gy = gy0; gy < gyEnd; gy++) {
                 int sy = Math.min(h - 1, ((gy - gy0) * h) / Math.max(1, photoGh));
                 int rowOff = sy * w;
@@ -1075,12 +1127,23 @@ final class RawDeveloper {
                     int r = (c >> 16) & 0xFF;
                     int g = (c >> 8) & 0xFF;
                     int b = c & 0xFF;
-                    float luma = (0.26f * r + 0.64f * g + 0.10f * b) / 255f;
-                    float peak = Math.max(r, Math.max(g, b)) / 255f;
+                    float luma = (0.2126f * r + 0.7152f * g + 0.0722f * b) * 0.003921569f;
+                    float peak = Math.max(r, Math.max(g, b)) * 0.003921569f;
                     float sig = luma * 0.65f + peak * 0.35f;
-                    float gain = smoothstep(0.60f, 0.99f, sig) * halBoost;
-                    int v = Math.min(255, Math.max(0, Math.round(clamp(gain, 0f, 1f) * 255f)));
-                    gainBytes[gRowOff + gx] = (byte) v;
+                    float lift = smoothstep(0.66f, 0.99f, sig);
+                    gainField[gRowOff + gx] = clamp(lift * (0.45f + 0.55f * lift) * halBoost, 0f, 1f);
+                }
+            }
+            if (gw >= 8 && gh >= 8) {
+                float[] tmp = new float[gw * gh];
+                blur(gainField, tmp, gw, gh, true);
+                blur(tmp, gainField, gw, gh, false);
+            }
+            byte[] gainBytes = new byte[gw * gh];
+            for (int gy = gy0; gy < gyEnd; gy++) {
+                int gRowOff = gy * gw;
+                for (int gx = gx0; gx < gxEnd; gx++) {
+                    gainBytes[gRowOff + gx] = (byte) Math.min(255, Math.max(0, Math.round(clamp(gainField[gRowOff + gx], 0f, 1f) * 255f)));
                 }
             }
             Bitmap gainBmp = Bitmap.createBitmap(gw, gh, Bitmap.Config.ALPHA_8);
@@ -1151,6 +1214,10 @@ final class RawDeveloper {
      * shadows, halation, sharpening, vignette, and optional frame border).
      */
     public static Bitmap developBitmap(Bitmap bitmap, Look look, boolean recycleSource) {
+        return developBitmap(bitmap, look, null, recycleSource);
+    }
+
+    static Bitmap developBitmap(Bitmap bitmap, Look look, RawArchive.Frame metadataFrame, boolean recycleSource) {
         if (bitmap == null) return null;
         if (look == null) look = new Look();
 
@@ -1161,7 +1228,7 @@ final class RawDeveloper {
             bitmap.recycle();
         }
 
-        final PreparedLook prep = prepareDisplayLook(look);
+        final PreparedLook prep = prepareDisplayLook(look, metadataFrame);
         final boolean flipH = look.flipHorizontal;
         final float vigAmount = look.vignette;
 
@@ -1189,7 +1256,7 @@ final class RawDeveloper {
         });
 
         float effectiveJpegChromaNr = Math.max(0f, look.chromaNr);
-        return finishPixels(pixels, w, h, look, prep, null, 0x53434f50, effectiveJpegChromaNr);
+        return finishPixels(pixels, w, h, look, prep, metadataFrame, 0x53434f50, effectiveJpegChromaNr);
     }
 
     static PreparedLook prepareDisplayLook(Look look) {
@@ -1319,7 +1386,10 @@ final class RawDeveloper {
                 float coarse = grainNoise(x * invCoarse, fyCoarse, seedCoarse);
                 float texture = (fine * fineW + coarse * coarseW)
                         * grainScaleAmt * smoothstep(.025f, .11f, lightness);
-                if (!uniform) texture *= .38f + .62f * 4f * lightness * (1f - lightness);
+                if (!uniform) {
+                    float hlTaper = 1f - 0.50f * smoothstep(0.80f, 0.99f, lightness);
+                    texture *= (.38f + .62f * 4f * lightness * (1f - lightness)) * hlTaper;
+                }
                 pixels[rowOff + x] = 0xff000000 | (clamp255(r + texture) << 16)
                         | (clamp255(g + texture) << 8) | clamp255(b + texture);
             }
@@ -1329,9 +1399,12 @@ final class RawDeveloper {
     private static float grainNoise(float x, float y, int seed) {
         int ix = (int) Math.floor(x), iy = (int) Math.floor(y);
         float dx = x - ix, dy = y - iy;
-        float top = hashNoise(ix, iy, seed) * (1f - dx) + hashNoise(ix + 1, iy, seed) * dx;
-        float bottom = hashNoise(ix, iy + 1, seed) * (1f - dx) + hashNoise(ix + 1, iy + 1, seed) * dx;
-        return top * (1f - dy) + bottom * dy;
+        // Smooth Hermite interpolation removes bilinear square-grid plaid artifacts on 16mm/8mm grain.
+        float ux = dx * dx * (3f - 2f * dx);
+        float uy = dy * dy * (3f - 2f * dy);
+        float top = hashNoise(ix, iy, seed) * (1f - ux) + hashNoise(ix + 1, iy, seed) * ux;
+        float bottom = hashNoise(ix, iy + 1, seed) * (1f - ux) + hashNoise(ix + 1, iy + 1, seed) * ux;
+        return top * (1f - uy) + bottom * uy;
     }
 
     private static void sampleLsm(RawArchive.Frame frame, int sx, int sy, float[] out) {
@@ -1510,7 +1583,7 @@ final class RawDeveloper {
         }
     }
 
-    /** Single-pass edge-directed color-difference Bayer demosaicing inside a 3x3 window. */
+    /** Single-pass 5x5 Hamilton-Adams edge-directed Bayer demosaicing with diagonal chroma weighting. */
     private static void demosaicPixel(short[] raw, RawArchive.Frame frame, float white,
                                       int x, int y, float[] rgbOut) {
         int w = frame.width, h = frame.height;
@@ -1538,12 +1611,26 @@ final class RawDeveloper {
             rgbOut[1] = g;
             rgbOut[2] = horizIsRed ? gv : gh;
         } else {
-            float dh = Math.abs(c01 - c21);
-            float dv = Math.abs(c10 - c12);
+            int xm2 = x > 1 ? x - 2 : xm;
+            int xp2 = x + 2 < w ? x + 2 : xp;
+            int ym2 = y > 1 ? y - 2 : ym;
+            int yp2 = y + 2 < h ? y + 2 : yp;
+            float lapH = 2f * c11 - rawValue(raw, frame, white, xm2, y) - rawValue(raw, frame, white, xp2, y);
+            float lapV = 2f * c11 - rawValue(raw, frame, white, x, ym2) - rawValue(raw, frame, white, x, yp2);
+            float dh = Math.abs(c01 - c21) + 0.5f * Math.abs(lapH);
+            float dv = Math.abs(c10 - c12) + 0.5f * Math.abs(lapV);
             float wh = 1f / (1f + dh * dh * 256f);
             float wv = 1f / (1f + dv * dv * 256f);
-            float g = (wh * 0.5f * (c01 + c21) + wv * 0.5f * (c10 + c12)) / (wh + wv);
-            float opp = Math.max(0f, g + 0.25f * (c00 + c20 + c02 + c22) - 0.25f * (c01 + c21 + c10 + c12));
+            float gH = 0.5f * (c01 + c21) + 0.25f * lapH;
+            float gV = 0.5f * (c10 + c12) + 0.25f * lapV;
+            float g = clamp((wh * gH + wv * gV) / (wh + wv), 0f, 4f);
+
+            float d1 = Math.abs(c00 - c22);
+            float d2 = Math.abs(c20 - c02);
+            float w1 = 1f / (1f + d1 * d1 * 256f);
+            float w2 = 1f / (1f + d2 * d2 * 256f);
+            float oppDiag = (w1 * 0.5f * (c00 + c22) + w2 * 0.5f * (c20 + c02)) / (w1 + w2);
+            float opp = Math.max(0f, g + oppDiag - 0.25f * (c01 + c21 + c10 + c12));
             if (site == 0) {
                 rgbOut[0] = c11;
                 rgbOut[1] = g;
@@ -1676,7 +1763,7 @@ final class RawDeveloper {
         float[] allLuma = new float[gridX * gridY * 3];
         float[] midLuma = new float[gridX * gridY * 3];
         int allCount = 0, midCount = 0;
-        boolean hasCct = frame.colorCorrectionTransform != null && frame.colorCorrectionTransform.length >= 9;
+        boolean hasCct = isValidColorMatrix(frame.colorCorrectionTransform);
         float[] cct = frame.colorCorrectionTransform;
         float[] rgb = new float[3];
         float[] lsm = applyLsm ? new float[4] : null;
@@ -1900,6 +1987,14 @@ final class RawDeveloper {
         return renderPreparedLook(r, g, b, new PreparedLook(look, frame, lut), x, y, seed);
     }
 
+    /** Smooth C1 angular hue weight in Oklab without transcendental calls. */
+    private static float hueLobe(float cosH, float sinH, float targetCos, float targetSin, float minDot) {
+        float dot = cosH * targetCos + sinH * targetSin;
+        if (dot <= minDot) return 0f;
+        float t = (dot - minDot) / (1f - minDot);
+        return t * t * (3f - 2f * t);
+    }
+
     static int renderPreparedLook(float r, float g, float b, PreparedLook prep, int x, int y, int seed) {
         // Clamp negative off-diagonal matrix excursions before computing luminance so near-black
         // read noise never produces an artificially tiny denominator in `contrasted / oldY`.
@@ -1911,23 +2006,27 @@ final class RawDeveloper {
         if (brainId == BRAIN_ID_MONO) {
             // Panchromatic silver halide spectral response (Kodak Tri-X 400):
             // Elevated red/orange sensitivity renders skin tones smooth and luminous while
-            // deepening blue skies for natural cloud separation.
-            float luma = .3300f * r + .5900f * g + .0800f * b;
+            // chroma-aware blue-sky darkening deepens skies for natural cloud separation.
+            // Strictly invariant on neutral greys (r == g == b).
+            float baseLuma = .3300f * r + .5900f * g + .0800f * b;
+            float blueExcess = Math.max(0f, b - Math.max(r, g));
+            float warmExcess = Math.max(0f, r - g) * smoothstep(0.01f, 0.10f, baseLuma);
+            float luma = Math.max(baseLuma * 0.35f, baseLuma - 0.085f * blueExcess + 0.045f * warmExcess);
             r = g = b = luma;
         } else if (brainId == BRAIN_ID_LIKA_FILM) {
-            // Kodak Vision3 500T dye crosstalk: cinema reds and clean tungsten-balanced shadows
-            float fr = 1.09f * r - 0.06f * g - 0.03f * b;
+            // Kodak Vision3 500T dye crosstalk (unit row sums for exact neutral preservation)
+            float fr = 1.07f * r - 0.05f * g - 0.02f * b;
             float fg = -0.02f * r + 1.01f * g + 0.01f * b;
-            float fb = -0.04f * r + 0.05f * g + 0.99f * b;
+            float fb = -0.03f * r + 0.04f * g + 0.99f * b;
             r = Math.max(0f, fr); g = Math.max(0f, fg); b = Math.max(0f, fb);
         } else if (brainId == BRAIN_ID_KODACHROME) {
             // K-14 Color Reversal: punchy crimson reds, clean golds, and deep cobalt blues
-            float fr = 1.12f * r - 0.09f * g - 0.03f * b;
+            float fr = 1.11f * r - 0.08f * g - 0.03f * b;
             float fg = 0.02f * r + 0.95f * g + 0.03f * b;
-            float fb = -0.05f * r + 0.02f * g + 1.03f * b;
+            float fb = -0.04f * r + 0.01f * g + 1.03f * b;
             r = Math.max(0f, fr); g = Math.max(0f, fg); b = Math.max(0f, fb);
         } else if (brainId == BRAIN_ID_FUJI_ETERNA) {
-            // Fuji Eterna 500T: restrained reds with cool celadon/emerald green-cyan sensitivity
+            // Fuji Eterna 500T 4th-layer sensitivity: restrained reds, cool emerald-cyan separation
             float fr = 0.94f * r + 0.05f * g + 0.01f * b;
             float fg = -0.03f * r + 1.02f * g + 0.01f * b;
             float fb = -0.02f * r + 0.05f * g + 0.97f * b;
@@ -1964,7 +2063,26 @@ final class RawDeveloper {
         float lightness = clamp(.21045426f*lRoot + .79361779f*mRoot - .00407205f*sRoot, 0f, 1.25f);
         float a = 1.97799850f*lRoot - 2.42859221f*mRoot + .45059371f*sRoot;
         float bb = .02590404f*lRoot + .78277177f*mRoot - .80867577f*sRoot;
+
+        // Silver-retention / silver-gelatin tonal micro-presence in perceptual lightness (0 and 1 invariant)
+        if (brainId == BRAIN_ID_BLEACH) {
+            // Retained metallic silver deepens Zone II-IV mid-darks while keeping speculars platinum-crisp.
+            float lc = clamp(lightness, 0f, 1f);
+            float silverCurve = -0.032f * smoothstep(0.06f, 0.34f, lc) * (1f - smoothstep(0.42f, 0.72f, lc))
+                    + 0.018f * smoothstep(0.62f, 0.88f, lc) * (1f - smoothstep(0.92f, 1.0f, lc));
+            lightness = clamp(lightness + silverCurve, 0f, 1.25f);
+        } else if (brainId == BRAIN_ID_MONO) {
+            // Classic Tri-X / baryta paper Zone IV-VII sculptural S-presence.
+            float lc = clamp(lightness, 0f, 1f);
+            float trixCurve = -0.014f * smoothstep(0.05f, 0.30f, lc) * (1f - smoothstep(0.36f, 0.62f, lc))
+                    + 0.014f * smoothstep(0.56f, 0.82f, lc) * (1f - smoothstep(0.90f, 1.0f, lc));
+            lightness = clamp(lightness + trixCurve, 0f, 1.25f);
+        }
+
         float highlightWeight = smoothstep(.62f, 1f, lightness);
+        // Tapered highlight bell peaks in upper-midtones/shoulder and returns cleanly toward paper white at L=1.
+        float highlightBell = smoothstep(0.56f, 0.80f, lightness) * (1f - 0.90f * smoothstep(0.88f, 0.995f, lightness));
+        float midBell = smoothstep(0.14f, 0.42f, lightness) * (1f - smoothstep(0.64f, 0.94f, lightness));
         shadowWeight = 1f - smoothstep(.12f, .50f, lightness);
 
         float rawChromaSq = a * a + bb * bb;
@@ -1988,20 +2106,27 @@ final class RawDeveloper {
         }
 
         float satBase = prep.satBase;
+        if (brainId == BRAIN_ID_BLEACH) {
+            // Real ENR skip-bleach: dense shadow silver absorbs dye chroma (~0.58x), while
+            // thinner midtone silver lets gritty muted earth/crimson/steel dyes bleed through.
+            float silverChromaMask = 0.56f + 0.44f * smoothstep(0.14f, 0.46f, lightness);
+            satBase *= silverChromaMask;
+        }
 
-        // Detect skin tone hue angle in Oklab:
-        // theta = atan2(bb, a). Skin tones cluster between ~0.45 and ~1.35 radians (~26° to 77°),
-        // which lies strictly in Quadrant I (a > 0 && bb > 0) with tan(0.45)=0.483 <= bb/a <= tan(1.35)=4.455.
+        // Smooth unit hue vector in Oklab for skin detection and photochemical DIR dye couplers.
+        float cosH = 0f, sinH = 0f;
+        if (rawChroma > 1e-4f) {
+            float invRawC = 1f / rawChroma;
+            cosH = a * invRawC;
+            sinH = bb * invRawC;
+        }
+
+        // Skin tone hue lobe centered at ~50° (0.88 rad: cos=0.637, sin=0.771).
         float skinFactor = 0f;
         boolean needSkinFactor = (prep.applySmartVibrance && brainId != BRAIN_ID_MONO)
                 || prep.applySkinProtection;
-        if (needSkinFactor && rawChroma > 0.015f && a > 0f && bb > 0f) {
-            float ratioBA = bb / a;
-            if (ratioBA >= 0.483f && ratioBA <= 4.455f) {
-                float hueAngle = (float) Math.atan2(bb, a);
-                float d = Math.abs(hueAngle - 0.88f);
-                skinFactor = smoothstep(0.45f, 0.05f, d);
-            }
+        if (needSkinFactor && rawChroma > 0.015f) {
+            skinFactor = hueLobe(cosH, sinH, 0.637f, 0.771f, 0.78f);
         }
 
         float vibranceBoost = 1.0f;
@@ -2028,6 +2153,70 @@ final class RawDeveloper {
         a *= chromaScale;
         bb *= chromaScale;
         float chroma = rawChroma * chromaScale;
+
+        // Photochemical DIR Inter-Image Hue Couplers & Beer-Lambert Subtractive CMY Dye Density:
+        // Strictly neutral-grey invariant (gates smoothly to 0 as chroma -> 0) and C1-smooth across 360°.
+        if (brainId != BRAIN_ID_MONO && brainId != BRAIN_ID_NEUTRAL && chroma > 0.006f) {
+            float chromaGate = smoothstep(0.006f, 0.042f, chroma);
+            float densityGate = smoothstep(0.06f, 0.22f, lightness) * (1f - smoothstep(0.68f, 0.96f, lightness));
+            float hueRot = 0f;
+            float hueSat = 1f;
+            float dyeDensity = 0f;
+
+            if (brainId == BRAIN_ID_LIKA_FILM) {
+                // Kodak Vision3 500T / 2383 Print: rich cinema reds, natural olive-pine foliage, deep slate skies
+                float wRed = hueLobe(cosH, sinH, 0.883f, 0.469f, 0.65f);       // ~+28° red/crimson
+                float wGreen = hueLobe(cosH, sinH, -0.707f, 0.707f, 0.58f);    // ~+135° yellow-green foliage
+                float wBlue = hueLobe(cosH, sinH, -0.242f, -0.970f, 0.60f);    // ~-104° sky/cobalt blue
+                hueRot = (0.035f * wRed + 0.068f * wGreen - 0.042f * wBlue) * chromaGate;
+                hueSat = 1f + (0.04f * wRed - 0.07f * wGreen + 0.02f * wBlue) * chromaGate;
+                dyeDensity = 0.17f * wRed + 0.13f * wGreen + 0.20f * wBlue + 0.04f * skinFactor;
+            } else if (brainId == BRAIN_ID_KODACHROME) {
+                // Kodachrome 64 (K-14): velvety archival crimson, golden-ochre yellows, restrained olive greens, deep cobalt skies
+                float wRed = hueLobe(cosH, sinH, 0.883f, 0.469f, 0.65f);       // ~+28° crimson
+                float wYellow = hueLobe(cosH, sinH, -0.087f, 0.996f, 0.65f);   // ~+95° yellow/gold
+                float wGreen = hueLobe(cosH, sinH, -0.707f, 0.707f, 0.60f);    // ~+135° foliage
+                float wSky = hueLobe(cosH, sinH, -0.342f, -0.940f, 0.62f);     // ~-110° cyan-sky -> cobalt (leaves violet untouched)
+                hueRot = (-0.048f * wRed - 0.092f * wYellow - 0.035f * wGreen + 0.105f * wSky) * chromaGate;
+                hueSat = 1f + (0.08f * wRed + 0.04f * wYellow - 0.14f * wGreen + 0.05f * wSky) * chromaGate;
+                dyeDensity = 0.27f * wRed + 0.03f * wYellow + 0.15f * wGreen + 0.30f * wSky;
+            } else if (brainId == BRAIN_ID_FUJI_ETERNA) {
+                // Fuji Eterna 500T (4th cyan layer): restrained porcelain reds/skin, emerald/celadon foliage, airy cerulean skies
+                float wRedSkin = hueLobe(cosH, sinH, 0.766f, 0.643f, 0.62f);   // ~+40° red-to-skin
+                float wGreen = hueLobe(cosH, sinH, -0.707f, 0.707f, 0.55f);    // ~+135° foliage -> celadon/emerald
+                float wSky = hueLobe(cosH, sinH, -0.469f, -0.883f, 0.58f);     // ~-118° sky/cyan
+                hueRot = (0.155f * wGreen - 0.055f * wSky) * chromaGate;
+                hueSat = 1f + (-0.08f * wRedSkin + 0.04f * wGreen - 0.04f * wSky) * chromaGate;
+                dyeDensity = 0.06f * wRedSkin + 0.14f * wGreen + 0.10f * wSky;
+            } else if (brainId == BRAIN_ID_BLEACH) {
+                // ENR Skip-Bleach: gritty rust-crimson retention, muted military olive greens, petroleum-steel blues
+                float wRed = hueLobe(cosH, sinH, 0.848f, 0.530f, 0.62f);       // ~+32° crimson/rust
+                float wGreen = hueLobe(cosH, sinH, -0.707f, 0.707f, 0.58f);    // ~+135° foliage -> olive khaki
+                float wBlue = hueLobe(cosH, sinH, -0.423f, -0.906f, 0.58f);    // ~-115° steel blue
+                hueRot = (-0.045f * wRed - 0.065f * wGreen) * chromaGate;
+                hueSat = 1f + (0.24f * wRed - 0.22f * wGreen - 0.08f * wBlue) * chromaGate;
+                dyeDensity = 0.24f * wRed + 0.18f * wGreen + 0.22f * wBlue;
+            }
+
+            if (Math.abs(hueRot) > 1e-4f) {
+                float r2 = hueRot * hueRot;
+                float cRot = 1f - 0.5f * r2;
+                float sRot = hueRot * (1f - 0.1666667f * r2);
+                float na = a * cRot - bb * sRot;
+                float nb = a * sRot + bb * cRot;
+                a = na;
+                bb = nb;
+            }
+            if (Math.abs(hueSat - 1f) > 1e-4f) {
+                a *= hueSat;
+                bb *= hueSat;
+                chroma *= hueSat;
+            }
+            if (dyeDensity > 0f) {
+                lightness = Math.max(0f, lightness - dyeDensity * chroma * densityGate);
+            }
+        }
+
         if (prep.rollOff > 0f && chroma > .13f) {
             float excess = chroma - .13f;
             float compressed = .13f + excess / (1f + excess * prep.rollOffSlope);
@@ -2038,12 +2227,23 @@ final class RawDeveloper {
 
         float warmthGate = smoothstep(0.03f, 0.16f, lightness);
         float midWarmGate = smoothstep(0.08f, 0.30f, lightness);
+        float whitePointTaper = 1f - 0.80f * smoothstep(0.89f, 0.996f, lightness);
         if (brainId == BRAIN_ID_MONO) {
-            // Allow subtle warm-selenium / cool-silver paper toning on MONO / SILVER when warmth slider is shifted
+            // Authentic darkroom paper split-toning on MONO / SILVER when warmth slider is shifted:
+            // warmth > 0: warmtone chlorobromide / selenium (plum-warm shadows, warm ivory midtones);
+            // warmth < 0: coldtone bromide / platinum (cool blue-slate shadows, crisp silver midtones).
+            // Strictly achromatic (a == 0, bb == 0) when warmth == 0.
             if (Math.abs(prep.look.warmth) > 0.01f) {
-                float silverTone = clamp(prep.look.warmth, -1f, 1f) * warmthGate * (1f - 0.35f * highlightWeight);
-                a += silverTone * 0.004f;
-                bb += silverTone * 0.010f;
+                float wShift = clamp(prep.look.warmth, -1f, 1f);
+                float toneMidHigh = warmthGate * whitePointTaper;
+                float toneShadow = shadowWeight * warmthGate;
+                if (wShift > 0f) {
+                    a += wShift * (0.0045f * toneMidHigh + 0.0025f * toneShadow);
+                    bb += wShift * (0.0110f * toneMidHigh + 0.0020f * toneShadow);
+                } else {
+                    a += wShift * (0.0025f * toneMidHigh);
+                    bb += wShift * (0.0090f * toneMidHigh + 0.0065f * toneShadow);
+                }
             }
         } else {
             // Attenuate synthetic film warmth when the pixel is already warm (e.g. tungsten lighting / warm skin)
@@ -2053,7 +2253,7 @@ final class RawDeveloper {
             if (brainId == BRAIN_ID_NEUTRAL) {
                 baseWarmth = 0f;
             } else if (brainId == BRAIN_ID_KODACHROME) {
-                baseWarmth = 0.28f * prep.ambientWarmthFactor * alreadyWarmAtten;
+                baseWarmth = 0.26f * prep.ambientWarmthFactor * alreadyWarmAtten;
             } else if (brainId == BRAIN_ID_FUJI_ETERNA) {
                 baseWarmth = -0.10f * prep.ambientWarmthFactor;
             } else if (brainId == BRAIN_ID_BLEACH) {
@@ -2062,49 +2262,43 @@ final class RawDeveloper {
                 baseWarmth = 0.22f * prep.ambientWarmthFactor * alreadyWarmAtten;
             }
 
-            float filmWarm = clamp(baseWarmth, -1f, 1f) * midWarmGate;
+            float filmWarm = clamp(baseWarmth, -1f, 1f) * midWarmGate * whitePointTaper;
             float userWarm = clamp(prep.look.warmth, -1f, 1f) * warmthGate;
             float warmth = clamp(filmWarm + userWarm, -1f, 1f);
-            a += warmth * (.008f + .003f * highlightWeight);
-            bb += warmth * (.010f + .004f * highlightWeight);
+            a += warmth * (.008f + .003f * highlightBell);
+            bb += warmth * (.010f + .004f * highlightBell);
 
             // Illuminant-Adaptive Neutralization in Easy Mode:
             // Neutralizes the yellow-green jaundiced tint under fluorescent lighting
             if (prep.look.easyMode && prep.fluorescentSpike) {
-                a += 0.0035f * warmthGate;
-                bb -= 0.0070f * warmthGate;
+                a += 0.0035f * warmthGate * whitePointTaper;
+                bb -= 0.0070f * warmthGate * whitePointTaper;
             }
 
-            // Authentic Film Stock Spectral Split-Toning & Hue Couplers:
+            // 3-Zone Photochemical Split Harmony (paper-white-preserving highlight shoulder):
             if (brainId == BRAIN_ID_LIKA_FILM) {
-                // Kodak Vision3 500T: tungsten cool-teal shadow undertow with golden-amber highlight glow
+                // Kodak Vision3 500T: tungsten cool-teal shadow undertow + golden-ivory highlight shoulder
                 bb -= 0.009f * shadowWeight * warmthGate;
                 a -= 0.003f * shadowWeight * warmthGate;
-                a += 0.004f * highlightWeight;
-                bb += 0.006f * highlightWeight;
+                a += 0.004f * highlightBell;
+                bb += 0.007f * highlightBell;
             } else if (brainId == BRAIN_ID_KODACHROME) {
-                // Kodachrome 64: rich crimson-gold couplers in midtones and deep cobalt skies in blues
-                float midWeight = Math.max(0f, 1f - shadowWeight - highlightWeight);
+                // Kodachrome 64: crisp neutral-cool D-max shadows, warm crimson-gold midtones, clean ivory shoulder
                 float warmSceneGate = prep.ambientWarmthFactor * alreadyWarmAtten;
-                a += 0.010f * midWeight * midWarmGate * warmSceneGate;
-                bb += 0.006f * midWeight * midWarmGate * warmSceneGate;
-                if (bb < -0.01f) {
-                    // Deepen cyan-blues slightly toward classic reversal cobalt
-                    a += (-bb) * 0.10f * midWarmGate;
-                }
+                bb -= 0.003f * shadowWeight * warmthGate;
+                a += 0.009f * midBell * midWarmGate * warmSceneGate;
+                bb += 0.006f * midBell * midWarmGate * warmSceneGate;
+                a += 0.002f * highlightBell * warmSceneGate;
+                bb += 0.004f * highlightBell * warmSceneGate;
             } else if (brainId == BRAIN_ID_FUJI_ETERNA) {
-                // Fuji Eterna 500T: signature celadon/cyan shadow split-tone and emerald foliage greens
-                bb -= 0.016f * shadowWeight * warmthGate;
+                // Fuji Eterna 500T: signature celadon/cyan shadow atmosphere + airy cool-neutral shoulder
+                bb -= 0.015f * shadowWeight * warmthGate;
                 a -= 0.010f * shadowWeight * warmthGate;
-                if (a < -0.005f && bb > 0.005f) {
-                    // Rotate yellow-green foliage slightly toward Fuji celadon/emerald
-                    float greenStrength = Math.min(-a, bb);
-                    bb -= greenStrength * 0.25f;
-                    a -= greenStrength * 0.08f;
-                }
+                bb -= 0.003f * highlightBell;
+                a -= 0.001f * highlightBell;
             } else if (brainId == BRAIN_ID_BLEACH) {
-                // ENR Bleach Bypass: steely cyan-slate shadows and cool metallic highlights
-                bb -= 0.014f * shadowWeight * warmthGate + 0.005f * highlightWeight;
+                // ENR Bleach Bypass: steely cyan-slate shadows + cool platinum highlight shoulder
+                bb -= 0.014f * shadowWeight * warmthGate + 0.005f * highlightBell;
                 a -= 0.004f * shadowWeight * warmthGate;
             }
         }
@@ -2121,8 +2315,9 @@ final class RawDeveloper {
             float p3R = 0.8224620f * outR + 0.1775380f * outG;
             float p3G = 0.0331942f * outR + 0.9668058f * outG;
             float p3B = 0.0170826f * outR + 0.0723974f * outG + 0.9105199f * outB;
-            for (int i = 0; i < 8 && (p3R < 0f || p3R > 1f || p3G < 0f || p3G > 1f || p3B < 0f || p3B > 1f); i++) {
-                a *= .82f; bb *= .82f;
+            for (int i = 0; i < 10 && (p3R < 0f || p3R > 1f || p3G < 0f || p3G > 1f || p3B < 0f || p3B > 1f); i++) {
+                float pull = (p3R < -0.15f || p3G < -0.15f || p3B < -0.15f || p3R > 1.15f || p3G > 1.15f || p3B > 1.15f) ? 0.76f : 0.84f;
+                a *= pull; bb *= pull;
                 lp = lightness + .39633778f*a + .21580376f*bb;
                 mp = lightness - .10556135f*a - .06385417f*bb;
                 sp = lightness - .08948418f*a - 1.29148555f*bb;
@@ -2136,8 +2331,9 @@ final class RawDeveloper {
             }
             return (0xFF << 24) | ((toSrgb(p3R) & 0xFF) << 16) | ((toSrgb(p3G) & 0xFF) << 8) | (toSrgb(p3B) & 0xFF);
         }
-        for (int i = 0; i < 8 && (outR < 0f || outR > 1f || outG < 0f || outG > 1f || outB < 0f || outB > 1f); i++) {
-            a *= .82f; bb *= .82f;
+        for (int i = 0; i < 10 && (outR < 0f || outR > 1f || outG < 0f || outG > 1f || outB < 0f || outB > 1f); i++) {
+            float pull = (outR < -0.15f || outG < -0.15f || outB < -0.15f || outR > 1.15f || outG > 1.15f || outB > 1.15f) ? 0.76f : 0.84f;
+            a *= pull; bb *= pull;
             lp = lightness + .39633778f*a + .21580376f*bb;
             mp = lightness - .10556135f*a - .06385417f*bb;
             sp = lightness - .08948418f*a - 1.29148555f*bb;
@@ -2163,32 +2359,88 @@ final class RawDeveloper {
         return (0xFF << 24) | ((toSrgb(outR) & 0xFF) << 16) | ((toSrgb(outG) & 0xFF) << 8) | (toSrgb(outB) & 0xFF);
     }
 
-    private static void applyHalation(int[] pixels, int w, int h, float amount, String aspect) {
+    /**
+     * Resolution-independent, dual-scale, brain-aware optical film halation.
+     * Color stocks model red-orange emulsion backscatter; MONO / SILVER produces pure achromatic
+     * silver bloom; BLEACH BYPASS produces cool platinum-silver sheen.
+     */
+    static void applyHalation(int[] pixels, int w, int h, float amount, String aspect, int brainId) {
         if (pixels == null || w <= 0 || h <= 0 || amount <= 0f) return;
-        int scale = 8, sw = Math.max(1, (w + scale - 1) / scale), sh = Math.max(1, (h + scale - 1) / scale);
-        float[] glow = new float[sw * sh];
+        // Anchor halation grid to a common 240-cell long edge so spread is identical across preview & full-res export.
+        int scale = Math.max(1, Math.round(Math.max(w, h) / 240f));
+        int sw = Math.max(1, (w + scale - 1) / scale);
+        int sh = Math.max(1, (h + scale - 1) / scale);
+        float[] tight = new float[sw * sh];
         for (int y = 0; y < sh; y++) {
-            int py = Math.min(h - 1, y * scale) * w;
+            int y0 = Math.min(h - 1, y * scale);
+            int y1 = Math.min(h - 1, y0 + (scale >> 1));
             int gy = y * sw;
             for (int x = 0; x < sw; x++) {
-                int c = pixels[py + Math.min(w - 1, x * scale)];
-                float luma = (.2126f * ((c >> 16) & 0xff) + .7152f * ((c >> 8) & 0xff) + .0722f * (c & 0xff)) * 0.00392157f;
-                glow[gy + x] = Math.max(0f, luma - .72f);
+                int x0 = Math.min(w - 1, x * scale);
+                int x1 = Math.min(w - 1, x0 + (scale >> 1));
+                // Multi-sample 2x2 peak/avg within each cell so small specular light sources are never missed.
+                int c00 = pixels[y0 * w + x0];
+                float e00 = specularHalationEnergy(c00);
+                if (scale > 1) {
+                    float e10 = specularHalationEnergy(pixels[y0 * w + x1]);
+                    float e01 = specularHalationEnergy(pixels[y1 * w + x0]);
+                    float e11 = specularHalationEnergy(pixels[y1 * w + x1]);
+                    float avg = 0.25f * (e00 + e10 + e01 + e11);
+                    float peak = Math.max(Math.max(e00, e10), Math.max(e01, e11));
+                    tight[gy + x] = 0.55f * avg + 0.45f * peak;
+                } else {
+                    tight[gy + x] = e00;
+                }
             }
         }
-        float[] temp = new float[glow.length];
+        float[] temp = new float[tight.length];
+        float[] wide = new float[tight.length];
         boolean isAnamorphic = aspect != null && AppSettings.parseAspectRatio(aspect) > 2.0f;
-        blur(glow, temp, sw, sh, true);
-        blur(temp, glow, sw, sh, false);
-        blur(glow, temp, sw, sh, true);
-        blur(temp, glow, sw, sh, false);
+        // Pass 1: tight inner specular fringe
+        blur(tight, temp, sw, sh, true);
+        blur(temp, tight, sw, sh, false);
+        // Passes 2-4: wide atmospheric emulsion scatter
+        System.arraycopy(tight, 0, wide, 0, tight.length);
+        blur(wide, temp, sw, sh, true);
+        blur(temp, wide, sw, sh, false);
+        blur(wide, temp, sw, sh, true);
+        blur(temp, wide, sw, sh, false);
         if (isAnamorphic) {
-            blur(glow, temp, sw, sh, true);
-            System.arraycopy(temp, 0, glow, 0, glow.length);
+            blur(wide, temp, sw, sh, true);
+            System.arraycopy(temp, 0, wide, 0, wide.length);
         }
-        float strength = clamp(amount, 0f, 1f) * 1.6f;
-        float invScale = 1f / scale;
-        float maxGx = sw - 1f, maxGy = sh - 1f;
+
+        // Spectral tint per film stock (tight inner fringe + wide outer scatter)
+        final float tR, tG, tB, wR, wG, wB;
+        if (brainId == BRAIN_ID_MONO) {
+            // Pure achromatic silver bloom — never red-orange tint on B&W monochrome film
+            tR = 54f; tG = 54f; tB = 54f;
+            wR = 38f; wG = 38f; wB = 38f;
+        } else if (brainId == BRAIN_ID_BLEACH) {
+            // Cool platinum-silver sheen (retained metallic silver suppresses dye backscatter)
+            tR = 50f; tG = 54f; tB = 60f;
+            wR = 34f; wG = 38f; wB = 44f;
+        } else if (brainId == BRAIN_ID_FUJI_ETERNA) {
+            // Delicate cinema coral-amber bloom
+            tR = 76f; tG = 36f; tB = 14f;
+            wR = 58f; wG = 22f; wB = 8f;
+        } else if (brainId == BRAIN_ID_KODACHROME) {
+            // Crisp K-14 warm crimson-gold optical flare
+            tR = 92f; tG = 34f; tB = 8f;
+            wR = 64f; wG = 16f; wB = 2f;
+        } else if (brainId == BRAIN_ID_NEUTRAL) {
+            // Clean neutral-warm optical lens glow
+            tR = 52f; tG = 46f; tB = 38f;
+            wR = 36f; wG = 32f; wB = 26f;
+        } else {
+            // LIKA / FILM (Vision3 500T): authentic crimson-orange anti-halation backscatter
+            tR = 96f; tG = 30f; tB = 6f;
+            wR = 82f; wG = 16f; wB = 2f;
+        }
+
+        final float strength = clamp(amount, 0f, 1f) * 1.45f;
+        final float invScale = 1f / scale;
+        final float maxGx = sw - 1f, maxGy = sh - 1f;
         java.util.stream.IntStream.range(0, h).parallel().forEach(y -> {
             int rowOffset = y * w;
             float gyf = Math.min(maxGy, y * invScale);
@@ -2203,22 +2455,48 @@ final class RawDeveloper {
                 int gx0 = (int) gxf;
                 int gx1 = Math.min(sw - 1, gx0 + 1);
                 float tx = gxf - gx0;
-                float top = glow[gRow0 + gx0] * (1f - tx) + glow[gRow0 + gx1] * tx;
-                float bot = glow[gRow1 + gx0] * (1f - tx) + glow[gRow1 + gx1] * tx;
-                float halo = (top * wy0 + bot * ty) * strength;
+                float wx0 = 1f - tx;
+
+                float tTop = tight[gRow0 + gx0] * wx0 + tight[gRow0 + gx1] * tx;
+                float tBot = tight[gRow1 + gx0] * wx0 + tight[gRow1 + gx1] * tx;
+                float hTight = (tTop * wy0 + tBot * ty) * strength;
+
+                float wTop = wide[gRow0 + gx0] * wx0 + wide[gRow0 + gx1] * tx;
+                float wBot = wide[gRow1 + gx0] * wx0 + wide[gRow1 + gx1] * tx;
+                float hWide = (wTop * wy0 + wBot * ty) * strength;
+
+                if (hTight + hWide < 1e-4f) continue;
                 int c = pixels[rowOffset + x];
                 int r = (c >> 16) & 0xff;
                 int g = (c >> 8) & 0xff;
                 int b = c & 0xff;
-                pixels[rowOffset + x] = 0xff000000 | (clamp255(r + halo * 90f) << 16)
-                        | (clamp255(g + halo * 28f) << 8) | b;
+                // Soft screen-headroom blend prevents flat neon-yellow clipping when red approaches 255.
+                float addR = (hTight * tR + hWide * wR) * (1f - r * 0.0022f);
+                float addG = (hTight * tG + hWide * wG) * (1f - g * 0.0022f);
+                float addB = (hTight * tB + hWide * wB) * (1f - b * 0.0022f);
+                pixels[rowOffset + x] = 0xff000000
+                        | (clamp255(r + addR) << 16)
+                        | (clamp255(g + addG) << 8)
+                        | clamp255(b + addB);
             }
         });
     }
 
-    private static void applyChromaDenoise(int[] pixels, int w, int h, float amount) {
+    private static float specularHalationEnergy(int c) {
+        int r = (c >> 16) & 0xff;
+        int g = (c >> 8) & 0xff;
+        int b = c & 0xff;
+        float luma = (.2126f * r + .7152f * g + .0722f * b) * 0.003921569f;
+        float peak = Math.max(r, Math.max(g, b)) * 0.003921569f;
+        float sig = 0.65f * luma + 0.35f * peak;
+        float t = smoothstep(0.68f, 0.99f, sig);
+        return t * t;
+    }
+
+    /** Edge-preserving 8-neighbor bilateral chroma noise reduction in Y + (R-Y, G-Y, B-Y). */
+    static void applyChromaDenoise(int[] pixels, int w, int h, float amount) {
         if (pixels == null || w < 3 || h < 3 || amount <= 0f) return;
-        final float strength = clamp(amount, 0f, 1f) * .72f;
+        final float strength = clamp(amount, 0f, 1f) * .78f;
         final int interiorRows = h - 2;
         final int numStrips = interiorRows < 32 ? 1
                 : Math.min(Runtime.getRuntime().availableProcessors() * 2, Math.max(1, interiorRows / 32));
@@ -2251,44 +2529,39 @@ final class RawDeveloper {
                 int rowOffset = y * w;
                 for (int x = 1; x < w - 1; x++) {
                     int c = currRow[x];
-                    int left = currRow[x - 1];
-                    int right = currRow[x + 1];
-                    int up = prevRow[x];
-                    int down = nextRow[x];
-
-                    float r = ((c >> 16) & 0xff) * 0.00392157f;
-                    float g = ((c >> 8) & 0xff) * 0.00392157f;
-                    float b = (c & 0xff) * 0.00392157f;
+                    float r = ((c >> 16) & 0xff) * 0.003921569f;
+                    float g = ((c >> 8) & 0xff) * 0.003921569f;
+                    float b = (c & 0xff) * 0.003921569f;
                     float luma = .2126f * r + .7152f * g + .0722f * b;
                     float cr = r - luma, cg = g - luma, cb = b - luma;
 
-                    float nr = ((left >> 16) & 0xff) * 0.00392157f;
-                    float ng = ((left >> 8) & 0xff) * 0.00392157f;
-                    float nb = (left & 0xff) * 0.00392157f;
-                    float nl = .2126f * nr + .7152f * ng + .0722f * nb;
-                    float mr = nr - nl, mg = ng - nl, mb = nb - nl, neighbourLuma = nl;
+                    // Per-neighbor bilateral luminance weights prevent chroma bleeding across sharp edges.
+                    float sumR = 0f, sumG = 0f, sumB = 0f, sumW = 0f;
+                    int n0 = currRow[x - 1], n1 = currRow[x + 1], n2 = prevRow[x], n3 = nextRow[x];
+                    int n4 = prevRow[x - 1], n5 = prevRow[x + 1], n6 = nextRow[x - 1], n7 = nextRow[x + 1];
 
-                    nr = ((right >> 16) & 0xff) * 0.00392157f;
-                    ng = ((right >> 8) & 0xff) * 0.00392157f;
-                    nb = (right & 0xff) * 0.00392157f;
-                    nl = .2126f * nr + .7152f * ng + .0722f * nb;
-                    mr += nr - nl; mg += ng - nl; mb += nb - nl; neighbourLuma += nl;
+                    for (int k = 0; k < 8; k++) {
+                        int nc = k == 0 ? n0 : k == 1 ? n1 : k == 2 ? n2 : k == 3 ? n3
+                                : k == 4 ? n4 : k == 5 ? n5 : k == 6 ? n6 : n7;
+                        float nr = ((nc >> 16) & 0xff) * 0.003921569f;
+                        float ng = ((nc >> 8) & 0xff) * 0.003921569f;
+                        float nb = (nc & 0xff) * 0.003921569f;
+                        float nl = .2126f * nr + .7152f * ng + .0722f * nb;
+                        float dl = luma - nl;
+                        float spatialW = k < 4 ? 1.0f : 0.707f;
+                        float wt = spatialW / (1f + dl * dl * 110f);
+                        sumR += (nr - nl) * wt;
+                        sumG += (ng - nl) * wt;
+                        sumB += (nb - nl) * wt;
+                        sumW += wt;
+                    }
 
-                    nr = ((up >> 16) & 0xff) * 0.00392157f;
-                    ng = ((up >> 8) & 0xff) * 0.00392157f;
-                    nb = (up & 0xff) * 0.00392157f;
-                    nl = .2126f * nr + .7152f * ng + .0722f * nb;
-                    mr += nr - nl; mg += ng - nl; mb += nb - nl; neighbourLuma += nl;
-
-                    nr = ((down >> 16) & 0xff) * 0.00392157f;
-                    ng = ((down >> 8) & 0xff) * 0.00392157f;
-                    nb = (down & 0xff) * 0.00392157f;
-                    nl = .2126f * nr + .7152f * ng + .0722f * nb;
-                    mr += nr - nl; mg += ng - nl; mb += nb - nl; neighbourLuma += nl;
-
-                    mr *= .25f; mg *= .25f; mb *= .25f; neighbourLuma *= .25f;
-                    float gradient = Math.abs(luma - neighbourLuma);
-                    float blend = strength * Math.max(0f, 1f - gradient * 5f);
+                    if (sumW <= 1e-5f) continue;
+                    float invW = 1f / sumW;
+                    float mr = sumR * invW, mg = sumG * invW, mb = sumB * invW;
+                    // Slightly stronger chroma cleanup in dark shadows where sensor color noise concentrates.
+                    float shadowBoost = 1f + 0.25f * (1f - smoothstep(0.08f, 0.38f, luma));
+                    float blend = clamp(strength * shadowBoost, 0f, 0.90f);
                     float resultR = luma + cr * (1f - blend) + mr * blend;
                     float resultG = luma + cg * (1f - blend) + mg * blend;
                     float resultB = luma + cb * (1f - blend) + mb * blend;
@@ -2359,9 +2632,10 @@ final class RawDeveloper {
         }
     }
 
-    private static void applySharpen(int[] pixels, int w, int h, float amount) {
+    /** Edge-cored, halo-limited luminance-only sharpening (preserves hue/chroma and suppresses flat noise). */
+    static void applySharpen(int[] pixels, int w, int h, float amount) {
         if (pixels == null || w < 3 || h < 3 || amount <= 0f) return;
-        final float weight = 1f + 4f * amount;
+        final float gain = amount * 4.0f;
         final int interiorRows = h - 2;
         final int numStrips = interiorRows < 32 ? 1
                 : Math.min(Runtime.getRuntime().availableProcessors() * 2, Math.max(1, interiorRows / 32));
@@ -2394,19 +2668,33 @@ final class RawDeveloper {
                 int rowOffset = y * w;
                 for (int x = 1; x < w - 1; x++) {
                     int c = currRow[x];
+                    int r = (c >> 16) & 0xff;
+                    int g = (c >> 8) & 0xff;
+                    int b = c & 0xff;
+                    float yC = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+
                     int left = currRow[x - 1];
                     int right = currRow[x + 1];
                     int up = prevRow[x];
                     int down = nextRow[x];
+                    float yAvg = 0.25f * (
+                            (0.2126f * ((left >> 16) & 0xff) + 0.7152f * ((left >> 8) & 0xff) + 0.0722f * (left & 0xff))
+                          + (0.2126f * ((right >> 16) & 0xff) + 0.7152f * ((right >> 8) & 0xff) + 0.0722f * (right & 0xff))
+                          + (0.2126f * ((up >> 16) & 0xff) + 0.7152f * ((up >> 8) & 0xff) + 0.0722f * (up & 0xff))
+                          + (0.2126f * ((down >> 16) & 0xff) + 0.7152f * ((down >> 8) & 0xff) + 0.0722f * (down & 0xff)));
 
-                    float r = ((c >> 16) & 0xff) * weight - amount * (
-                            ((left >> 16) & 0xff) + ((right >> 16) & 0xff) + ((up >> 16) & 0xff) + ((down >> 16) & 0xff));
-                    float g = ((c >> 8) & 0xff) * weight - amount * (
-                            ((left >> 8) & 0xff) + ((right >> 8) & 0xff) + ((up >> 8) & 0xff) + ((down >> 8) & 0xff));
-                    float b = (c & 0xff) * weight - amount * (
-                            (left & 0xff) + (right & 0xff) + (up & 0xff) + (down & 0xff));
+                    float detail = yC - yAvg;
+                    float absDetail = Math.abs(detail);
+                    // Noise coring suppresses fine shadow/sky noise (< ~2.2 levels) without blunting real texture.
+                    float core = smoothstep(1.5f, 4.5f, absDetail);
+                    // Soft overshoot limiter prevents white/black ringing halos on high-contrast edges.
+                    float limited = detail / (1f + absDetail * 0.035f);
+                    float deltaY = limited * gain * core;
 
-                    pixels[rowOffset + x] = 0xff000000 | (clamp255(r) << 16) | (clamp255(g) << 8) | clamp255(b);
+                    pixels[rowOffset + x] = 0xff000000
+                            | (clamp255(r + deltaY) << 16)
+                            | (clamp255(g + deltaY) << 8)
+                            | clamp255(b + deltaY);
                 }
                 if (y < yEnd) {
                     int[] reuse = prevRow;

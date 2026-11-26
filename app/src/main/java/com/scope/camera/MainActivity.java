@@ -2776,15 +2776,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         frameBmp = rotated;
                     }
                 }
-                String savedBorder = stillLook.frameBorder;
-                stillLook.frameBorder = "None";
-                Bitmap developed = RawDeveloper.developBitmap(frameBmp, stillLook, true);
+                Bitmap cropped = cropToAspect(frameBmp, targetAspect);
+                Bitmap developed = RawDeveloper.developBitmap(cropped, stillLook, previewColourMetadata, true);
                 if (developed != null) {
-                    developed = cropToAspect(developed, targetAspect);
-                    if (savedBorder != null && !savedBorder.startsWith("None")) {
-                        stillLook.frameBorder = savedBorder;
-                        developed = RawDeveloper.applyFrameBorder(developed, stillLook, null);
-                    }
                     String stamp = formatCaptureStamp();
                     String prefix = resolvedFilePrefix();
                     String stem = CaptureFileNaming.ensureUniqueStem(
@@ -5155,19 +5149,36 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
     }
 
-    private Bitmap finishGradedJpegBitmap(Bitmap orientedSource, CaptureRecipe recipe) {
+    private RawArchive.Frame buildDisplayMetadataFrame(TotalCaptureResult result, String aspectRatio) {
+        RawArchive.Frame meta = new RawArchive.Frame();
+        meta.aspectRatio = aspectRatio != null ? aspectRatio : "4:3";
+        boolean hasWb = false;
+        if (result != null) {
+            android.hardware.camera2.params.RggbChannelVector gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS);
+            if (gains != null) {
+                meta.wbGains = new float[]{gains.getRed(), gains.getGreenEven(), gains.getGreenOdd(), gains.getBlue()};
+                hasWb = true;
+            }
+            Long exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+            Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
+            if (exposure != null) meta.exposureTimeNs = exposure;
+            if (iso != null) meta.sensitivityIso = iso;
+        }
+        RawArchive.Frame preview = previewColourMetadata;
+        if (preview != null) {
+            if (!hasWb && preview.wbGains != null) meta.wbGains = preview.wbGains.clone();
+            if (meta.exposureTimeNs <= 0L) meta.exposureTimeNs = preview.exposureTimeNs;
+            if (meta.sensitivityIso <= 0) meta.sensitivityIso = preview.sensitivityIso;
+        }
+        return meta;
+    }
+
+    private Bitmap finishGradedJpegBitmap(Bitmap orientedSource, CaptureRecipe recipe, TotalCaptureResult captureResult) {
         if (orientedSource == null) return null;
         RawDeveloper.Look jpegLook = recipe.look.copy();
-        String savedBorder = jpegLook.frameBorder;
-        jpegLook.frameBorder = "None";
-        Bitmap developed = RawDeveloper.developBitmap(orientedSource, jpegLook, true);
-        if (developed == null) return null;
-        developed = cropToAspect(developed, recipe.look.aspectRatio);
-        if (savedBorder != null && !savedBorder.startsWith("None")) {
-            jpegLook.frameBorder = savedBorder;
-            developed = RawDeveloper.applyFrameBorder(developed, jpegLook, null);
-        }
-        return developed;
+        Bitmap cropped = cropToAspect(orientedSource, jpegLook.aspectRatio);
+        RawArchive.Frame metaFrame = buildDisplayMetadataFrame(captureResult, jpegLook.aspectRatio);
+        return RawDeveloper.developBitmap(cropped, jpegLook, metaFrame, true);
     }
 
     private void publishDevelopedPhoto(long renderJob, boolean raw, CaptureRecipe recipe,
@@ -5331,7 +5342,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     stackedSource = session.fallbackJpegBitmap;
                     session.fallbackJpegBitmap = null;
                 }
-                developed = finishGradedJpegBitmap(stackedSource, session.recipe);
+                developed = finishGradedJpegBitmap(stackedSource, session.recipe, session.baseResult);
                 publishDevelopedPhoto(session.renderJob, false, session.recipe, session.meta, null,
                         session.baseResult, developed, false, null, session.stackedFrames);
             }
@@ -5401,7 +5412,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     byte[] bytes = new byte[buffer.remaining()];
                     buffer.get(bytes);
                     Bitmap oriented = RawDeveloper.decodeOrientedJpegForGrading(bytes, capturedOrientation);
-                    developed = finishGradedJpegBitmap(oriented, recipe);
+                    developed = finishGradedJpegBitmap(oriented, recipe, result);
                 }
                 publishDevelopedPhoto(renderJob, raw, recipe, meta, rawFrame, result, developed, dngSaved, dngWarning, 1);
                 renderSucceeded = true;
@@ -6549,7 +6560,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                    -0.02f,  0.92f,  0.02f, 12f,
                    -0.01f,  0.04f,  0.91f, 14f);
         } else if (brain.contains("BLEACH")) {
-            cm.setSaturation(0.30f);
+            cm.setSaturation(0.42f);
             float scale = 1.28f;
             float translate = (-0.42f * scale + 0.42f) * 255f - 8f;
             concatLegacyMatrix(

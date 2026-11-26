@@ -609,72 +609,197 @@ final class LutManager {
     }
 
     static Lut3D generateBuiltIn(String name, int size) {
+        final int profile;
+        if (LUT_PORTRA.equalsIgnoreCase(name)) profile = 1;
+        else if (LUT_FUJI.equalsIgnoreCase(name)) profile = 2;
+        else if (LUT_TEAL_ORANGE.equalsIgnoreCase(name)) profile = 3;
+        else if (LUT_ANSEL_BW.equalsIgnoreCase(name)) profile = 4;
+        else if (LUT_AMBER_70S.equalsIgnoreCase(name)) profile = 5;
+        else if (LUT_BLEACH.equalsIgnoreCase(name)) profile = 6;
+        else profile = 0;
+
         float[] table = new float[size * size * size * 3];
+        final float inv = 1f / (size - 1f);
         for (int b = 0; b < size; b++) {
-            float inB = b / (size - 1f);
+            float inB = b * inv;
+            float linB = RawDeveloper.srgbToLinear(inB);
             for (int g = 0; g < size; g++) {
-                float inG = g / (size - 1f);
+                float inG = g * inv;
+                float linG = RawDeveloper.srgbToLinear(inG);
                 for (int r = 0; r < size; r++) {
-                    float inR = r / (size - 1f);
+                    float inR = r * inv;
                     int idx = (r + size * (g + size * b)) * 3;
-                    float outR = inR, outG = inG, outB = inB;
+                    if (profile == 0) {
+                        table[idx] = inR;
+                        table[idx + 1] = inG;
+                        table[idx + 2] = inB;
+                        continue;
+                    }
+                    float linR = RawDeveloper.srgbToLinear(inR);
 
-                    float luma = 0.2126f * inR + 0.7152f * inG + 0.0722f * inB;
-
-                    if (LUT_PORTRA.equalsIgnoreCase(name)) {
-                        // Kodak Portra 400: Golden creamy highlights, pastel cyan shadow lift, peach skin tones
-                        outR = (float) Math.pow(inR, 0.94) * 1.05f + 0.02f;
-                        outG = (float) Math.pow(inG, 0.97) * 1.01f + 0.01f;
-                        outB = (float) Math.pow(inB, 1.03) * 0.95f;
-                        float shadowLift = 0.035f * (1f - luma);
-                        outR += shadowLift * 0.8f;
-                        outG += shadowLift * 1.0f;
-                        outB += shadowLift * 1.25f;
-                    } else if (LUT_FUJI.equalsIgnoreCase(name)) {
-                        // Fuji Pro 400H: Luminous minty greens, soft lavender shadow tint, airy highlights
-                        outR = (float) Math.pow(inR, 0.98) * 0.97f + 0.02f;
-                        outG = (float) Math.pow(inG, 0.95) * 1.03f + 0.03f;
-                        outB = (float) Math.pow(inB, 0.96) * 1.05f + 0.04f;
-                        outG += 0.04f * (float) Math.sin(luma * Math.PI);
-                    } else if (LUT_TEAL_ORANGE.equalsIgnoreCase(name)) {
-                        // Cine Teal & Orange: Cool cyan shadows & blue skies, warm amber highlights & skin
-                        float shadowW = 1f - smoothstep(0.12f, 0.65f, luma);
-                        float hlW = smoothstep(0.40f, 0.90f, luma);
-                        outR = inR * (1f - 0.22f * shadowW) + 0.16f * hlW;
-                        outG = inG * (1f + 0.04f * shadowW) + 0.06f * hlW;
-                        outB = inB * (1f + 0.35f * shadowW) - 0.14f * hlW;
-                        // S-curve contrast
-                        float c = (float) (1.0 / (1.0 + Math.exp(-5.5 * (luma - 0.48))));
-                        float scale = c / Math.max(0.001f, luma);
-                        outR *= scale; outG *= scale; outB *= scale;
-                    } else if (LUT_ANSEL_BW.equalsIgnoreCase(name)) {
-                        // Ansel Adams Silver B&W: Zone system contrast with luminous silver highlights
-                        float mono = 0.299f * inR + 0.587f * inG + 0.114f * inB;
-                        float curved = (float) (Math.pow(mono, 1.38) / (Math.pow(mono, 1.38) + Math.pow(1.0 - mono, 1.38)));
-                        outR = outG = outB = curved;
-                    } else if (LUT_AMBER_70S.equalsIgnoreCase(name)) {
-                        // Vintage 1970s warm amber slide film: honey highlights, faded warm blacks
-                        outR = inR * 1.18f + 0.04f;
-                        outG = inG * 1.03f + 0.02f;
-                        outB = inB * 0.76f - 0.01f;
-                    } else if (LUT_BLEACH.equalsIgnoreCase(name)) {
-                        // Bleach Bypass: high contrast silver retention, crushed darks, metallic sheen
-                        float mono = 0.2126f * inR + 0.7152f * inG + 0.0722f * inB;
-                        float desatR = inR * 0.36f + mono * 0.64f;
-                        float desatG = inG * 0.36f + mono * 0.64f;
-                        float desatB = inB * 0.36f + mono * 0.64f;
-                        outR = desatR < 0.5f ? (2f * desatR * desatR) : (1f - 2f * (1f - desatR) * (1f - desatR));
-                        outG = desatG < 0.5f ? (2f * desatG * desatG) : (1f - 2f * (1f - desatG) * (1f - desatG));
-                        outB = desatB < 0.5f ? (2f * desatB * desatB) : (1f - 2f * (1f - desatB) * (1f - desatB));
+                    if (profile == 4) {
+                        // Ansel Adams Silver B&W: panchromatic Zone System response with orange-filter
+                        // blue-sky separation and sculpted Zone IV-VIII silver contrast.
+                        float baseY = 0.34f * linR + 0.57f * linG + 0.09f * linB;
+                        float blueExcess = Math.max(0f, linB - Math.max(linR, linG));
+                        float warmExcess = Math.max(0f, linR - linG) * smoothstep(0.01f, 0.12f, baseY);
+                        float monoLin = Math.max(baseY * 0.30f, baseY - 0.16f * blueExcess + 0.05f * warmExcess);
+                        float mono = linearToSrgb(monoLin);
+                        float p = (float) Math.pow(mono, 1.32);
+                        float q = (float) Math.pow(1.0 - mono, 1.32);
+                        float curved = (p + q) > 1e-6f ? (p / (p + q)) : mono;
+                        table[idx] = curved;
+                        table[idx + 1] = curved;
+                        table[idx + 2] = curved;
+                        continue;
                     }
 
-                    table[idx]     = Math.max(0f, Math.min(1f, outR));
-                    table[idx + 1] = Math.max(0f, Math.min(1f, outG));
-                    table[idx + 2] = Math.max(0f, Math.min(1f, outB));
+                    // Convert linear sRGB -> Oklab perceptual space
+                    float lRoot = (float) Math.cbrt(Math.max(0f, 0.41222147f * linR + 0.53633254f * linG + 0.05144599f * linB));
+                    float mRoot = (float) Math.cbrt(Math.max(0f, 0.21190350f * linR + 0.68069955f * linG + 0.10739696f * linB));
+                    float sRoot = (float) Math.cbrt(Math.max(0f, 0.08830246f * linR + 0.28171884f * linG + 0.62997870f * linB));
+                    float L = clamp01(0.21045426f * lRoot + 0.79361779f * mRoot - 0.00407205f * sRoot);
+                    float a = 1.97799850f * lRoot - 2.42859221f * mRoot + 0.45059371f * sRoot;
+                    float bb = 0.02590404f * lRoot + 0.78277177f * mRoot - 0.80867577f * sRoot;
+
+                    float chroma = (float) Math.hypot(a, bb);
+                    float cosH = chroma > 1e-4f ? a / chroma : 0f;
+                    float sinH = chroma > 1e-4f ? bb / chroma : 0f;
+                    float chromaGate = smoothstep(0.008f, 0.045f, chroma);
+                    float blackGate = smoothstep(0.025f, 0.14f, L);
+                    float whiteTaper = 1f - 0.88f * smoothstep(0.88f, 0.995f, L);
+                    float shadowW = 1f - smoothstep(0.10f, 0.46f, L);
+                    float midBell = smoothstep(0.16f, 0.45f, L) * (1f - smoothstep(0.62f, 0.92f, L));
+                    float hlBell = smoothstep(0.54f, 0.78f, L) * whiteTaper;
+                    float densityGate = smoothstep(0.06f, 0.22f, L) * (1f - smoothstep(0.70f, 0.96f, L));
+
+                    float hueRot = 0f;
+                    float satMul = 1f;
+                    float density = 0f;
+
+                    if (profile == 1) {
+                        // Kodak Portra 400 Warm: luminous peach skin, soft airy negative toe,
+                        // muted pastel greens, warm honey-cream mid/upper highlights, cool cyan shadow breath.
+                        float toeLift = 0.022f * smoothstep(0.015f, 0.10f, L) * (1f - smoothstep(0.16f, 0.48f, L));
+                        L = clamp01(L + toeLift + 0.010f * midBell);
+                        float wSkin = hueLobe(cosH, sinH, 0.637f, 0.771f, 0.70f);
+                        float wGreen = hueLobe(cosH, sinH, -0.707f, 0.707f, 0.58f);
+                        float wSky = hueLobe(cosH, sinH, -0.286f, -0.958f, 0.60f);
+                        hueRot = (0.045f * wSkin - 0.055f * wGreen - 0.030f * wSky) * chromaGate;
+                        satMul = 0.96f + (0.04f * wSkin - 0.14f * wGreen - 0.08f * wSky) * chromaGate;
+                        density = 0.05f * wGreen + 0.08f * wSky;
+                        a += (0.004f * midBell + 0.003f * hlBell - 0.003f * shadowW * blackGate);
+                        bb += (0.009f * midBell + 0.008f * hlBell - 0.007f * shadowW * blackGate);
+                    } else if (profile == 2) {
+                        // Fuji Pro 400H Soft: airy +1 stop overexposed negative aesthetic, luminous
+                        // mint/jade greens, powdery cerulean skies, subtle lavender-cool shadow tint.
+                        float airyLift = 0.028f * smoothstep(0.02f, 0.14f, L) * (1f - smoothstep(0.55f, 0.96f, L));
+                        L = clamp01(L + airyLift);
+                        float wGreen = hueLobe(cosH, sinH, -0.707f, 0.707f, 0.55f);
+                        float wSky = hueLobe(cosH, sinH, -0.342f, -0.940f, 0.58f);
+                        float wRed = hueLobe(cosH, sinH, 0.848f, 0.530f, 0.62f);
+                        hueRot = (0.165f * wGreen - 0.080f * wSky) * chromaGate;
+                        satMul = 0.92f + (0.08f * wGreen - 0.06f * wRed) * chromaGate;
+                        density = 0.08f * wGreen + 0.06f * wSky;
+                        a += (0.0035f * shadowW * blackGate - 0.002f * hlBell);
+                        bb += (-0.011f * shadowW * blackGate - 0.004f * hlBell);
+                    } else if (profile == 3) {
+                        // Cine Teal & Orange: theatrical DI complementary palette with clean skin
+                        // preservation, deep cool-teal shadows, warm golden-amber mid/highlights, S-curve.
+                        L = clamp01(L + (-0.030f * shadowW * blackGate + 0.020f * hlBell));
+                        float wWarm = hueLobe(cosH, sinH, 0.530f, 0.848f, 0.50f);
+                        float wCool = hueLobe(cosH, sinH, -0.500f, -0.866f, 0.45f);
+                        float wGreen = hueLobe(cosH, sinH, -0.707f, 0.707f, 0.55f);
+                        hueRot = (-0.045f * wWarm + 0.075f * wCool + 0.140f * wGreen) * chromaGate;
+                        satMul = 1.04f + (0.08f * wWarm + 0.06f * wCool - 0.16f * wGreen) * chromaGate;
+                        density = 0.14f * wWarm + 0.22f * wCool;
+                        a += (-0.008f * shadowW * blackGate + 0.008f * midBell + 0.006f * hlBell);
+                        bb += (-0.017f * shadowW * blackGate + 0.012f * midBell + 0.010f * hlBell);
+                    } else if (profile == 5) {
+                        // Warm Amber 70s: Kodacolor/Ektachrome golden-hour aesthetic — warm espresso
+                        // shadow toe, terracotta reds, olive-moss greens, creamy ivory (non-clipping) highlights.
+                        float vintageToe = 0.020f * smoothstep(0.015f, 0.12f, L) * (1f - smoothstep(0.18f, 0.44f, L));
+                        L = clamp01(L + vintageToe);
+                        float wRed = hueLobe(cosH, sinH, 0.848f, 0.530f, 0.58f);
+                        float wGreen = hueLobe(cosH, sinH, -0.707f, 0.707f, 0.55f);
+                        float wBlue = hueLobe(cosH, sinH, -0.286f, -0.958f, 0.55f);
+                        hueRot = (0.070f * wRed - 0.110f * wGreen - 0.090f * wBlue) * chromaGate;
+                        satMul = 0.98f + (0.06f * wRed - 0.12f * wGreen - 0.22f * wBlue) * chromaGate;
+                        density = 0.12f * wRed + 0.14f * wGreen + 0.16f * wBlue;
+                        a += (0.006f * shadowW * blackGate + 0.009f * midBell + 0.006f * hlBell);
+                        bb += (0.012f * shadowW * blackGate + 0.022f * midBell + 0.016f * hlBell);
+                    } else if (profile == 6) {
+                        // Bleach Bypass: ENR silver-retention 3D LUT with sculpted contrast,
+                        // tonal-zone desaturation, gritty crimson retention, and steely shadows.
+                        float silverDelta = -0.055f * smoothstep(0.05f, 0.34f, L) * (1f - smoothstep(0.42f, 0.72f, L))
+                                + 0.032f * smoothstep(0.60f, 0.86f, L) * (1f - smoothstep(0.92f, 1.0f, L));
+                        L = clamp01(L + silverDelta);
+                        float silverMask = 0.24f + 0.22f * smoothstep(0.14f, 0.48f, L);
+                        float wRed = hueLobe(cosH, sinH, 0.848f, 0.530f, 0.60f);
+                        satMul = silverMask * (1f + 0.30f * wRed * chromaGate);
+                        density = 0.20f * wRed + 0.14f;
+                        a += -0.004f * shadowW * blackGate;
+                        bb += -0.014f * shadowW * blackGate - 0.004f * hlBell;
+                    }
+
+                    if (Math.abs(hueRot) > 1e-4f) {
+                        float r2 = hueRot * hueRot;
+                        float cRot = 1f - 0.5f * r2;
+                        float sRot = hueRot * (1f - 0.1666667f * r2);
+                        float na = a * cRot - bb * sRot;
+                        float nb = a * sRot + bb * cRot;
+                        a = na;
+                        bb = nb;
+                    }
+                    a *= satMul;
+                    bb *= satMul;
+                    if (density > 0f && chroma > 0.008f) {
+                        L = clamp01(L - density * chroma * satMul * densityGate);
+                    }
+
+                    // Convert Oklab -> linear sRGB with hue-preserving chroma gamut compression
+                    float lp = L + 0.39633778f * a + 0.21580376f * bb;
+                    float mp = L - 0.10556135f * a - 0.06385417f * bb;
+                    float sp = L - 0.08948418f * a - 1.29148555f * bb;
+                    lp *= lp * lp; mp *= mp * mp; sp *= sp * sp;
+                    float outLinR = 4.07674166f * lp - 3.30771159f * mp + 0.23096993f * sp;
+                    float outLinG = -1.26843800f * lp + 2.60975740f * mp - 0.34131940f * sp;
+                    float outLinB = -0.00419609f * lp - 0.70341861f * mp + 1.70761470f * sp;
+                    for (int i = 0; i < 10 && (outLinR < 0f || outLinR > 1f || outLinG < 0f || outLinG > 1f || outLinB < 0f || outLinB > 1f); i++) {
+                        a *= 0.80f;
+                        bb *= 0.80f;
+                        lp = L + 0.39633778f * a + 0.21580376f * bb;
+                        mp = L - 0.10556135f * a - 0.06385417f * bb;
+                        sp = L - 0.08948418f * a - 1.29148555f * bb;
+                        lp *= lp * lp; mp *= mp * mp; sp *= sp * sp;
+                        outLinR = 4.07674166f * lp - 3.30771159f * mp + 0.23096993f * sp;
+                        outLinG = -1.26843800f * lp + 2.60975740f * mp - 0.34131940f * sp;
+                        outLinB = -0.00419609f * lp - 0.70341861f * mp + 1.70761470f * sp;
+                    }
+
+                    table[idx] = linearToSrgb(outLinR);
+                    table[idx + 1] = linearToSrgb(outLinG);
+                    table[idx + 2] = linearToSrgb(outLinB);
                 }
             }
         }
         return new Lut3D(name, name, size, table, false);
+    }
+
+    private static float hueLobe(float cosH, float sinH, float targetCos, float targetSin, float minDot) {
+        float dot = cosH * targetCos + sinH * targetSin;
+        if (dot <= minDot) return 0f;
+        float t = (dot - minDot) / (1f - minDot);
+        return t * t * (3f - 2f * t);
+    }
+
+    private static float linearToSrgb(float linear) {
+        float v = clamp01(linear);
+        return v <= 0.0031308f ? v * 12.92f : 1.055f * (float) Math.pow(v, 1.0 / 2.4) - 0.055f;
+    }
+
+    private static float clamp01(float v) {
+        return Math.max(0f, Math.min(1f, v));
     }
 
     private static float smoothstep(float edge0, float edge1, float x) {

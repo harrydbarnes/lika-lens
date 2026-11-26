@@ -160,39 +160,36 @@ public class PhotoEditorActivity extends Activity {
         look.brain = preset;
         look.shadowProfile = AppSettings.SHADOW_PROFILE_AUTO;
         look.highlightRecovery = AppSettings.HL_REC_AUTO;
+        // Reset tonal/colour trim sliders to neutral baselines so RawDeveloper.PreparedLook applies
+        // each film stock's authored contrast, saturation, and ambient-aware warmth exactly once
+        // (matching the live viewfinder rather than double-stacking brain multipliers).
+        look.contrast = AppSettings.DEFAULT_CONTRAST / 100f;
+        look.pivot = AppSettings.DEFAULT_PIVOT / 100f;
+        look.saturation = AppSettings.DEFAULT_SATURATION / 100f;
+        look.warmth = 0.0f;
+        look.highlights = AppSettings.DEFAULT_HIGHLIGHTS / 100f;
+        look.shadows = AppSettings.DEFAULT_SHADOWS / 100f;
+        look.colorRollOff = AppSettings.DEFAULT_COLOR_ROLLOFF / 100f;
+        look.toneCurve = "Filmic S-Curve";
+
         if (AppSettings.BRAIN_MONO_SILVER.equals(preset) || "MONOCHROME".equals(preset)) {
             look.brain = AppSettings.BRAIN_MONO_SILVER;
-            look.contrast = 1.25f;
             look.saturation = 0.0f;
-            look.warmth = 0.0f;
-            look.grain = 0.32f;
+            look.grain = 0.28f;
             look.halation = 0.10f;
             look.colorRollOff = 0.50f;
-            look.toneCurve = "Filmic S-Curve";
         } else if (AppSettings.BRAIN_KODACHROME.equals(preset)) {
-            look.contrast = 1.25f;
-            look.saturation = 1.16f;
-            look.warmth = 0.14f;
-            look.grain = 0.18f;
-            look.halation = 0.18f;
+            look.grain = 0.16f;
+            look.halation = 0.16f;
             look.colorRollOff = 0.78f;
-            look.toneCurve = "Filmic S-Curve";
         } else if (AppSettings.BRAIN_FUJI_ETERNA.equals(preset)) {
-            look.contrast = 0.95f;
-            look.saturation = 0.88f;
-            look.warmth = -0.04f;
-            look.grain = 0.24f;
+            look.grain = 0.22f;
             look.halation = 0.12f;
-            look.colorRollOff = 0.82f;
-            look.toneCurve = "Filmic S-Curve";
+            look.colorRollOff = 0.80f;
         } else if (AppSettings.BRAIN_BLEACH_BYPASS.equals(preset)) {
-            look.contrast = 1.38f;
-            look.saturation = 0.35f;
-            look.warmth = -0.06f;
-            look.grain = 0.38f;
+            look.grain = 0.34f;
             look.halation = 0.08f;
-            look.colorRollOff = 0.40f;
-            look.toneCurve = "Filmic S-Curve";
+            look.colorRollOff = 0.45f;
         } else if (AppSettings.BRAIN_NEUTRAL_RAW.equals(preset) || "NEUTRAL RAW".equals(preset)) {
             look.brain = AppSettings.BRAIN_NEUTRAL_RAW;
             look.contrast = 1.0f;
@@ -212,13 +209,8 @@ public class PhotoEditorActivity extends Activity {
             look.toneCurve = "Linear Response";
         } else { // "LIKA / FILM"
             look.brain = AppSettings.BRAIN_LIKA_FILM;
-            look.contrast = 1.12f;
-            look.saturation = 0.98f;
-            look.warmth = 0.08f;
             look.grain = 0.22f;
             look.halation = 0.16f;
-            look.colorRollOff = 0.72f;
-            look.toneCurve = "Filmic S-Curve";
         }
         return look;
     }

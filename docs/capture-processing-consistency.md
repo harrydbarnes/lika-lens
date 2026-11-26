@@ -44,8 +44,26 @@ can still differ. The six authored looks are not claimed to be measured film-sto
   sensor noise is not treated as recoverable subject detail.
 - Local recovery uses up to 0.85 additional gain at its maximum, with signal/ISO/exposure-intent
   and bright-highlight gating.
-- Grain is a neutral, deterministic output texture after denoising, halation and sharpening,
-  with coordinates tied to a common image-size reference.
+- Sensor highlight reconstruction smoothly lifts saturated Bayer photosites toward unclipped
+  channel energy before the camera colour matrix so clipped skies and lamps never cast magenta.
+  Full-resolution demosaicing uses 5×5 Hamilton-Adams edge-directed green interpolation with
+  diagonal chroma weighting; `COLOR_CORRECTION_TRANSFORM` is validated before replacing the DNG
+  dual-illuminant matrix.
+- The filmic H&D tone curve transitions $C^1$-smoothly across `safePivot`. Each colour brain uses
+  smooth angular Oklab DIR hue couplers, Beer-Lambert subtractive CMY dye density (neutral-grey
+  invariant), and a paper-white-preserving highlight bell; `BLEACH BYPASS` applies ENR tonal-zone
+  silver retention; `MONO / SILVER` uses chroma-aware panchromatic response and darkroom split-tone
+  paper toning; built-in 3D LUTs run in linear→Oklab space with anchored black/white endpoints.
+- Halation is anchored to a 240-cell reference long edge with dual-scale tight+wide scatter and
+  brain-specific spectral tint (achromatic silver bloom on `MONO / SILVER`, platinum-silver on
+  `BLEACH BYPASS`, red-orange anti-halation backscatter on colour film). Chroma NR uses 8-neighbor
+  per-neighbor bilateral luminance weights, sharpening is edge-cored luminance-only with halo
+  overshoot limiting, and grain uses Hermite interpolation with specular highlight taper anchored
+  to a 3000 px reference long edge.
+- JPEG fallback and video still captures crop before grading, receive capture/preview `wbGains`
+  and exposure metadata, and attach smoothed ISO 21496-1 Ultra HDR gainmaps aligned to any border.
+  Editor brain presets reset trim sliders to neutral baselines so brain character is applied once
+  and matches the camera viewfinder.
 - Warm illumination reduces added Film/Koda warmth rather than stacking a full synthetic
   tint on top of warm indoor light. The user's warmth adjustment remains available.
 - Automatic night integration requires a stationary, dim scene (ISO >= 800 and shutter
@@ -67,8 +85,11 @@ Unit coverage includes the four degree-to-TIFF mappings, all eight JPEG transfor
 capture recipe retention, archive v4 compatibility/v5 round trips, `.sraw` cache pinning & limit
 enforcement, `AppSettings` v1→v2 migration, all six preview brains, off-grid interpolation,
 LUT strength, warm illuminant metadata, ISO/compensation/manual recovery, pre-look metering,
-night integration, resolution-independent neutral grain, `ManualFocusHelper`, `CaptureFileNaming`,
-and `VideoRecordingCoordinator` (25 fps, HLG10 HDR, 180° Auto-ISO, audio zoom, mid-take switches).
+night integration, sensor highlight reconstruction, colour-matrix validation, $C^1$ filmic curve
+monotonicity, photochemical per-brain signatures, achromatic monochrome halation, luminance-only
+cored sharpening, bilateral chroma NR, built-in LUT black/white preservation, resolution-independent
+neutral grain, `ManualFocusHelper`, `CaptureFileNaming`, and `VideoRecordingCoordinator` (25 fps,
+HLG10 HDR, 180° Auto-ISO, audio zoom, mid-take switches).
 
 Before releasing to users, test a real camera device:
 

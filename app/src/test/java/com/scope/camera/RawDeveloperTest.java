@@ -789,4 +789,237 @@ public class RawDeveloperTest {
         }
     }
 
+    @Test
+    public void testSensorHighlightReconstructionPreventsMagentaClippedSkies() {
+        RawArchive.Frame frame = new RawArchive.Frame();
+        frame.width = 16;
+        frame.height = 16;
+        frame.cfa = android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB;
+        frame.rowStride = frame.width * 2;
+        frame.pixelStride = 2;
+        frame.staticWhiteLevel = 1023;
+        frame.dynamicWhiteLevel = 1023;
+        frame.blackLevels = new float[]{0f, 0f, 0f, 0f};
+        // Typical daylight WB: Red & Blue boosted ~2x over Green; when Green clips first at 1023,
+        // naive multiplication produces R=1.30, G=1.00, B=1.19 (magenta cast).
+        frame.wbGains = new float[]{2.0f, 1.0f, 1.0f, 1.7f};
+        frame.colorCorrectionTransform = new float[]{1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f};
+
+        java.nio.ByteBuffer cap = java.nio.ByteBuffer.allocate(frame.width * frame.height * 2)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (int y = 0; y < frame.height; y++) {
+            for (int x = 0; x < frame.width; x++) {
+                int parity = ((y & 1) << 1) | (x & 1);
+                short val = (parity == 0) ? (short) 660 : (parity == 3) ? (short) 720 : (short) 1023;
+                cap.putShort(val);
+            }
+        }
+        cap.flip();
+        frame.captureBuffer = cap;
+
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.brain = AppSettings.BRAIN_NEUTRAL_RAW;
+        look.easyMode = false;
+        look.grain = 0f;
+        look.halation = 0f;
+        look.vignette = 0f;
+        look.chromaNr = 0f;
+        look.sharpening = 0f;
+
+        int[] pixels = RawDeveloper.developPixels(frame, look, 0);
+        assertNotNull(pixels);
+        int center = pixels[(frame.height / 2) * frame.width + (frame.width / 2)];
+        int r = (center >> 16) & 0xff;
+        int g = (center >> 8) & 0xff;
+        int b = center & 0xff;
+        org.junit.Assert.assertTrue("Clipped green channel must be reconstructed cleanly without magenta cast (R=" + r + " G=" + g + " B=" + b + ")",
+                g >= Math.min(r, b) - 6 && r >= 230 && g >= 230 && b >= 230);
+
+        // Verify LinearSceneCache stays bit-for-bit identical even on clipped highlights when EV changes
+        RawDeveloper.LinearSceneCache scene = RawDeveloper.prepareLinearScene(frame, look, 0);
+        RawDeveloper.Look shifted = look.copy();
+        shifted.exposureEv = -0.5f;
+        org.junit.Assert.assertArrayEquals("LinearSceneCache must stay pixel-identical on clipped highlights across EV shifts",
+                RawDeveloper.developPixels(frame, shifted, 0),
+                RawDeveloper.developFromLinearPixels(scene, shifted));
+    }
+
+    @Test
+    public void testIsValidColorMatrixRejectsDegenerateMatrices() {
+        org.junit.Assert.assertTrue(RawDeveloper.isValidColorMatrix(new float[]{1, 0, 0, 0, 1, 0, 0, 0, 1}));
+        org.junit.Assert.assertFalse(RawDeveloper.isValidColorMatrix(null));
+        org.junit.Assert.assertFalse(RawDeveloper.isValidColorMatrix(new float[9]));
+        org.junit.Assert.assertFalse(RawDeveloper.isValidColorMatrix(new float[]{Float.NaN, 0, 0, 0, 1, 0, 0, 0, 1}));
+        org.junit.Assert.assertFalse(RawDeveloper.isValidColorMatrix(new float[]{1, 0, 0, 1, 0, 0, 1, 0, 0}));
+        org.junit.Assert.assertFalse(RawDeveloper.isValidColorMatrix(new float[]{-1, 0, 0, 0, 1, 0, 0, 0, 1}));
+    }
+
+    @Test
+    public void testFilmicToneCurveIsSmoothAndStrictlyMonotonicAcrossPivot() {
+        for (String brain : AppSettings.BRAIN_CHOICES) {
+            RawDeveloper.Look look = new RawDeveloper.Look();
+            look.brain = brain;
+            look.easyMode = true;
+            RawDeveloper.PreparedLook prep = new RawDeveloper.PreparedLook(look, null, null);
+            float prev = -1f;
+            for (int i = 1; i <= 400; i++) {
+                float y = i * 0.005f;
+                float out = prep.evalToneCurveExact(y);
+                org.junit.Assert.assertTrue("Tone curve must be strictly monotonic for " + brain + " at y=" + y, out > prev);
+                prev = out;
+            }
+            // Exact pivot invariance
+            assertEquals("Filmic curve must pass exactly through safePivot for " + brain,
+                    prep.safePivot, prep.evalToneCurveExact(prep.safePivot), 1e-5f);
+        }
+    }
+
+    @Test
+    public void testPhotochemicalBrainSignaturesAndNeutralInvariance() {
+        // 1. MONO / SILVER must stay strictly achromatic at warmth == 0 on saturated hues
+        RawDeveloper.Look mono = new RawDeveloper.Look();
+        mono.brain = AppSettings.BRAIN_MONO_SILVER;
+        mono.grain = 0f;
+        mono.warmth = 0f;
+        int monoColor = RawDeveloper.renderLook(0.60f, 0.20f, 0.08f, mono, 0, 0, 1);
+        assertEquals((monoColor >> 16) & 0xff, (monoColor >> 8) & 0xff);
+        assertEquals((monoColor >> 8) & 0xff, monoColor & 0xff);
+
+        // Cool-silver toning at negative warmth shifts B > R
+        mono.warmth = -0.60f;
+        int monoCool = RawDeveloper.renderLook(0.22f, 0.22f, 0.22f, mono, 0, 0, 1);
+        org.junit.Assert.assertTrue("Cool-toned MONO / SILVER must have B > R",
+                (monoCool & 0xff) > ((monoCool >> 16) & 0xff));
+
+        // 2. KODACHROME / 64 has deeper subtractive dye density on saturated reds & skies than NEUTRAL
+        RawDeveloper.Look koda = new RawDeveloper.Look();
+        koda.brain = AppSettings.BRAIN_KODACHROME;
+        koda.grain = 0f;
+        RawDeveloper.Look neutral = new RawDeveloper.Look();
+        neutral.brain = AppSettings.BRAIN_NEUTRAL_RAW;
+        neutral.grain = 0f;
+        int kodaSky = RawDeveloper.renderLook(0.08f, 0.26f, 0.65f, koda, 0, 0, 1);
+        int neutSky = RawDeveloper.renderLook(0.08f, 0.26f, 0.65f, neutral, 0, 0, 1);
+        int kodaSkyY = (((kodaSky >> 16) & 0xff) * 54 + ((kodaSky >> 8) & 0xff) * 183 + (kodaSky & 0xff) * 19) >> 8;
+        int neutSkyY = (((neutSky >> 16) & 0xff) * 54 + ((neutSky >> 8) & 0xff) * 183 + (neutSky & 0xff) * 19) >> 8;
+        org.junit.Assert.assertTrue("Kodachrome sky dye density should deepen bright sky vs Neutral (" + kodaSkyY + " vs " + neutSkyY + ")",
+                kodaSkyY < neutSkyY - 8);
+
+        // 3. FUJI / ETERNA rotates yellow-green foliage toward cooler emerald/celadon than KODACHROME
+        RawDeveloper.Look fuji = new RawDeveloper.Look();
+        fuji.brain = AppSettings.BRAIN_FUJI_ETERNA;
+        fuji.grain = 0f;
+        int fujiGrass = RawDeveloper.renderLook(0.20f, 0.36f, 0.08f, fuji, 0, 0, 1);
+        int kodaGrass = RawDeveloper.renderLook(0.20f, 0.36f, 0.08f, koda, 0, 0, 1);
+        float fujiBlueGreen = (fujiGrass & 0xff) / Math.max(1f, (float) ((fujiGrass >> 8) & 0xff));
+        float kodaBlueGreen = (kodaGrass & 0xff) / Math.max(1f, (float) ((kodaGrass >> 8) & 0xff));
+        org.junit.Assert.assertTrue("Fuji Eterna foliage should shift cooler toward celadon/emerald than Kodachrome ("
+                + fujiBlueGreen + " vs " + kodaBlueGreen + ")", fujiBlueGreen > kodaBlueGreen + 0.05f);
+
+        // 4. BLEACH BYPASS ENR retains richer muted crimson in midtones than in dense silver shadows
+        RawDeveloper.Look bleach = new RawDeveloper.Look();
+        bleach.brain = AppSettings.BRAIN_BLEACH_BYPASS;
+        bleach.grain = 0f;
+        int bleachMidRed = RawDeveloper.renderLook(0.36f, 0.09f, 0.08f, bleach, 0, 0, 1);
+        int bleachDarkRed = RawDeveloper.renderLook(0.06f, 0.015f, 0.013f, bleach, 0, 0, 1);
+        int midSpread = ((bleachMidRed >> 16) & 0xff) - (bleachMidRed & 0xff);
+        int darkSpread = ((bleachDarkRed >> 16) & 0xff) - (bleachDarkRed & 0xff);
+        org.junit.Assert.assertTrue("Bleach Bypass midtone crimson (" + midSpread + ") should retain richer colour than shadow (" + darkSpread + ")",
+                midSpread > darkSpread + 12 && midSpread >= 24);
+    }
+
+    @Test
+    public void testHalationIsAchromaticOnMonoSilverAndWarmOnColorFilm() {
+        int w = 64, h = 64;
+        int[] base = new int[w * h];
+        java.util.Arrays.fill(base, 0xff282828);
+        for (int y = 26; y < 38; y++) {
+            for (int x = 26; x < 38; x++) {
+                base[y * w + x] = 0xfffafafa;
+            }
+        }
+
+        // MONO / SILVER (brainId = 4): must produce neutral achromatic silver bloom (R == G == B)
+        int[] monoPixels = base.clone();
+        RawDeveloper.applyHalation(monoPixels, w, h, 0.85f, "4:3", 4);
+        int monoEdge = monoPixels[32 * w + 23];
+        int mr = (monoEdge >> 16) & 0xff, mg = (monoEdge >> 8) & 0xff, mb = monoEdge & 0xff;
+        assertEquals("MONO / SILVER halation must stay strictly achromatic (R==G)", mr, mg);
+        assertEquals("MONO / SILVER halation must stay strictly achromatic (G==B)", mg, mb);
+        org.junit.Assert.assertTrue("MONO / SILVER halation must create visible silver bloom (> 40), got " + mr, mr > 44);
+
+        // LIKA / FILM (brainId = 0): must produce authentic warm crimson-orange backscatter (R > G > B)
+        int[] filmPixels = base.clone();
+        RawDeveloper.applyHalation(filmPixels, w, h, 0.85f, "4:3", 0);
+        int filmEdge = filmPixels[32 * w + 23];
+        int fr = (filmEdge >> 16) & 0xff, fg = (filmEdge >> 8) & 0xff, fb = filmEdge & 0xff;
+        org.junit.Assert.assertTrue("LIKA / FILM halation must bloom warm red-orange (R > G > B), got R=" + fr + " G=" + fg + " B=" + fb,
+                fr > fg + 8 && fg > fb + 2);
+    }
+
+    @Test
+    public void testLuminanceSharpenPreservesChromaAndCoresFlatNoise() {
+        int w = 16, h = 16;
+        // 1. Tiny 1-level flat noise should be suppressed by noise coring
+        int[] flat = new int[w * h];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int v = 100 + (((x + y) & 1) == 0 ? 1 : 0);
+                flat[y * w + x] = 0xff000000 | (v << 16) | (v << 8) | v;
+            }
+        }
+        int[] flatBefore = flat.clone();
+        RawDeveloper.applySharpen(flat, w, h, 0.16f);
+        org.junit.Assert.assertArrayEquals("Sub-threshold flat noise must not be amplified by sharpening", flatBefore, flat);
+
+        // 2. Real luminance step on saturated color must sharpen luminance without twisting R-B chroma difference
+        int[] edge = new int[w * h];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                edge[y * w + x] = x < 8 ? 0xff503020 : 0xffb07050;
+            }
+        }
+        int beforeLeft = edge[8 * w + 7];
+        int beforeRight = edge[8 * w + 8];
+        int beforeChromaDiff = ((beforeRight >> 16) & 0xff) - (beforeRight & 0xff);
+        RawDeveloper.applySharpen(edge, w, h, 0.16f);
+        int afterLeft = edge[8 * w + 7];
+        int afterRight = edge[8 * w + 8];
+        int afterChromaDiff = ((afterRight >> 16) & 0xff) - (afterRight & 0xff);
+        org.junit.Assert.assertTrue("Bright side of step edge must sharpen upward",
+                ((afterRight >> 8) & 0xff) > ((beforeRight >> 8) & 0xff));
+        org.junit.Assert.assertTrue("Dark side of step edge must sharpen downward",
+                ((afterLeft >> 8) & 0xff) < ((beforeLeft >> 8) & 0xff));
+        org.junit.Assert.assertTrue("Luminance sharpening must preserve R-B chroma difference within ±1",
+                Math.abs(afterChromaDiff - beforeChromaDiff) <= 1);
+    }
+
+    @Test
+    public void testBilateralChromaDenoiseCleansFlatColorNoiseWithoutBleedingAcrossEdge() {
+        int w = 16, h = 16;
+        int[] pixels = new int[w * h];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (x < 8) {
+                    // Flat dark region with alternating magenta/green chroma noise of constant luma ~40
+                    pixels[y * w + x] = ((x + y) & 1) == 0 ? 0xff401e40 : 0xff163816;
+                } else {
+                    // Clean bright neutral-warm side
+                    pixels[y * w + x] = 0xffe0dcd4;
+                }
+            }
+        }
+        RawDeveloper.applyChromaDenoise(pixels, w, h, 0.85f);
+        // Flat noisy region should have significantly reduced R-G chroma spread
+        int noisyPx = pixels[8 * w + 4];
+        int spread = Math.abs(((noisyPx >> 16) & 0xff) - ((noisyPx >> 8) & 0xff));
+        org.junit.Assert.assertTrue("Bilateral chroma NR must suppress flat-field color speckles (< 16), got " + spread, spread < 16);
+
+        // Bright side immediately adjacent to dark edge must remain clean (no chroma bleed across edge)
+        int brightEdge = pixels[8 * w + 8];
+        int brightSpread = Math.abs(((brightEdge >> 16) & 0xff) - (brightEdge & 0xff));
+        org.junit.Assert.assertTrue("Bilateral chroma NR must not bleed chroma across luminance step (<= 14), got " + brightSpread,
+                brightSpread <= 14);
+    }
+
 }

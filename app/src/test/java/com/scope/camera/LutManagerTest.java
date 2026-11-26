@@ -195,4 +195,43 @@ public class LutManagerTest {
         assertEquals(0, LutManager.readCubeSize(null, null));
         assertEquals(0, LutManager.readCubeSize(null, "custom_without_dir"));
     }
+
+    @Test
+    public void testBuiltInLutsPreserveEndpointsAndProduceDistinctGrades() {
+        String[] profiles = {
+                LutManager.LUT_PORTRA,
+                LutManager.LUT_FUJI,
+                LutManager.LUT_TEAL_ORANGE,
+                LutManager.LUT_ANSEL_BW,
+                LutManager.LUT_AMBER_70S,
+                LutManager.LUT_BLEACH
+        };
+        int[][] midSwatches = new int[profiles.length][2];
+        for (int i = 0; i < profiles.length; i++) {
+            LutManager.Lut3D lut = LutManager.generateBuiltIn(profiles[i], 17);
+            int black = lut.applyToRgb(0f, 0f, 0f, 1f);
+            int white = lut.applyToRgb(1f, 1f, 1f, 1f);
+            for (int shift : new int[]{16, 8, 0}) {
+                int bCh = (black >> shift) & 0xff;
+                int wCh = (white >> shift) & 0xff;
+                assertTrue(profiles[i] + " black point must stay anchored near 0 (<= 6), got " + bCh, bCh <= 6);
+                assertTrue(profiles[i] + " white point must stay luminous near 255 (>= 248), got " + wCh, wCh >= 248);
+            }
+            midSwatches[i][0] = lut.applyToRgb(0.58f, 0.44f, 0.34f, 1f);
+            midSwatches[i][1] = lut.applyToRgb(0.28f, 0.56f, 0.24f, 1f);
+        }
+        for (int i = 0; i < profiles.length; i++) {
+            for (int j = i + 1; j < profiles.length; j++) {
+                int maxDiff = 0;
+                for (int s = 0; s < 2; s++) {
+                    for (int shift : new int[]{16, 8, 0}) {
+                        maxDiff = Math.max(maxDiff, Math.abs(((midSwatches[i][s] >> shift) & 0xff)
+                                - ((midSwatches[j][s] >> shift) & 0xff)));
+                    }
+                }
+                assertTrue("Built-in LUTs " + profiles[i] + " and " + profiles[j] + " must be distinct (maxDiff=" + maxDiff + ")",
+                        maxDiff >= 8);
+            }
+        }
+    }
 }
