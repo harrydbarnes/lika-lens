@@ -7248,11 +7248,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         int w = textureView.getWidth();
         int h = textureView.getHeight();
         if (w <= 0 || h <= 0) return false;
-        int snapW = Math.max(1, w / 2);
-        int snapH = Math.max(1, h / 2);
         Bitmap snap;
         try {
-            snap = textureView.getBitmap(snapW, snapH);
+            // Must match TextureView's exact (w, h) dimensions: TextureView.getBitmap(w/2, h/2)
+            // applies mMatrix in full-view pixel coordinates and crops the image to 2x.
+            snap = textureView.getBitmap();
         } catch (RuntimeException e) {
             return false;
         }
