@@ -91,4 +91,12 @@ final class ModeTransitionMotion {
         out4[2] = startRight + (endRight - startRight) * k;
         out4[3] = startBottom + (endBottom - startBottom) * k;
     }
+
+    /**
+     * Vertical translation offset that pins a bottom-anchored overlay (such as the zoom preset pill row)
+     * to the currently animated viewfinder bottom edge while its final LayoutParams sit at targetBottom.
+     */
+    static float frameAnchoredOffsetY(float currentFrameBottom, float targetFrameBottom) {
+        return currentFrameBottom - targetFrameBottom;
+    }
 }

@@ -500,6 +500,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private final RectF animatedFrameRect = new RectF();
     private final float[] frameMorphScratch = new float[4];
     private boolean frameMorphActive;
+    private float frameMorphTargetBottom;
     private final PathInterpolator modeMotionInterpolator = new PathInterpolator(0.22f, 1f, 0.36f, 1f);
     private LinearLayout lookRow;
     private FrameLayout shootRow;
@@ -2498,19 +2499,24 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         videoLockOverlay.setVisibility(View.GONE);
     }
 
+    private RectF captureCurrentFramingRect() {
+        if (gridOverlay == null || gridOverlay.getWidth() <= 0 || gridOverlay.getHeight() <= 0) {
+            return null;
+        }
+        RectF rect = new RectF();
+        if (frameMorphActive) {
+            rect.set(animatedFrameRect);
+        } else {
+            framingRectInto(gridOverlay.getWidth(), gridOverlay.getHeight(), rect);
+        }
+        return rect;
+    }
+
     private void setVideoMode(boolean enabled) {
         if (videoState.isBusy() || videoMode == enabled) return;
         videoState.cancelPermissionPending();
         cancelDelayedCapture();
-        RectF previousFrame = null;
-        if (gridOverlay != null && gridOverlay.getWidth() > 0 && gridOverlay.getHeight() > 0) {
-            previousFrame = new RectF();
-            if (frameMorphActive) {
-                previousFrame.set(animatedFrameRect);
-            } else {
-                framingRectInto(gridOverlay.getWidth(), gridOverlay.getHeight(), previousFrame);
-            }
-        }
+        RectF previousFrame = captureCurrentFramingRect();
         videoMode = enabled;
         video180Active = false;
         video180Iso = 0;
@@ -2544,15 +2550,17 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         if (textureView != null) {
             configureTransform(textureView.getWidth(), textureView.getHeight());
-            textureView.animate().cancel();
-            textureView.setScaleX(0.988f);
-            textureView.setScaleY(0.988f);
-            textureView.animate()
-                    .scaleX(1f)
-                    .scaleY(1f)
-                    .setDuration(240L)
-                    .setInterpolator(modeMotionInterpolator)
-                    .start();
+            if (!frameMorphActive) {
+                textureView.animate().cancel();
+                textureView.setScaleX(0.988f);
+                textureView.setScaleY(0.988f);
+                textureView.animate()
+                        .scaleX(1f)
+                        .scaleY(1f)
+                        .setDuration(240L)
+                        .setInterpolator(modeMotionInterpolator)
+                        .start();
+            }
         }
     }
 
@@ -2596,11 +2604,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void cycleVideoAspect() {
+        RectF previousFrame = captureCurrentFramingRect();
         String current = AppSettings.get(this, AppSettings.VIDEO_ASPECT, "16:9 Widescreen");
         String next = current.contains("2.39") ? "16:9 Widescreen" : "2.39:1 Cinemascope";
         AppSettings.prefs(this).edit().putString(AppSettings.VIDEO_ASPECT, next).apply();
         updateQuickButtons();
-        if (gridOverlay != null) gridOverlay.invalidate();
+        if (previousFrame != null) {
+            animateFramingRectTransition(previousFrame);
+        } else if (gridOverlay != null) {
+            gridOverlay.invalidate();
+        }
         if (textureView != null) configureTransform(textureView.getWidth(), textureView.getHeight());
     }
 
@@ -2844,6 +2857,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         framingRectInto(gridOverlay.getWidth(), gridOverlay.getHeight(), toRect);
         if (fromRect.equals(toRect)) {
             frameMorphActive = false;
+            clearFrameAnchoredMorphOffsets();
             gridOverlay.invalidate();
             return;
         }
@@ -2852,7 +2866,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             frameMorphAnimator = null;
         }
         frameMorphActive = true;
+        frameMorphTargetBottom = toRect.bottom;
         animatedFrameRect.set(fromRect);
+        applyFrameAnchoredMorphOffsets();
+        gridOverlay.invalidate();
+
         frameMorphAnimator = ValueAnimator.ofFloat(0f, 1f);
         frameMorphAnimator.setDuration(ModeTransitionMotion.FRAME_MORPH_DURATION_MS);
         frameMorphAnimator.setInterpolator(modeMotionInterpolator);
@@ -2864,19 +2882,50 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     toRect.left, toRect.top, toRect.right, toRect.bottom,
                     t, frameMorphScratch);
             animatedFrameRect.set(frameMorphScratch[0], frameMorphScratch[1], frameMorphScratch[2], frameMorphScratch[3]);
+            applyFrameAnchoredMorphOffsets();
+            if (textureView != null) {
+                applyTextureFrameTransform(textureView.getWidth(), textureView.getHeight(), animatedFrameRect);
+            }
             gridOverlay.invalidate();
         });
         frameMorphAnimator.addListener(new AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(Animator animation) {
                 frameMorphActive = false;
                 frameMorphAnimator = null;
+                clearFrameAnchoredMorphOffsets();
+                if (textureView != null) {
+                    configureTransform(textureView.getWidth(), textureView.getHeight());
+                }
                 if (gridOverlay != null) gridOverlay.invalidate();
             }
             @Override public void onAnimationCancel(Animator animation) {
                 frameMorphActive = false;
+                clearFrameAnchoredMorphOffsets();
             }
         });
         frameMorphAnimator.start();
+    }
+
+    private void applyFrameAnchoredMorphOffsets() {
+        float offsetY = frameMorphActive
+                ? ModeTransitionMotion.frameAnchoredOffsetY(animatedFrameRect.bottom, frameMorphTargetBottom)
+                : 0f;
+        setFrameAnchoredTranslationY(lensRow, offsetY);
+        setFrameAnchoredTranslationY(manualFocusPanel, offsetY);
+        setFrameAnchoredTranslationY(zoomSliderPanel, offsetY);
+    }
+
+    private void clearFrameAnchoredMorphOffsets() {
+        setFrameAnchoredTranslationY(lensRow, 0f);
+        setFrameAnchoredTranslationY(manualFocusPanel, 0f);
+        setFrameAnchoredTranslationY(zoomSliderPanel, 0f);
+    }
+
+    private void setFrameAnchoredTranslationY(View view, float translationY) {
+        if (view != null && view.getParent() == overlay
+                && view.getLayoutParams() instanceof FrameLayout.LayoutParams) {
+            view.setTranslationY(translationY);
+        }
     }
 
     private void updateModePillSelection(boolean toVideo, boolean animate) {
@@ -3035,6 +3084,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             frameMorphAnimator = null;
         }
         frameMorphActive = false;
+        clearFrameAnchoredMorphOffsets();
     }
 
     private void onShutterPressed() {
@@ -7530,6 +7580,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     flp.topMargin = desiredTop;
                     zoomSliderPanel.setLayoutParams(flp);
                 }
+                if (frameMorphActive) {
+                    frameMorphTargetBottom = frame.bottom;
+                    setFrameAnchoredTranslationY(zoomSliderPanel,
+                            ModeTransitionMotion.frameAnchoredOffsetY(animatedFrameRect.bottom, frameMorphTargetBottom));
+                } else {
+                    setFrameAnchoredTranslationY(zoomSliderPanel, 0f);
+                }
             }
         }
     }
@@ -8740,6 +8797,71 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             return;
         }
         if (textureView == null || previewSize == null || characteristics == null || viewWidth <= 0 || viewHeight <= 0) return;
+        RectF frame = framingRect(viewWidth, viewHeight);
+        RectF activePreviewFrame = frameMorphActive ? animatedFrameRect : frame;
+        applyTextureFrameTransform(viewWidth, viewHeight, activePreviewFrame);
+
+        if (lensRow != null && frame.bottom > 0) {
+            ViewGroup.LayoutParams lp = lensRow.getLayoutParams();
+            if (lp instanceof FrameLayout.LayoutParams) {
+                FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
+                int desiredTop = (int) (frame.bottom - dp(44) - dp(12));
+                if (flp.topMargin != desiredTop) {
+                    flp.topMargin = desiredTop;
+                    lensRow.setLayoutParams(flp);
+                }
+            }
+        }
+        if (manualFocusPanel != null && frame.bottom > 0) {
+            ViewGroup.LayoutParams lp = manualFocusPanel.getLayoutParams();
+            if (lp instanceof FrameLayout.LayoutParams) {
+                FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
+                int desiredTop = (int) (frame.bottom - dp(44) - dp(12) - dp(42));
+                if (flp.topMargin != desiredTop) {
+                    flp.topMargin = desiredTop;
+                    manualFocusPanel.setLayoutParams(flp);
+                }
+            }
+        }
+        if (zoomSliderPanel != null && frame.bottom > 0) {
+            ViewGroup.LayoutParams lp = zoomSliderPanel.getLayoutParams();
+            if (lp instanceof FrameLayout.LayoutParams) {
+                FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
+                boolean mfOpen = manualFocusPanel != null && manualFocusPanel.getVisibility() == View.VISIBLE;
+                int desiredTop = (int) (frame.bottom - dp(44) - dp(12) - (mfOpen ? dp(84) : dp(40)));
+                if (flp.topMargin != desiredTop) {
+                    flp.topMargin = desiredTop;
+                    zoomSliderPanel.setLayoutParams(flp);
+                }
+            }
+        }
+        if (frameMorphActive && frame.bottom > 0) {
+            frameMorphTargetBottom = frame.bottom;
+            applyFrameAnchoredMorphOffsets();
+        } else {
+            clearFrameAnchoredMorphOffsets();
+        }
+        if (viewfinderSpacer != null && frame.height() > 0) {
+            ViewGroup.LayoutParams lp = viewfinderSpacer.getLayoutParams();
+            if (lp instanceof FrameLayout.LayoutParams) {
+                FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
+                if (flp.width != (int) frame.width() || flp.height != (int) frame.height()
+                        || flp.leftMargin != (int) frame.left || flp.topMargin != (int) frame.top) {
+                    flp.width = (int) frame.width();
+                    flp.height = (int) frame.height();
+                    flp.leftMargin = (int) frame.left;
+                    flp.topMargin = (int) frame.top;
+                    viewfinderSpacer.setLayoutParams(flp);
+                }
+            }
+        }
+    }
+
+    private void applyTextureFrameTransform(int viewWidth, int viewHeight, RectF frame) {
+        if (textureView == null || previewSize == null || characteristics == null
+                || viewWidth <= 0 || viewHeight <= 0 || frame == null || frame.width() <= 0 || frame.height() <= 0) {
+            return;
+        }
         Integer sensorValue = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
         Integer facingValue = characteristics.get(CameraCharacteristics.LENS_FACING);
         int sensorOrientation = sensorValue == null ? 0 : sensorValue;
@@ -8749,7 +8871,6 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         int sign = facing == CameraCharacteristics.LENS_FACING_FRONT ? 1 : -1;
         int relativeRotation = (sensorOrientation - surfaceRotationDegrees * sign + 360) % 360;
         boolean rotationRequired = relativeRotation % 180 != 0;
-        RectF frame = framingRect(viewWidth, viewHeight);
 
         // First compensate for TextureView's non-uniform full-screen fill, then
         // scale the corrected image into the selected frame. The overlay masks
@@ -8791,59 +8912,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         matrix.postScale(frameScale, frameScale, centerX, centerY);
         matrix.postTranslate(frame.centerX() - centerX, frame.centerY() - centerY);
         textureView.setTransform(matrix);
-        if (frame.width() > 0 && frame.height() > 0) {
-            textureView.setPivotX(frame.centerX());
-            textureView.setPivotY(frame.centerY());
-        }
-
-        if (lensRow != null && frame.bottom > 0) {
-            ViewGroup.LayoutParams lp = lensRow.getLayoutParams();
-            if (lp instanceof FrameLayout.LayoutParams) {
-                FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
-                int desiredTop = (int) (frame.bottom - dp(44) - dp(12));
-                if (flp.topMargin != desiredTop) {
-                    flp.topMargin = desiredTop;
-                    lensRow.setLayoutParams(flp);
-                }
-            }
-        }
-        if (manualFocusPanel != null && frame.bottom > 0) {
-            ViewGroup.LayoutParams lp = manualFocusPanel.getLayoutParams();
-            if (lp instanceof FrameLayout.LayoutParams) {
-                FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
-                int desiredTop = (int) (frame.bottom - dp(44) - dp(12) - dp(42));
-                if (flp.topMargin != desiredTop) {
-                    flp.topMargin = desiredTop;
-                    manualFocusPanel.setLayoutParams(flp);
-                }
-            }
-        }
-        if (zoomSliderPanel != null && frame.bottom > 0) {
-            ViewGroup.LayoutParams lp = zoomSliderPanel.getLayoutParams();
-            if (lp instanceof FrameLayout.LayoutParams) {
-                FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
-                boolean mfOpen = manualFocusPanel != null && manualFocusPanel.getVisibility() == View.VISIBLE;
-                int desiredTop = (int) (frame.bottom - dp(44) - dp(12) - (mfOpen ? dp(84) : dp(40)));
-                if (flp.topMargin != desiredTop) {
-                    flp.topMargin = desiredTop;
-                    zoomSliderPanel.setLayoutParams(flp);
-                }
-            }
-        }
-        if (viewfinderSpacer != null && frame.height() > 0) {
-            ViewGroup.LayoutParams lp = viewfinderSpacer.getLayoutParams();
-            if (lp instanceof FrameLayout.LayoutParams) {
-                FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
-                if (flp.width != (int) frame.width() || flp.height != (int) frame.height()
-                        || flp.leftMargin != (int) frame.left || flp.topMargin != (int) frame.top) {
-                    flp.width = (int) frame.width();
-                    flp.height = (int) frame.height();
-                    flp.leftMargin = (int) frame.left;
-                    flp.topMargin = (int) frame.top;
-                    viewfinderSpacer.setLayoutParams(flp);
-                }
-            }
-        }
+        textureView.setPivotX(frame.centerX());
+        textureView.setPivotY(frame.centerY());
     }
 
     private final class ShutterTouchListener implements View.OnTouchListener {

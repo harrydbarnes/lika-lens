@@ -54,4 +54,19 @@ public class ModeTransitionMotionTest {
         assertEquals(950f, out[2], 1e-4f);
         assertEquals(850f, out[3], 1e-4f);
     }
+
+    @Test
+    public void frameAnchoredOffsetTracksBottomEdgeThroughMorph() {
+        float[] out = new float[4];
+        float startBottom = 1100f;
+        float targetBottom = 1500f;
+        ModeTransitionMotion.lerpBounds(0f, 100f, 1000f, startBottom, 0f, 100f, 1000f, targetBottom, 0f, out);
+        assertEquals(-400f, ModeTransitionMotion.frameAnchoredOffsetY(out[3], targetBottom), 1e-4f);
+
+        ModeTransitionMotion.lerpBounds(0f, 100f, 1000f, startBottom, 0f, 100f, 1000f, targetBottom, 0.5f, out);
+        assertEquals(-200f, ModeTransitionMotion.frameAnchoredOffsetY(out[3], targetBottom), 1e-4f);
+
+        ModeTransitionMotion.lerpBounds(0f, 100f, 1000f, startBottom, 0f, 100f, 1000f, targetBottom, 1f, out);
+        assertEquals(0f, ModeTransitionMotion.frameAnchoredOffsetY(out[3], targetBottom), 1e-4f);
+    }
 }
