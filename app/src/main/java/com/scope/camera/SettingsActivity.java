@@ -349,6 +349,8 @@ public class SettingsActivity extends Activity {
         addSwitch("Haptic feedback", "Tactile response on shutter, dials, and landmarks", AppSettings.HAPTICS, true);
 
         beginSection("COMPOSITION & METERING AIDS", "Viewfinder overlays (not baked into saved photographs).");
+        addSwitch("Edge-to-edge viewfinder", "Expand live preview behind controls for an immersive full-screen viewfinder",
+                AppSettings.EDGE_TO_EDGE_VIEWFINDER, false);
         addChoice("Composition grid", "Framing guide inside the viewfinder", AppSettings.GRID_STYLE,
                 new String[]{"None", "2×2", "3×3", "4×4", "Golden ratio"}, "None");
         String currentHorizon = AppSettings.formatHorizonLevel(
@@ -418,7 +420,7 @@ public class SettingsActivity extends Activity {
         addChoice("Video framing", "Recording aspect ratio", AppSettings.VIDEO_ASPECT,
                 new String[]{"16:9 Widescreen", "2.39:1 Cinemascope"}, "16:9 Widescreen");
         addChoice("Video bitrate", "Target encoder bitrate (scaled automatically when HDR is active)", AppSettings.VIDEO_BITRATE,
-                new String[]{"High · 24 Mbps", "Ultra · 35 Mbps", "Standard · 14 Mbps"}, "High · 24 Mbps");
+                AppSettings.VIDEO_BITRATE_CHOICES, "High · 24 Mbps");
         addChoice("Video codec",
                 hdrEnabled ? "HEVC (H.265) is required while 10-bit HLG HDR is active"
                         : "H.264 for broad compatibility or HEVC for smaller files and 10-bit HDR",

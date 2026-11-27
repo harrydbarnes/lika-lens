@@ -68,6 +68,31 @@ public class AppSettingsTest {
     }
 
     @Test
+    public void testVideoBitrateAndAspectRatioOrdering() {
+        assertEquals(3, AppSettings.VIDEO_BITRATE_CHOICES.length);
+        assertTrue(AppSettings.VIDEO_BITRATE_CHOICES[0].startsWith("Standard"));
+        assertTrue(AppSettings.VIDEO_BITRATE_CHOICES[1].startsWith("High"));
+        assertTrue(AppSettings.VIDEO_BITRATE_CHOICES[2].startsWith("Ultra"));
+        int prevBitrate = 0;
+        for (String choice : AppSettings.VIDEO_BITRATE_CHOICES) {
+            int bps = VideoRecordingCoordinator.computeBitrate(choice);
+            assertTrue("Bitrate choices must increase monotonically", bps > prevBitrate);
+            prevBitrate = bps;
+        }
+
+        assertEquals(AppSettings.ASPECT_RATIOS.length, AppSettings.ASPECT_RATIO_LABELS.length);
+        float prevRatio = Float.MAX_VALUE;
+        for (int i = 0; i < AppSettings.ASPECT_RATIOS.length; i++) {
+            assertTrue(AppSettings.ASPECT_RATIO_LABELS[i].startsWith(AppSettings.ASPECT_RATIOS[i]));
+            float r = AppSettings.parseAspectRatio(AppSettings.ASPECT_RATIOS[i]);
+            assertTrue("Aspect ratios must decrease monotonically", r < prevRatio);
+            prevRatio = r;
+        }
+
+        assertEquals("edge_to_edge_viewfinder", AppSettings.EDGE_TO_EDGE_VIEWFINDER);
+    }
+
+    @Test
     public void testFrameBorderChoices() {
         assertNotNull(AppSettings.FRAME_BORDER_CHOICES);
         boolean hasMediumFormat = false;

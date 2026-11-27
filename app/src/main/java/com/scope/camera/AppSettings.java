@@ -136,6 +136,11 @@ final class AppSettings {
     };
     static final String VIDEO_ASPECT = "video_aspect";
     static final String VIDEO_BITRATE = "video_bitrate";
+    static final String[] VIDEO_BITRATE_CHOICES = {
+            "Standard · 14 Mbps",
+            "High · 24 Mbps",
+            "Ultra · 35 Mbps"
+    };
     static final String VIDEO_SHUTTER_MODE = "video_shutter_mode";
     static final String VIDEO_SHUTTER_180 = "180° Shutter (Auto ISO)";
     static final String VIDEO_SHUTTER_AUTO = "Auto exposure (AE)";
@@ -309,6 +314,7 @@ final class AppSettings {
     static final String HORIZON_MODE = "horizon_mode";
     static final String VOLUME_ROCKER = "volume_rocker";
     static final String SHUTTER_WINK = "shutter_wink";
+    static final String EDGE_TO_EDGE_VIEWFINDER = "edge_to_edge_viewfinder";
     static final String LEFT_HAND_MODE = "left_hand_mode";
     static final String LEFT_HAND_OFF = "Off (Standard)";
     static final String LEFT_HAND_MAIN = "On · Main buttons";
@@ -424,8 +430,8 @@ final class AppSettings {
     static final String[] ASPECT_RATIOS = {
             "2.39:1",
             "1.85:1",
-            "1.66:1",
             "16:9",
+            "1.66:1",
             "3:2",
             "4:3",
             "1:1"
@@ -434,8 +440,8 @@ final class AppSettings {
     static final String[] ASPECT_RATIO_LABELS = {
             "2.39:1 · Cinemascope",
             "1.85:1 · Flat Widescreen",
-            "1.66:1 · European Scope",
             "16:9 · 16:9 Widescreen",
+            "1.66:1 · European Scope",
             "3:2 · 35mm Classic",
             "4:3 · Academy Sensor",
             "1:1 · Square Format"

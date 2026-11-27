@@ -216,6 +216,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private volatile boolean prefDirtyLensWarning = true;
     private volatile boolean prefPalmTimer = false;
     private volatile String prefAspectRatio = "4:3";
+    private volatile boolean prefEdgeToEdgeViewfinder = false;
 
     private final float[] rotationMatrixBuf = new float[9];
 
@@ -243,6 +244,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         prefDirtyLensWarning = prefs.getBoolean(AppSettings.DIRTY_LENS_WARNING, true);
         prefPalmTimer = prefs.getBoolean(AppSettings.PALM_TIMER, false);
         prefAspectRatio = prefs.getString(AppSettings.ASPECT_RATIO, "4:3");
+        prefEdgeToEdgeViewfinder = prefs.getBoolean(AppSettings.EDGE_TO_EDGE_VIEWFINDER, false);
         invalidateFramingRectCache();
     }
 
@@ -506,6 +508,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private FrameLayout shootRow;
     private View deckSpacer;
     private String appliedLeftHandMode;
+    private boolean appliedEdgeToEdgeViewfinder;
     private CameraManager cameraManager;
     private volatile CameraDevice cameraDevice;
     private volatile CameraCaptureSession captureSession;
@@ -1020,8 +1023,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         updateGalleryButton();
         updateGalleryProcessingUi();
         String currentLeftHand = AppSettings.get(this, AppSettings.LEFT_HAND_MODE, AppSettings.LEFT_HAND_OFF);
-        if (overlay != null && !currentLeftHand.equals(appliedLeftHandMode)) {
+        if (overlay != null && (!currentLeftHand.equals(appliedLeftHandMode)
+                || prefEdgeToEdgeViewfinder != appliedEdgeToEdgeViewfinder)) {
             rebuildCameraUiLayout();
+        }
+        if (textureView != null && textureView.getWidth() > 0 && textureView.getHeight() > 0) {
+            configureTransform(textureView.getWidth(), textureView.getHeight());
         }
         if (gridOverlay != null) gridOverlay.invalidate();
         if (textureView != null) {
@@ -2102,6 +2109,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         overlay.removeAllViews();
         String leftHandSetting = AppSettings.get(this, AppSettings.LEFT_HAND_MODE, AppSettings.LEFT_HAND_OFF);
         appliedLeftHandMode = leftHandSetting;
+        appliedEdgeToEdgeViewfinder = prefEdgeToEdgeViewfinder;
         boolean leftHand = AppSettings.isLeftHandMode(leftHandSetting);
         boolean swapShutterRow = AppSettings.isLeftHandSwapShutterRow(leftHandSetting);
         layoutLookRow(leftHand);
@@ -2119,6 +2127,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             attachHeaderOverlay(screenWidth, topSafe, safeInsets, cutoutRect, leftHand);
 
             RectF frame = framingRect(screenWidth, screenHeight);
+            RectF hudBounds = new RectF();
+            portraitHudBounds(screenWidth, screenHeight, frame, hudBounds);
             if (viewfinderSpacer != null) {
                 if (viewfinderSpacer.getParent() != null) ((ViewGroup) viewfinderSpacer.getParent()).removeView(viewfinderSpacer);
                 FrameLayout.LayoutParams vfLp = new FrameLayout.LayoutParams((int) frame.width(), (int) frame.height(), Gravity.TOP | Gravity.START);
@@ -2129,31 +2139,31 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (cameraState != null) {
                 if (cameraState.getParent() != null) ((ViewGroup) cameraState.getParent()).removeView(cameraState);
                 FrameLayout.LayoutParams csLp = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-                csLp.topMargin = (int) (frame.top + dp(28));
+                csLp.topMargin = (int) (hudBounds.top + dp(28));
                 overlay.addView(cameraState, csLp);
             }
             if (aeLockBadge != null) {
                 if (aeLockBadge.getParent() != null) ((ViewGroup) aeLockBadge.getParent()).removeView(aeLockBadge);
                 FrameLayout.LayoutParams badgeLp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-                badgeLp.topMargin = (int) (frame.top + dp(46));
+                badgeLp.topMargin = (int) (hudBounds.top + dp(46));
                 overlay.addView(aeLockBadge, badgeLp);
             }
             if (telemetry != null) {
                 if (telemetry.getParent() != null) ((ViewGroup) telemetry.getParent()).removeView(telemetry);
                 FrameLayout.LayoutParams telLp = new FrameLayout.LayoutParams(dp(340), -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-                telLp.topMargin = (int) (frame.top + dp(10));
+                telLp.topMargin = (int) (hudBounds.top + dp(10));
                 overlay.addView(telemetry, telLp);
             }
             if (lensRow != null) {
                 if (lensRow.getParent() != null) ((ViewGroup) lensRow.getParent()).removeView(lensRow);
                 FrameLayout.LayoutParams lensRowLp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-                lensRowLp.topMargin = (int) (frame.bottom - dp(44) - dp(12));
+                lensRowLp.topMargin = (int) (hudBounds.bottom - dp(44) - dp(12));
                 overlay.addView(lensRow, lensRowLp);
             }
             if (manualFocusPanel != null) {
                 if (manualFocusPanel.getParent() != null) ((ViewGroup) manualFocusPanel.getParent()).removeView(manualFocusPanel);
                 FrameLayout.LayoutParams mfLp = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-                mfLp.topMargin = (int) (frame.bottom - dp(44) - dp(12) - dp(42));
+                mfLp.topMargin = (int) (hudBounds.bottom - dp(44) - dp(12) - dp(42));
                 mfLp.leftMargin = dp(24);
                 mfLp.rightMargin = dp(24);
                 overlay.addView(manualFocusPanel, mfLp);
@@ -2162,7 +2172,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 if (zoomSliderPanel.getParent() != null) ((ViewGroup) zoomSliderPanel.getParent()).removeView(zoomSliderPanel);
                 FrameLayout.LayoutParams zoomSliderLp = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
                 boolean mfOpen = manualFocusPanel != null && manualFocusPanel.getVisibility() == View.VISIBLE;
-                zoomSliderLp.topMargin = (int) (frame.bottom - dp(44) - dp(12) - (mfOpen ? dp(84) : dp(40)));
+                zoomSliderLp.topMargin = (int) (hudBounds.bottom - dp(44) - dp(12) - (mfOpen ? dp(84) : dp(40)));
                 zoomSliderLp.leftMargin = dp(24);
                 zoomSliderLp.rightMargin = dp(24);
                 overlay.addView(zoomSliderPanel, zoomSliderLp);
@@ -2173,7 +2183,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             bottomDeck.setGravity(Gravity.CENTER_HORIZONTAL);
             bottomDeck.setClipChildren(false);
             bottomDeck.setClipToPadding(false);
-            bottomDeck.setPadding(0, 0, 0, Math.max(dp(24), safeInsets.bottom + dp(22)));
+            bottomDeck.setPadding(0, prefEdgeToEdgeViewfinder ? dp(24) : 0, 0, Math.max(dp(24), safeInsets.bottom + dp(22)));
+            if (prefEdgeToEdgeViewfinder) {
+                bottomDeck.setBackground(new GradientDrawable(
+                        GradientDrawable.Orientation.TOP_BOTTOM,
+                        new int[]{0x000b0d0e, 0x990b0d0e, 0xd90b0d0e}));
+            }
 
             if (lookRow != null) {
                 if (lookRow.getParent() != null) ((ViewGroup) lookRow.getParent()).removeView(lookRow);
@@ -5017,6 +5032,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private float cachedFrameH = -1f;
     private float cachedFrameRatio = -1f;
     private boolean cachedFrameVideoMode;
+    private boolean cachedFrameEdgeToEdge;
 
     private void invalidateFramingRectCache() {
         cachedFrameW = -1f;
@@ -5034,65 +5050,86 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             return;
         }
         float ratio = aspectRatioSetting();
+        boolean edgeToEdge = prefEdgeToEdgeViewfinder;
         if (width == cachedFrameW && height == cachedFrameH
                 && ratio == cachedFrameRatio && videoMode == cachedFrameVideoMode
+                && edgeToEdge == cachedFrameEdgeToEdge
                 && root != null && root.getRootWindowInsets() != null) {
             out.set(cachedFrameRect);
             return;
         }
-        WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
-        boolean isWide = windowInfo.isLandscape || (width >= height);
-        if (!isWide) {
-            Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
-            Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
-            int topSafe = computeTopSafe(safeInsets, cutoutRect);
-            float topZoneBottom = topSafe + dp(32);
-            float viewfinderTopMin = topZoneBottom + dp(8);
-
-            float bottomDeckHeight = dp(210) + Math.max(dp(24), safeInsets.bottom + dp(22));
-            float viewfinderBottomMax = height - bottomDeckHeight - dp(8);
-
-            float availableHeight = Math.max(dp(160), viewfinderBottomMax - viewfinderTopMin);
-            float availableWidth = width;
-
-            float targetRatio = 1f / ratio;
-            float frameWidth = availableWidth;
-            float frameHeight = frameWidth / targetRatio;
-            if (frameHeight > availableHeight) {
-                frameHeight = availableHeight;
-                frameWidth = frameHeight * targetRatio;
-            }
-            float left = (width - frameWidth) * 0.5f;
-            float top = viewfinderTopMin;
-            out.set(left, top, left + frameWidth, top + frameHeight);
+        if (edgeToEdge) {
+            out.set(0f, 0f, width, height);
         } else {
-            Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
-            Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
-            int topSafe = computeTopSafe(safeInsets, cutoutRect);
-            boolean leftHand = AppSettings.isLeftHandMode(this);
-            float gripWidth = dp(wideSideGripWidthDp(windowInfo));
-            float topOffset = topSafe + dp(38);
-            float bottomHudReserve = dp(96);
-            float availableWidth = Math.max(dp(180), width - gripWidth - dp(24) - safeInsets.right - safeInsets.left);
-            float availableHeight = Math.max(dp(160), height - topOffset - bottomHudReserve - safeInsets.bottom);
-            float frameWidth = availableWidth;
-            float frameHeight = frameWidth / ratio;
-            if (frameHeight > availableHeight) {
-                frameHeight = availableHeight;
-                frameWidth = frameHeight * ratio;
+            WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
+            boolean isWide = windowInfo.isLandscape || (width >= height);
+            if (!isWide) {
+                Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
+                Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
+                int topSafe = computeTopSafe(safeInsets, cutoutRect);
+                float topZoneBottom = topSafe + dp(32);
+                float viewfinderTopMin = topZoneBottom + dp(8);
+
+                float bottomDeckHeight = dp(210) + Math.max(dp(24), safeInsets.bottom + dp(22));
+                float viewfinderBottomMax = height - bottomDeckHeight - dp(8);
+
+                float availableHeight = Math.max(dp(160), viewfinderBottomMax - viewfinderTopMin);
+                float availableWidth = width;
+
+                float targetRatio = 1f / ratio;
+                float frameWidth = availableWidth;
+                float frameHeight = frameWidth / targetRatio;
+                if (frameHeight > availableHeight) {
+                    frameHeight = availableHeight;
+                    frameWidth = frameHeight * targetRatio;
+                }
+                float left = (width - frameWidth) * 0.5f;
+                float top = viewfinderTopMin;
+                out.set(left, top, left + frameWidth, top + frameHeight);
+            } else {
+                Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
+                Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
+                int topSafe = computeTopSafe(safeInsets, cutoutRect);
+                boolean leftHand = AppSettings.isLeftHandMode(this);
+                float gripWidth = dp(wideSideGripWidthDp(windowInfo));
+                float topOffset = topSafe + dp(38);
+                float bottomHudReserve = dp(96);
+                float availableWidth = Math.max(dp(180), width - gripWidth - dp(24) - safeInsets.right - safeInsets.left);
+                float availableHeight = Math.max(dp(160), height - topOffset - bottomHudReserve - safeInsets.bottom);
+                float frameWidth = availableWidth;
+                float frameHeight = frameWidth / ratio;
+                if (frameHeight > availableHeight) {
+                    frameHeight = availableHeight;
+                    frameWidth = frameHeight * ratio;
+                }
+                float canvasLeft = safeInsets.left + (leftHand ? gripWidth : 0f) + dp(12);
+                float left = canvasLeft + (availableWidth - frameWidth) * 0.5f;
+                float top = topOffset + (availableHeight - frameHeight) * 0.5f;
+                out.set(left, top, left + frameWidth, top + frameHeight);
             }
-            float canvasLeft = safeInsets.left + (leftHand ? gripWidth : 0f) + dp(12);
-            float left = canvasLeft + (availableWidth - frameWidth) * 0.5f;
-            float top = topOffset + (availableHeight - frameHeight) * 0.5f;
-            out.set(left, top, left + frameWidth, top + frameHeight);
         }
         if (root != null && root.getRootWindowInsets() != null) {
             cachedFrameW = width;
             cachedFrameH = height;
             cachedFrameRatio = ratio;
             cachedFrameVideoMode = videoMode;
+            cachedFrameEdgeToEdge = edgeToEdge;
             cachedFrameRect.set(out);
         }
+    }
+
+    private void portraitHudBounds(float width, float height, RectF frame, RectF out) {
+        if (!prefEdgeToEdgeViewfinder && frame != null && frame.height() > 0) {
+            out.set(frame);
+            return;
+        }
+        Rect safeInsets = WindowMetricsHelper.getSafeInsets(root);
+        Rect cutoutRect = WindowMetricsHelper.getTopCutoutRect(root);
+        int topSafe = computeTopSafe(safeInsets, cutoutRect);
+        float top = topSafe + dp(32) + dp(8);
+        float bottomDeckHeight = dp(210) + Math.max(dp(24), safeInsets.bottom + dp(22));
+        float bottom = Math.max(top + dp(160), height - bottomDeckHeight - dp(8));
+        out.set(0f, top, width, bottom);
     }
 
     private CameraDevice.StateCallback cameraStateCallback(long ticket) { return new CameraDevice.StateCallback() {
@@ -8892,37 +8929,39 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         if (textureView == null || previewSize == null || characteristics == null || viewWidth <= 0 || viewHeight <= 0) return;
         RectF frame = framingRect(viewWidth, viewHeight);
+        RectF hudBounds = new RectF();
+        portraitHudBounds(viewWidth, viewHeight, frame, hudBounds);
         RectF activePreviewFrame = frameMorphActive ? animatedFrameRect : frame;
         applyTextureFrameTransform(viewWidth, viewHeight, activePreviewFrame);
 
-        if (lensRow != null && frame.bottom > 0) {
+        if (lensRow != null && hudBounds.bottom > 0) {
             ViewGroup.LayoutParams lp = lensRow.getLayoutParams();
             if (lp instanceof FrameLayout.LayoutParams) {
                 FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
-                int desiredTop = (int) (frame.bottom - dp(44) - dp(12));
+                int desiredTop = (int) (hudBounds.bottom - dp(44) - dp(12));
                 if (flp.topMargin != desiredTop) {
                     flp.topMargin = desiredTop;
                     lensRow.setLayoutParams(flp);
                 }
             }
         }
-        if (manualFocusPanel != null && frame.bottom > 0) {
+        if (manualFocusPanel != null && hudBounds.bottom > 0) {
             ViewGroup.LayoutParams lp = manualFocusPanel.getLayoutParams();
             if (lp instanceof FrameLayout.LayoutParams) {
                 FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
-                int desiredTop = (int) (frame.bottom - dp(44) - dp(12) - dp(42));
+                int desiredTop = (int) (hudBounds.bottom - dp(44) - dp(12) - dp(42));
                 if (flp.topMargin != desiredTop) {
                     flp.topMargin = desiredTop;
                     manualFocusPanel.setLayoutParams(flp);
                 }
             }
         }
-        if (zoomSliderPanel != null && frame.bottom > 0) {
+        if (zoomSliderPanel != null && hudBounds.bottom > 0) {
             ViewGroup.LayoutParams lp = zoomSliderPanel.getLayoutParams();
             if (lp instanceof FrameLayout.LayoutParams) {
                 FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) lp;
                 boolean mfOpen = manualFocusPanel != null && manualFocusPanel.getVisibility() == View.VISIBLE;
-                int desiredTop = (int) (frame.bottom - dp(44) - dp(12) - (mfOpen ? dp(84) : dp(40)));
+                int desiredTop = (int) (hudBounds.bottom - dp(44) - dp(12) - (mfOpen ? dp(84) : dp(40)));
                 if (flp.topMargin != desiredTop) {
                     flp.topMargin = desiredTop;
                     zoomSliderPanel.setLayoutParams(flp);
@@ -9570,7 +9609,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             RectF frame = cachedFrame;
             if (frame.width() <= 0 || frame.height() <= 0) return;
             float density = getResources().getDisplayMetrics().density;
-            float cornerRadius = Math.min(density * 24f, Math.min(frame.width(), frame.height()) * 0.5f);
+            float cornerRadius = prefEdgeToEdgeViewfinder
+                    ? 0f
+                    : Math.min(density * 24f, Math.min(frame.width(), frame.height()) * 0.5f);
 
             if (w != cachedMaskW || h != cachedMaskH || cornerRadius != cachedCornerRadius
                     || !frame.equals(cachedMaskFrame)) {
@@ -9797,7 +9838,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
             canvas.restore();
 
-            canvas.drawRoundRect(frame, cornerRadius, cornerRadius, framePaint);
+            if (!prefEdgeToEdgeViewfinder) {
+                canvas.drawRoundRect(frame, cornerRadius, cornerRadius, framePaint);
+            }
         }
     }
 
