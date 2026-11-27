@@ -15,6 +15,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -805,5 +806,42 @@ final class LutManager {
     private static float smoothstep(float edge0, float edge1, float x) {
         float t = Math.max(0f, Math.min(1f, (x - edge0) / (edge1 - edge0)));
         return t * t * (3f - 2f * t);
+    }
+
+    /** Formats any RawDeveloper.Look recipe as a standard 33³ Adobe .cube 3D LUT string. */
+    static String formatLookAsCube(RawDeveloper.Look look, String title, RawArchive.Frame frame) {
+        RawDeveloper.Look lookCopy = look != null ? look.copy() : new RawDeveloper.Look();
+        PreviewLookLut lut = PreviewLookLut.build(lookCopy, frame);
+        String cleanTitle = title == null ? "" : title.replace('"', '\'').replace('\r', ' ').replace('\n', ' ').trim();
+        if (cleanTitle.isEmpty()) {
+            cleanTitle = (lookCopy.brain == null || lookCopy.brain.trim().isEmpty())
+                    ? "Lika Lens Look" : lookCopy.brain.trim();
+        }
+        int size = PreviewLookLut.SIZE;
+        StringBuilder sb = new StringBuilder(size * size * size * 28 + 128);
+        sb.append("TITLE \"").append(cleanTitle).append("\"\n");
+        sb.append("LUT_3D_SIZE ").append(size).append('\n');
+        sb.append("DOMAIN_MIN 0.0 0.0 0.0\n");
+        sb.append("DOMAIN_MAX 1.0 1.0 1.0\n");
+        for (int b = 0; b < size; b++) {
+            for (int g = 0; g < size; g++) {
+                for (int r = 0; r < size; r++) {
+                    int argb = lut.pixels[r + size * (g + size * b)];
+                    float rf = ((argb >> 16) & 0xff) / 255f;
+                    float gf = ((argb >> 8) & 0xff) / 255f;
+                    float bf = (argb & 0xff) / 255f;
+                    sb.append(String.format(Locale.US, "%.6f %.6f %.6f\n", rf, gf, bf));
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    /** Writes a RawDeveloper.Look recipe as a UTF-8 33³ Adobe .cube 3D LUT to {@code out}. */
+    static void exportLookAsCube(RawDeveloper.Look look, String title, RawArchive.Frame frame, OutputStream out)
+            throws IOException {
+        if (out == null) throw new IOException("Missing output stream");
+        out.write(formatLookAsCube(look, title, frame).getBytes(StandardCharsets.UTF_8));
+        out.flush();
     }
 }

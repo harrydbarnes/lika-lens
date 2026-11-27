@@ -483,6 +483,11 @@ public final class VideoRecordingCoordinator {
         return new SwitchCompatibility(true, null);
     }
 
+    /** Opt-in baked SDR film LUT grading is automatically bypassed during 10-bit HLG10 HDR takes. */
+    static boolean shouldApplyVideoFilmLook(boolean videoFilmLookPref, boolean hdr10Active) {
+        return videoFilmLookPref && !hdr10Active;
+    }
+
     /**
      * Computes the target video encoding bitrate based on user preference string.
      */

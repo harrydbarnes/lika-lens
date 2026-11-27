@@ -30,6 +30,74 @@ final class LiveLookPreview {
                 }
             });
 
+    static final class SpatialParams {
+        final float grainAmp;
+        final float grainScale;
+        final float fineWeight;
+        final float coarseWeight;
+        final float grainUniform;
+        final float halationAmount;
+        final float haloR;
+        final float haloG;
+        final float haloB;
+
+        SpatialParams(float grainAmp, float grainScale, float fineWeight, float coarseWeight,
+                      float grainUniform, float halationAmount, float haloR, float haloG, float haloB) {
+            this.grainAmp = grainAmp;
+            this.grainScale = grainScale;
+            this.fineWeight = fineWeight;
+            this.coarseWeight = coarseWeight;
+            this.grainUniform = grainUniform;
+            this.halationAmount = halationAmount;
+            this.haloR = haloR;
+            this.haloG = haloG;
+            this.haloB = haloB;
+        }
+
+        static SpatialParams fromLook(RawDeveloper.Look look, RawArchive.Frame frame) {
+            RawDeveloper.Look l = look != null ? look : new RawDeveloper.Look();
+            RawDeveloper.PreparedLook prep = new RawDeveloper.PreparedLook(l, frame, null, true, true);
+            // Preview runs around ~1080px-1440px vs 3000px export reference, so scale grain step
+            // cleanly for crisp viewfinder preview texture without over-aliasing.
+            float gAmp = (prep.grainAmount * prep.grainAmplitude) / 255f;
+            float gScale = Math.max(1f, (float) prep.grainScale);
+            float gUni = prep.uniformGrain ? 1f : 0f;
+            float halAmt = Math.max(0f, Math.min(1f, l.halation));
+            float r, g, b;
+            String brain = l.brain == null ? AppSettings.BRAIN_LIKA_FILM : l.brain;
+            if (brain.startsWith("MONO")) {
+                r = 0.28f; g = 0.28f; b = 0.28f;
+            } else if (brain.startsWith("BLEACH")) {
+                r = 0.26f; g = 0.28f; b = 0.31f;
+            } else if (brain.startsWith("FUJI") || brain.contains("ETERNA")) {
+                r = 0.42f; g = 0.18f; b = 0.06f;
+            } else if (brain.startsWith("KODACHROME")) {
+                r = 0.48f; g = 0.15f; b = 0.03f;
+            } else if (brain.startsWith("NEUTRAL")) {
+                r = 0.28f; g = 0.25f; b = 0.20f;
+            } else {
+                r = 0.54f; g = 0.14f; b = 0.02f;
+            }
+            return new SpatialParams(gAmp, gScale, prep.fineWeight, prep.coarseWeight, gUni, halAmt, r, g, b);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof SpatialParams)) return false;
+            SpatialParams that = (SpatialParams) o;
+            return Float.compare(that.grainAmp, grainAmp) == 0
+                    && Float.compare(that.grainScale, grainScale) == 0
+                    && Float.compare(that.fineWeight, fineWeight) == 0
+                    && Float.compare(that.coarseWeight, coarseWeight) == 0
+                    && Float.compare(that.grainUniform, grainUniform) == 0
+                    && Float.compare(that.halationAmount, halationAmount) == 0
+                    && Float.compare(that.haloR, haloR) == 0
+                    && Float.compare(that.haloG, haloG) == 0
+                    && Float.compare(that.haloB, haloB) == 0;
+        }
+    }
+
     private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "lika-live-look");
         t.setDaemon(true);
@@ -39,6 +107,7 @@ final class LiveLookPreview {
     private final AtomicInteger generation = new AtomicInteger();
     private Runnable pending;
     private String currentKey;
+    private SpatialParams currentSpatial;
     private TextureView currentView;
     enum Phase { DISABLED, BUILDING, ACTIVE, FALLBACK, DISPOSED }
     private Phase phase=Phase.DISABLED;
@@ -67,8 +136,24 @@ final class LiveLookPreview {
             return true;
         }
         String key = RawDeveloper.displayLookKey(look, frame);
-        if (view == currentView && key.equals(currentKey) && (phase == Phase.ACTIVE || phase == Phase.BUILDING)) {
-            return true;
+        SpatialParams spatial = SpatialParams.fromLook(look, frame);
+        if (view == currentView && key.equals(currentKey)) {
+            if (phase == Phase.ACTIVE) {
+                if (spatial.equals(currentSpatial)) {
+                    return true;
+                }
+                PreviewLookLut activeTable = getCachedLut(key);
+                if (activeTable != null) {
+                    currentSpatial = spatial;
+                    try {
+                        Api33.apply(view, activeTable, spatial);
+                    } catch (RuntimeException ignored) { }
+                    return true;
+                }
+            } else if (phase == Phase.BUILDING) {
+                currentSpatial = spatial;
+                return true;
+            }
         }
         String previousKey = currentKey;
         TextureView previousView = currentView;
@@ -78,6 +163,7 @@ final class LiveLookPreview {
             pending = null;
         }
         if (currentView != null && currentView != view) Api33.clear(currentView);
+        currentSpatial = spatial;
 
         PreviewLookLut cached = getCachedLut(key);
         if (cached != null) {
@@ -86,7 +172,7 @@ final class LiveLookPreview {
             currentView = view;
             try {
                 if (generation.get() == ticket) {
-                    Api33.apply(view, cached);
+                    Api33.apply(view, cached, spatial);
                     capability = Capability.SUPPORTED;
                     phase = Phase.ACTIVE;
                 }
@@ -126,7 +212,8 @@ final class LiveLookPreview {
                         return;
                     }
                     try {
-                        Api33.apply(view, table);
+                        SpatialParams latestSpatial = currentSpatial != null ? currentSpatial : spatial;
+                        Api33.apply(view, table, latestSpatial);
                         capability = Capability.SUPPORTED; phase = Phase.ACTIVE;
                     } catch (RuntimeException error) {
                         Log.w("LikaLens", "Shared look preview unavailable on this GPU", error);
@@ -165,7 +252,7 @@ final class LiveLookPreview {
             PreviewLookLut cached = getCachedLut(currentKey);
             if (cached != null) {
                 try {
-                    Api33.applyToView(target, cached);
+                    Api33.applyToView(target, cached, currentSpatial);
                     return;
                 } catch (RuntimeException ignored) {
                 }
@@ -184,6 +271,7 @@ final class LiveLookPreview {
         if (currentView != null && Build.VERSION.SDK_INT >= 33) Api33.clear(currentView);
         currentView = null;
         currentKey = null;
+        currentSpatial = null;
     }
 
     void close() {
@@ -199,6 +287,8 @@ final class LiveLookPreview {
         // and the sRGB input/output buffer since setInputBuffer disables automatic conversion.
         private static final String PROGRAM = ""
                 + "uniform shader camera; uniform shader cube; uniform float size;"
+                + "uniform float grainAmp; uniform float grainScale; uniform float fineW; uniform float coarseW;"
+                + "uniform float grainUniform; uniform float halationAmt; uniform float3 halationTint;"
                 + "float3 linToSrgb(float3 c) {"
                 + " float3 v = clamp(c, 0.0, 1.0);"
                 + " return mix(v * 12.92, 1.055 * pow(max(v, float3(0.0031308)), float3(1.0 / 2.4)) - 0.055, step(float3(0.0031308), v));"
@@ -206,6 +296,24 @@ final class LiveLookPreview {
                 + "float3 srgbToLin(float3 c) {"
                 + " float3 v = clamp(c, 0.0, 1.0);"
                 + " return mix(v / 12.92, pow(max((v + 0.055) / 1.055, float3(0.0)), float3(2.4)), step(float3(0.04045), v));"
+                + "}"
+                + "float hash21(float2 p) {"
+                + " float3 p3 = fract(float3(p.xyx) * 0.1031);"
+                + " p3 += dot(p3, p3.yzx + 33.33);"
+                + " return fract((p3.x + p3.y) * p3.z) * 2.0 - 1.0;"
+                + "}"
+                + "float smoothNoise(float2 p) {"
+                + " float2 i = floor(p); float2 f = fract(p); float2 u = f * f * (3.0 - 2.0 * f);"
+                + " return mix(mix(hash21(i), hash21(i + float2(1.0, 0.0)), u.x),"
+                + "            mix(hash21(i + float2(0.0, 1.0)), hash21(i + float2(1.0, 1.0)), u.x), u.y);"
+                + "}"
+                + "float haloEnergy(float2 p) {"
+                + " half4 nc = camera.eval(p);"
+                + " float3 ns = linToSrgb(toLinearSrgb(float3(nc.rgb) / max(float(nc.a), 0.0001)));"
+                + " float y = dot(ns, float3(0.2126, 0.7152, 0.0722));"
+                + " float pk = max(ns.r, max(ns.g, ns.b));"
+                + " float t = smoothstep(0.70, 0.99, 0.65 * y + 0.35 * pk);"
+                + " return t * t;"
                 + "}"
                 + "float3 point(float3 p) { return float3(cube.eval(float2(p.r + size * p.g + 0.5, p.b + 0.5)).rgb); }"
                 + "half4 main(float2 pos) {"
@@ -220,16 +328,34 @@ final class LiveLookPreview {
                 + " float3 z1 = mix(mix(point(float3(lo.r, lo.g, hi.b)), point(float3(hi.r, lo.g, hi.b)), t.r),"
                 + "                 mix(point(float3(lo.r, hi.g, hi.b)), point(hi), t.r), t.g);"
                 + " float3 srgbOut = mix(z0, z1, t.b);"
+                + " if (halationAmt > 0.005) {"
+                + "  float b = (haloEnergy(pos + float2(7.0, 0.0)) + haloEnergy(pos + float2(-7.0, 0.0))"
+                + "           + haloEnergy(pos + float2(0.0, 7.0)) + haloEnergy(pos + float2(0.0, -7.0))"
+                + "           + haloEnergy(pos + float2(13.0, 13.0)) + haloEnergy(pos + float2(-13.0, 13.0))"
+                + "           + haloEnergy(pos + float2(13.0, -13.0)) + haloEnergy(pos + float2(-13.0, -13.0))) * 0.125;"
+                + "  srgbOut = clamp(srgbOut + halationTint * b * halationAmt * (1.0 - srgbOut * 0.56), 0.0, 1.0);"
+                + " }"
+                + " if (grainAmp > 0.001) {"
+                + "  float luma = dot(srgbOut, float3(0.2126, 0.7152, 0.0722));"
+                + "  float2 gp = pos / max(1.0, grainScale * 0.75);"
+                + "  float n = smoothNoise(gp) * fineW + smoothNoise(gp * 0.34 + 17.3) * coarseW;"
+                + "  float mask = smoothstep(0.025, 0.11, luma);"
+                + "  if (grainUniform < 0.5) {"
+                + "   float hlTaper = 1.0 - 0.50 * smoothstep(0.80, 0.99, luma);"
+                + "   mask *= (0.38 + 0.62 * 4.0 * luma * (1.0 - luma)) * hlTaper;"
+                + "  }"
+                + "  srgbOut = clamp(srgbOut + float3(n * grainAmp * mask), 0.0, 1.0);"
+                + " }"
                 + " half3 wsOut = half3(fromLinearSrgb(srgbToLin(srgbOut)));"
                 + " return half4(wsOut * c.a, c.a); }";
 
         private static RuntimeShader cachedShader;
 
-        static void apply(TextureView view, PreviewLookLut table) {
-            applyToView(view, table);
+        static void apply(TextureView view, PreviewLookLut table, SpatialParams spatial) {
+            applyToView(view, table, spatial);
         }
 
-        static void applyToView(View view, PreviewLookLut table) {
+        static void applyToView(View view, PreviewLookLut table, SpatialParams spatial) {
             Bitmap bitmap = Bitmap.createBitmap(table.pixels, PreviewLookLut.SIZE * PreviewLookLut.SIZE,
                     PreviewLookLut.SIZE, Bitmap.Config.ARGB_8888);
             BitmapShader cube = new BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
@@ -241,6 +367,14 @@ final class LiveLookPreview {
                 cachedShader = shader;
             }
             shader.setInputBuffer("cube", cube);
+            SpatialParams sp = spatial != null ? spatial : new SpatialParams(0f, 1f, 0.72f, 0.28f, 0f, 0f, 0.54f, 0.14f, 0.02f);
+            shader.setFloatUniform("grainAmp", sp.grainAmp);
+            shader.setFloatUniform("grainScale", sp.grainScale);
+            shader.setFloatUniform("fineW", sp.fineWeight);
+            shader.setFloatUniform("coarseW", sp.coarseWeight);
+            shader.setFloatUniform("grainUniform", sp.grainUniform);
+            shader.setFloatUniform("halationAmt", sp.halationAmount);
+            shader.setFloatUniform("halationTint", sp.haloR, sp.haloG, sp.haloB);
             // Clear the older matrix paint so the look is applied exactly once.
             view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
             view.setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "camera"));

@@ -93,6 +93,28 @@ public class PreviewLookLutTest {
         assertArrayEquals("Live viewfinder 3D cube must always stay sRGB-encoded", srgbCube.pixels, p3Cube.pixels);
     }
 
+    @Test public void spatialParamsTrackGrainAndBrainHalationTint() {
+        RawDeveloper.Look mono = new RawDeveloper.Look();
+        mono.brain = AppSettings.BRAIN_MONO_SILVER;
+        mono.grain = 0.30f;
+        mono.halation = 0.50f;
+        LiveLookPreview.SpatialParams monoSp = LiveLookPreview.SpatialParams.fromLook(mono, null);
+        assertEquals(monoSp.haloR, monoSp.haloG, 1e-5f);
+        assertEquals(monoSp.haloG, monoSp.haloB, 1e-5f);
+        assertEquals(0.50f, monoSp.halationAmount, 1e-5f);
+
+        RawDeveloper.Look film = mono.copy();
+        film.brain = AppSettings.BRAIN_LIKA_FILM;
+        LiveLookPreview.SpatialParams filmSp = LiveLookPreview.SpatialParams.fromLook(film, null);
+        assertTrue(filmSp.haloR > filmSp.haloG && filmSp.haloG > filmSp.haloB);
+        assertFalse(monoSp.equals(filmSp));
+
+        RawDeveloper.Look pushed = film.copy();
+        pushed.filmPushPull = AppSettings.FILM_PUSH_PULL_CHOICES[1];
+        LiveLookPreview.SpatialParams pushedSp = LiveLookPreview.SpatialParams.fromLook(pushed, null);
+        assertTrue(pushedSp.grainAmp > filmSp.grainAmp);
+    }
+
     private static void assertChannelsClose(String label, int expected, int actual, int tolerance) {
         for (int shift : new int[]{16,8,0}) assertTrue(label + " channel " + shift,
                 Math.abs(((expected >> shift) & 255) - ((actual >> shift) & 255)) <= tolerance);

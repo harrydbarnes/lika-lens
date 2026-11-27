@@ -13,6 +13,7 @@ import java.util.stream.IntStream;
  */
 final class NightStacker {
     private static final int SHIFT_RADIUS = 16;
+    private static final int LOCAL_RADIUS = 8;
 
     private NightStacker() {}
 
@@ -115,6 +116,76 @@ final class NightStacker {
         return new int[]{bestDx & ~1, bestDy & ~1};
     }
 
+    static int[] estimateBayerTileShifts(short[] base, short[] cur, int width, int height,
+                                         int gDx, int gDy, int tileCols, int tileRows) {
+        int[] shifts = new int[tileCols * tileRows * 2];
+        for (int i = 0; i < tileCols * tileRows; i++) {
+            shifts[i * 2] = gDx;
+            shifts[i * 2 + 1] = gDy;
+        }
+        if (base == null || cur == null || width < 192 || height < 192) return shifts;
+
+        final int safeMargin = SHIFT_RADIUS + LOCAL_RADIUS + 4;
+        final int[] sxTile = new int[8];
+        final int[] syTile = new int[8];
+        for (int ty = 0; ty < tileRows; ty++) {
+            int y0 = Math.max(safeMargin, (ty * height) / tileRows);
+            int y1 = Math.min(height - safeMargin - 2, ((ty + 1) * height) / tileRows);
+            if (y1 - y0 < 32) continue;
+            for (int j = 0; j < 8; j++) {
+                syTile[j] = (y0 + ((y1 - y0) * j) / 7) & ~1;
+            }
+            for (int tx = 0; tx < tileCols; tx++) {
+                int x0 = Math.max(safeMargin, (tx * width) / tileCols);
+                int x1 = Math.min(width - safeMargin - 2, ((tx + 1) * width) / tileCols);
+                if (x1 - x0 < 32) continue;
+                for (int i = 0; i < 8; i++) {
+                    sxTile[i] = (x0 + ((x1 - x0) * i) / 7) & ~1;
+                }
+                long baseSad = bayerSad(base, cur, width, sxTile, syTile, gDx, gDy);
+                if (baseSad == 0L) continue;
+                int bestDx = gDx;
+                int bestDy = gDy;
+                long bestSad = baseSad;
+                for (int ody = -LOCAL_RADIUS; ody <= LOCAL_RADIUS; ody += 4) {
+                    for (int odx = -LOCAL_RADIUS; odx <= LOCAL_RADIUS; odx += 4) {
+                        if (odx == 0 && ody == 0) continue;
+                        int dx = gDx + odx;
+                        int dy = gDy + ody;
+                        long sad = bayerSad(base, cur, width, sxTile, syTile, dx, dy);
+                        if (sad < bestSad) {
+                            bestSad = sad;
+                            bestDx = dx;
+                            bestDy = dy;
+                        }
+                    }
+                }
+                int fDx = bestDx;
+                int fDy = bestDy;
+                for (int oy = -2; oy <= 2; oy += 2) {
+                    for (int ox = -2; ox <= 2; ox += 2) {
+                        if (ox == 0 && oy == 0) continue;
+                        int dx = fDx + ox;
+                        int dy = fDy + oy;
+                        if (Math.abs(dx - gDx) > LOCAL_RADIUS || Math.abs(dy - gDy) > LOCAL_RADIUS) continue;
+                        long sad = bayerSad(base, cur, width, sxTile, syTile, dx, dy);
+                        if (sad < bestSad) {
+                            bestSad = sad;
+                            bestDx = dx;
+                            bestDy = dy;
+                        }
+                    }
+                }
+                if (bestSad < (baseSad * 88L) / 100L) {
+                    int idx = (ty * tileCols + tx) * 2;
+                    shifts[idx] = bestDx & ~1;
+                    shifts[idx + 1] = bestDy & ~1;
+                }
+            }
+        }
+        return shifts;
+    }
+
     private static long bayerSad(short[] base, short[] cur, int width, int[] sxList, int[] syList, int dx, int dy) {
         long sad = 0L;
         for (int sy : syList) {
@@ -191,6 +262,73 @@ final class NightStacker {
         return new int[]{bestDx, bestDy};
     }
 
+    static int[] estimateRgbTileShifts(int[] base, int[] cur, int width, int height,
+                                       int gDx, int gDy, int tileCols, int tileRows) {
+        int[] shifts = new int[tileCols * tileRows * 2];
+        for (int i = 0; i < tileCols * tileRows; i++) {
+            shifts[i * 2] = gDx;
+            shifts[i * 2 + 1] = gDy;
+        }
+        if (base == null || cur == null || width < 192 || height < 192) return shifts;
+
+        final int safeMargin = SHIFT_RADIUS + LOCAL_RADIUS + 2;
+        final int[] sxTile = new int[8];
+        final int[] syTile = new int[8];
+        for (int ty = 0; ty < tileRows; ty++) {
+            int y0 = Math.max(safeMargin, (ty * height) / tileRows);
+            int y1 = Math.min(height - safeMargin - 1, ((ty + 1) * height) / tileRows);
+            if (y1 - y0 < 32) continue;
+            for (int j = 0; j < 8; j++) syTile[j] = y0 + ((y1 - y0) * j) / 7;
+            for (int tx = 0; tx < tileCols; tx++) {
+                int x0 = Math.max(safeMargin, (tx * width) / tileCols);
+                int x1 = Math.min(width - safeMargin - 1, ((tx + 1) * width) / tileCols);
+                if (x1 - x0 < 32) continue;
+                for (int i = 0; i < 8; i++) sxTile[i] = x0 + ((x1 - x0) * i) / 7;
+
+                long baseSad = rgbSad(base, cur, width, sxTile, syTile, gDx, gDy);
+                if (baseSad == 0L) continue;
+                int bestDx = gDx;
+                int bestDy = gDy;
+                long bestSad = baseSad;
+                for (int ody = -LOCAL_RADIUS; ody <= LOCAL_RADIUS; ody += 2) {
+                    for (int odx = -LOCAL_RADIUS; odx <= LOCAL_RADIUS; odx += 2) {
+                        if (odx == 0 && ody == 0) continue;
+                        int dx = gDx + odx;
+                        int dy = gDy + ody;
+                        long sad = rgbSad(base, cur, width, sxTile, syTile, dx, dy);
+                        if (sad < bestSad) {
+                            bestSad = sad;
+                            bestDx = dx;
+                            bestDy = dy;
+                        }
+                    }
+                }
+                int fDx = bestDx;
+                int fDy = bestDy;
+                for (int oy = -1; oy <= 1; oy++) {
+                    for (int ox = -1; ox <= 1; ox++) {
+                        if (ox == 0 && oy == 0) continue;
+                        int dx = fDx + ox;
+                        int dy = fDy + oy;
+                        if (Math.abs(dx - gDx) > LOCAL_RADIUS || Math.abs(dy - gDy) > LOCAL_RADIUS) continue;
+                        long sad = rgbSad(base, cur, width, sxTile, syTile, dx, dy);
+                        if (sad < bestSad) {
+                            bestSad = sad;
+                            bestDx = dx;
+                            bestDy = dy;
+                        }
+                    }
+                }
+                if (bestSad < (baseSad * 88L) / 100L) {
+                    int idx = (ty * tileCols + tx) * 2;
+                    shifts[idx] = bestDx;
+                    shifts[idx + 1] = bestDy;
+                }
+            }
+        }
+        return shifts;
+    }
+
     private static long rgbSad(int[] base, int[] cur, int width, int[] sxList, int[] syList, int dx, int dy) {
         long sad = 0L;
         for (int sy : syList) {
@@ -205,6 +343,15 @@ final class NightStacker {
             }
         }
         return sad;
+    }
+
+    private static int temporalTukeyWeight(int diff, int tol) {
+        if (diff <= tol) return 256;
+        int maxDiff = tol << 1;
+        if (diff >= maxDiff) return 0;
+        float norm = (diff - tol) / (float) Math.max(1, maxDiff - tol);
+        float biweight = 1f - norm * norm;
+        return Math.max(0, Math.min(256, Math.round(256f * biweight * biweight)));
     }
 
     /** Accumulates aligned 16-bit Bayer RAW frames into a low-noise stacked frame. */
@@ -261,36 +408,55 @@ final class NightStacker {
                 return;
             }
 
-            final int[] shift = estimateBayerShift(baseSamples, samples, width, height);
-            final int dx = shift[0];
-            final int dy = shift[1];
+            final int[] global = estimateBayerShift(baseSamples, samples, width, height);
+            final int gDx = global[0];
+            final int gDy = global[1];
+            final int tileCols = Math.max(2, Math.min(8, width / 96));
+            final int tileRows = Math.max(2, Math.min(6, height / 96));
+            final int[] tileShifts = (width >= 192 && height >= 192)
+                    ? estimateBayerTileShifts(baseSamples, samples, width, height, gDx, gDy, tileCols, tileRows)
+                    : null;
             final short[] base = baseSamples;
             final int[] wSum = weightedSum;
             final short[] wtSum = weightSum;
             final int[] lut = tolLut;
             final long scale = invWhiteScale;
-            final int xStart = Math.max(0, -dx);
-            final int xEnd = Math.min(width, width - dx);
 
             IntStream.range(0, height).parallel().forEach(y -> {
-                int sy = y + dy;
-                if (sy < 0 || sy >= height) return;
+                float tyf = Math.max(0f, Math.min(tileRows - 1f, (y + 0.5f) / Math.max(1f, height) * tileRows - 0.5f));
+                int ty0 = (int) tyf;
+                int ty1 = Math.min(tileRows - 1, ty0 + 1);
+                float wy = tyf - ty0;
                 int baseRow = y * width;
-                int srcRow = sy * width;
-                for (int x = xStart; x < xEnd; x++) {
+                for (int x = 0; x < width; x++) {
+                    int dx = gDx;
+                    int dy = gDy;
+                    if (tileShifts != null) {
+                        float txf = Math.max(0f, Math.min(tileCols - 1f, (x + 0.5f) / Math.max(1f, width) * tileCols - 0.5f));
+                        int tx0 = (int) txf;
+                        int tx1 = Math.min(tileCols - 1, tx0 + 1);
+                        float wx = txf - tx0;
+                        int i00 = (ty0 * tileCols + tx0) * 2;
+                        int i10 = (ty0 * tileCols + tx1) * 2;
+                        int i01 = (ty1 * tileCols + tx0) * 2;
+                        int i11 = (ty1 * tileCols + tx1) * 2;
+                        float fdx = (tileShifts[i00] * (1f - wx) + tileShifts[i10] * wx) * (1f - wy)
+                                + (tileShifts[i01] * (1f - wx) + tileShifts[i11] * wx) * wy;
+                        float fdy = (tileShifts[i00 + 1] * (1f - wx) + tileShifts[i10 + 1] * wx) * (1f - wy)
+                                + (tileShifts[i01 + 1] * (1f - wx) + tileShifts[i11 + 1] * wx) * wy;
+                        // Snap to even integers so Bayer CFA phase parity never inverts.
+                        dx = Math.round(fdx * 0.5f) * 2;
+                        dy = Math.round(fdy * 0.5f) * 2;
+                    }
+                    int sx = x + dx;
+                    int sy = y + dy;
+                    if (sx < 0 || sx >= width || sy < 0 || sy >= height) continue;
                     int idx = baseRow + x;
                     int b = base[idx] & 0xffff;
-                    int s = samples[srcRow + x + dx] & 0xffff;
+                    int s = samples[sy * width + sx] & 0xffff;
                     int diff = Math.abs(s - b);
                     int lutIdx = (int) Math.min(255L, (b * scale) >>> 16);
-                    int tol = lut[lutIdx];
-                    int w;
-                    if (diff <= tol) {
-                        w = 256;
-                    } else {
-                        int maxDiff = tol << 1;
-                        w = diff < maxDiff ? ((maxDiff - diff) << 8) / tol : 0;
-                    }
+                    int w = temporalTukeyWeight(diff, lut[lutIdx]);
                     if (w > 0) {
                         wSum[idx] += s * w;
                         wtSum[idx] = (short) ((wtSum[idx] & 0xffff) + w);
@@ -384,27 +550,52 @@ final class NightStacker {
                 return;
             }
 
-            final int[] shift = estimateRgbShift(basePixels, pixels, width, height);
-            final int dx = shift[0];
-            final int dy = shift[1];
+            final int[] global = estimateRgbShift(basePixels, pixels, width, height);
+            final int gDx = global[0];
+            final int gDy = global[1];
+            final int tileCols = Math.max(2, Math.min(8, width / 96));
+            final int tileRows = Math.max(2, Math.min(6, height / 96));
+            final int[] tileShifts = (width >= 192 && height >= 192)
+                    ? estimateRgbTileShifts(basePixels, pixels, width, height, gDx, gDy, tileCols, tileRows)
+                    : null;
             final int[] base = basePixels;
             final int[] sR = sumR;
             final int[] sG = sumG;
             final int[] sB = sumB;
             final short[] wtSum = weightSum;
             final int[] lut = tolLut;
-            final int xStart = Math.max(0, -dx);
-            final int xEnd = Math.min(width, width - dx);
 
             IntStream.range(0, height).parallel().forEach(y -> {
-                int sy = y + dy;
-                if (sy < 0 || sy >= height) return;
+                float tyf = Math.max(0f, Math.min(tileRows - 1f, (y + 0.5f) / Math.max(1f, height) * tileRows - 0.5f));
+                int ty0 = (int) tyf;
+                int ty1 = Math.min(tileRows - 1, ty0 + 1);
+                float wy = tyf - ty0;
                 int baseRow = y * width;
-                int srcRow = sy * width;
-                for (int x = xStart; x < xEnd; x++) {
+                for (int x = 0; x < width; x++) {
+                    int dx = gDx;
+                    int dy = gDy;
+                    if (tileShifts != null) {
+                        float txf = Math.max(0f, Math.min(tileCols - 1f, (x + 0.5f) / Math.max(1f, width) * tileCols - 0.5f));
+                        int tx0 = (int) txf;
+                        int tx1 = Math.min(tileCols - 1, tx0 + 1);
+                        float wx = txf - tx0;
+                        int i00 = (ty0 * tileCols + tx0) * 2;
+                        int i10 = (ty0 * tileCols + tx1) * 2;
+                        int i01 = (ty1 * tileCols + tx0) * 2;
+                        int i11 = (ty1 * tileCols + tx1) * 2;
+                        float fdx = (tileShifts[i00] * (1f - wx) + tileShifts[i10] * wx) * (1f - wy)
+                                + (tileShifts[i01] * (1f - wx) + tileShifts[i11] * wx) * wy;
+                        float fdy = (tileShifts[i00 + 1] * (1f - wx) + tileShifts[i10 + 1] * wx) * (1f - wy)
+                                + (tileShifts[i01 + 1] * (1f - wx) + tileShifts[i11 + 1] * wx) * wy;
+                        dx = Math.round(fdx);
+                        dy = Math.round(fdy);
+                    }
+                    int sx = x + dx;
+                    int sy = y + dy;
+                    if (sx < 0 || sx >= width || sy < 0 || sy >= height) continue;
                     int idx = baseRow + x;
                     int bc = base[idx];
-                    int sc = pixels[srcRow + x + dx];
+                    int sc = pixels[sy * width + sx];
                     int br = (bc >> 16) & 0xff;
                     int bg = (bc >> 8) & 0xff;
                     int bb = bc & 0xff;
@@ -413,14 +604,7 @@ final class NightStacker {
                     int sb = sc & 0xff;
                     int diff = Math.max(Math.abs(sr - br), Math.max(Math.abs(sg - bg), Math.abs(sb - bb)));
                     int luma = Math.min(255, (br * 54 + bg * 183 + bb * 19) >> 8);
-                    int tol = lut[luma];
-                    int w;
-                    if (diff <= tol) {
-                        w = 256;
-                    } else {
-                        int maxDiff = tol << 1;
-                        w = diff < maxDiff ? ((maxDiff - diff) << 8) / tol : 0;
-                    }
+                    int w = temporalTukeyWeight(diff, lut[luma]);
                     if (w > 0) {
                         sR[idx] += sr * w;
                         sG[idx] += sg * w;

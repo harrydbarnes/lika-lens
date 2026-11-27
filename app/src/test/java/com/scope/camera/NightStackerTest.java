@@ -245,6 +245,59 @@ public class NightStackerTest {
         assertTrue(Math.sqrt(stackedSqErr / count) < Math.sqrt(singleSqErr / count) * 0.65);
     }
 
+    @Test
+    public void tileAlignmentHandlesSpatialRotationAndRejectsMovingGhosts() {
+        int w = 256;
+        int h = 256;
+        int white = 4095;
+        short[] clean = new short[w * h];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                // High-contrast Bayer checkerboard + radial stars/features in every quadrant
+                double r1 = Math.hypot(x - 64.0, y - 64.0);
+                double r2 = Math.hypot(x - 192.0, y - 192.0);
+                double r3 = Math.hypot(x - 192.0, y - 64.0);
+                double r4 = Math.hypot(x - 64.0, y - 192.0);
+                int stars = (int) Math.round(1800.0 * (Math.exp(-r1 * r1 / 120.0)
+                        + Math.exp(-r2 * r2 / 120.0)
+                        + Math.exp(-r3 * r3 / 120.0)
+                        + Math.exp(-r4 * r4 / 120.0)));
+                int cfa = ((x & 1) == 0 && (y & 1) == 0) ? 180 : ((x & 1) == 1 && (y & 1) == 1) ? -90 : 40;
+                clean[y * w + x] = (short) Math.max(0, Math.min(white, 500 + cfa + stars));
+            }
+        }
+
+        // Frame 1 has zero global shift at center, but local rotational shear:
+        // top half shifted (-4, 0), bottom half shifted (+4, 0)
+        short[] sheared = new short[w * h];
+        for (int y = 0; y < h; y++) {
+            int localDx = y < h / 2 ? -4 : 4;
+            for (int x = 0; x < w; x++) {
+                int sx = Math.max(0, Math.min(w - 1, x - localDx));
+                sheared[y * w + x] = clean[y * w + sx];
+            }
+        }
+        int[] tileShifts = NightStacker.estimateBayerTileShifts(clean, sheared, w, h, 0, 0, 3, 3);
+        // Top-left / top-right tiles should detect negative x shift; bottom tiles should detect positive x shift
+        assertTrue("Top tile should track negative shear, got " + tileShifts[0], tileShifts[0] <= -2);
+        assertTrue("Bottom tile should track positive shear, got " + tileShifts[(2 * 3) * 2], tileShifts[(2 * 3) * 2] >= 2);
+
+        // Moving ghost rejection: bright moving object in frame 1 at (128, 128) must be excluded from stack
+        NightStacker.RawAccumulator acc = new NightStacker.RawAccumulator(w, h, white);
+        acc.addFrame(clean);
+        short[] withGhost = clean.clone();
+        for (int y = 122; y < 134; y++) {
+            for (int x = 122; x < 134; x++) {
+                withGhost[y * w + x] = (short) 3800;
+            }
+        }
+        acc.addFrame(withGhost);
+        short[] stacked = acc.finishShorts();
+        int ghostCenterDiff = Math.abs((stacked[128 * w + 128] & 0xffff) - (clean[128 * w + 128] & 0xffff));
+        assertTrue("Moving ghost should be suppressed by Tukey biweight (diff=" + ghostCenterDiff + ")",
+                ghostCenterDiff < 50);
+    }
+
     private static int clampByte(int v) {
         return Math.max(0, Math.min(255, v));
     }

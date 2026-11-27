@@ -427,6 +427,7 @@ public class SettingsActivity extends Activity {
                 AppSettings.VIDEO_CODEC,
                 new String[]{"H.264 · Universal", "HEVC (H.265) · High Efficiency"}, "H.264 · Universal");
         addSwitch("10-bit HLG HDR video", "Record 10-bit HLG HDR where the sensor supports HLG10; selects HEVC automatically", AppSettings.VIDEO_HDR, false);
+        addSwitch("Bake film look into SDR video", "Applies active film brain and LUT to recorded SDR video and preview (bypassed in 10-bit HLG HDR)", AppSettings.VIDEO_FILM_LOOK, false);
         addChoice("Video shutter", "Auto exposure preserves full HDR dynamic range; 180° locks shutter to half the frame interval (e.g. 1/48 s at 24 fps) with Auto ISO",
                 AppSettings.VIDEO_SHUTTER_MODE, AppSettings.VIDEO_SHUTTER_MODES, AppSettings.VIDEO_SHUTTER_AUTO);
         addChoice("Stabilization", "Optical and electronic stabilization during recording", AppSettings.STABILIZATION,

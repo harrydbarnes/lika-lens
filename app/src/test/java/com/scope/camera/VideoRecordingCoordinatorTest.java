@@ -232,4 +232,32 @@ public class VideoRecordingCoordinatorTest {
         assertFalse(VideoRecordingCoordinator.stitchVideoSegments(null, new File("/tmp/out.mp4")));
         assertFalse(VideoRecordingCoordinator.stitchVideoSegments(new ArrayList<>(), new File("/tmp/out.mp4")));
     }
+
+    @Test
+    public void testVideoFilmLookSdrGate() {
+        org.junit.Assert.assertTrue(VideoRecordingCoordinator.shouldApplyVideoFilmLook(true, false));
+        assertFalse(VideoRecordingCoordinator.shouldApplyVideoFilmLook(false, false));
+        assertFalse(VideoRecordingCoordinator.shouldApplyVideoFilmLook(true, true));
+        assertFalse(VideoRecordingCoordinator.shouldApplyVideoFilmLook(false, true));
+    }
+
+    @Test
+    public void testPackLutRgbaBufferLayout() {
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.brain = AppSettings.BRAIN_KODACHROME;
+        PreviewLookLut lut = PreviewLookLut.build(look);
+        java.nio.ByteBuffer buf = VideoRotationSurface.packLutRgbaBuffer(lut);
+        int expectedEntries = PreviewLookLut.SIZE * PreviewLookLut.SIZE * PreviewLookLut.SIZE;
+        org.junit.Assert.assertEquals(expectedEntries * 4, buf.remaining());
+
+        int[] probeIndices = {0, expectedEntries / 2, expectedEntries - 1};
+        for (int idx : probeIndices) {
+            int argb = lut.pixels[idx];
+            int offset = idx * 4;
+            org.junit.Assert.assertEquals((argb >> 16) & 0xff, buf.get(offset) & 0xff);
+            org.junit.Assert.assertEquals((argb >> 8) & 0xff, buf.get(offset + 1) & 0xff);
+            org.junit.Assert.assertEquals(argb & 0xff, buf.get(offset + 2) & 0xff);
+            org.junit.Assert.assertEquals(0xff, buf.get(offset + 3) & 0xff);
+        }
+    }
 }

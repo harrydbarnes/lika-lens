@@ -391,6 +391,7 @@ final class AppSettings {
             "Muted · No Audio"
     };
     static final String VIDEO_HDR = "video_hdr";
+    static final String VIDEO_FILM_LOOK = "video_film_look";
     static final String AUDIO_ZOOM = "audio_zoom";
 
     // Animated GIF Keys

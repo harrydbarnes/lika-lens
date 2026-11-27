@@ -559,7 +559,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             metadata.sensitivityIso = iso == null ? 0 : iso;
             previewColourMetadata = metadata;
             runOnUiThread(() -> {
-                if (prefLiveFilmPreview && !videoMode) {
+                if (prefLiveFilmPreview && (!videoMode || isVideoFilmLookEnabledForPreview())) {
                     applyLiveFilmPreview();
                 }
                 updateContextualStatus();
@@ -653,6 +653,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private volatile boolean unprocessedAudioSupported = false;
     private volatile boolean activeTakeUsingHevc = false;
     private volatile boolean activeTakeUsingHdr10 = false;
+    private volatile boolean activeTakeFilmLook = false;
+    private volatile PreviewLookLut activeTakeVideoLut = null;
     private volatile int activeTakeFps = 24;
     private volatile boolean video180Active = false;
     private volatile int video180Iso = 0;
@@ -3449,6 +3451,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             if (!isContinuation) {
                 activeTakeUsingHevc = usingHevc;
                 activeTakeUsingHdr10 = wantHdr10;
+                activeTakeFilmLook = isVideoFilmLookEnabledForCapture(wantHdr10);
+                activeTakeVideoLut = activeTakeFilmLook
+                        ? PreviewLookLut.build(RawDeveloper.Look.fromPreferences(this), previewColourMetadata)
+                        : null;
             }
 
             if (audioCfg.enabled) {
@@ -3493,18 +3499,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             recordingEncoderSurface = mediaRecorder.getSurface();
             int pixelRotation = !isContinuation ? 0
                     : VideoRecordingCoordinator.rotationCorrection(currentCamOrient, orientHint);
+            PreviewLookLut segmentLookLut = (activeTakeFilmLook && !wantHdr10) ? activeTakeVideoLut : null;
             Log.i("LikaLens", "Video orientation camera=" + cameraId + " front=" + isFrontCamera()
                     + " cameraRotation=" + currentCamOrient + " takeRotation=" + orientHint
-                    + " pixelRotation=" + pixelRotation + " hdr10=" + wantHdr10 + " fps=" + activeTakeFps);
-            if (pixelRotation != 0) {
+                    + " pixelRotation=" + pixelRotation + " hdr10=" + wantHdr10
+                    + " filmLook=" + (segmentLookLut != null) + " fps=" + activeTakeFps);
+            if (pixelRotation != 0 || segmentLookLut != null) {
                 final MediaRecorder segmentRecorder = mediaRecorder;
                 videoRotationSurface = new VideoRotationSurface(recordingEncoderSurface,
-                        videoSize.getWidth(), videoSize.getHeight(), pixelRotation,
+                        videoSize.getWidth(), videoSize.getHeight(), pixelRotation, segmentLookLut,
                         () -> runOnUiThread(() -> {
                             if (mediaRecorder != segmentRecorder) return;
                             if (videoState.isRecordingOrPaused()) {
                                 stopVideoRecording(true);
-                                showMessage("Video rotation failed · recorded footage saved");
+                                showMessage(segmentLookLut != null
+                                        ? "Video processing failed · recorded footage saved"
+                                        : "Video rotation failed · recorded footage saved");
                             } else failVideoStart("Could not orient this camera for video.");
                         }));
                 recordingInputSurface = videoRotationSurface.inputSurface();
@@ -3741,6 +3751,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             videoLock.set(false);
             activeTakeUsingHevc = false;
             activeTakeUsingHdr10 = false;
+            activeTakeFilmLook = false;
+            activeTakeVideoLut = null;
             activeTakeFps = 24;
             hasLockedVideoAnchor = false;
             lockedVideoPitch = 0f;
@@ -3807,6 +3819,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             lockedVideoOrientation = -1;
             activeTakeUsingHevc = false;
             activeTakeUsingHdr10 = false;
+            activeTakeFilmLook = false;
+            activeTakeVideoLut = null;
             activeTakeFps = 24;
             hasLockedVideoAnchor = false;
             lockedVideoPitch = 0f;
@@ -7011,9 +7025,24 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         legacyCm.postConcat(legacyAuxCm);
     }
 
+    private boolean isVideoFilmLookEnabledForPreview() {
+        boolean videoFilmPref = AppSettings.getBoolean(this, AppSettings.VIDEO_FILM_LOOK, false);
+        boolean hdrRequested = AppSettings.getBoolean(this, AppSettings.VIDEO_HDR, false);
+        boolean hdrPreviewActive = videoState.isRecordingOrPaused()
+                ? activeTakeUsingHdr10
+                : (hdrRequested && videoHdrSupported && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU);
+        return VideoRecordingCoordinator.shouldApplyVideoFilmLook(videoFilmPref, hdrPreviewActive);
+    }
+
+    private boolean isVideoFilmLookEnabledForCapture(boolean wantHdr10) {
+        return VideoRecordingCoordinator.shouldApplyVideoFilmLook(
+                AppSettings.getBoolean(this, AppSettings.VIDEO_FILM_LOOK, false),
+                wantHdr10);
+    }
+
     private void applyLiveFilmPreview() {
         if (!activityResumed || textureView == null || !textureView.isAvailable()) return;
-        if (!prefLiveFilmPreview || videoMode) {
+        if (!prefLiveFilmPreview || (videoMode && !isVideoFilmLookEnabledForPreview())) {
             liveLookPreview.clear();
             textureView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
             textureView.invalidate();
@@ -7791,7 +7820,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         Matrix previewTransform = new Matrix();
         textureView.getTransform(previewTransform);
         lensTransitionOverlay.setImageMatrix(previewTransform);
-        if (prefLiveFilmPreview && !videoMode) {
+        if (prefLiveFilmPreview && (!videoMode || isVideoFilmLookEnabledForPreview())) {
             if (Build.VERSION.SDK_INT >= 33) {
                 liveLookPreview.mirrorActiveEffectTo(lensTransitionOverlay);
             } else {

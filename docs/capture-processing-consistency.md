@@ -84,6 +84,18 @@ bright skies do not underexpose foreground subjects.
   `.sraw` originals are retained behind a configurable storage budget (`EDITABLE_ARCHIVE_LIMIT`)
   for non-destructive brain switching and re-editing. Explicitly requested DNGs and pinned active
   `.sraw` edits are exempt from LRU cache eviction.
+- Live viewfinder on Android 13+ (`LiveLookPreview`) pairs the 33³ colour-science LUT with uniform-only
+  AGSL film grain and brain-specific specular halation (`SpatialParams`) so texture slider drags
+  update instantaneously without rebuilding the 33³ cube.
+- `NightStacker` refines global translational alignment with a coarse-to-fine tile vector field
+  (8-step local search, bilinearly interpolated with even Bayer snapping for `RawAccumulator`) and
+  a Tukey biweight temporal kernel so moving subjects and local hand rotation are rejected rather than
+  ghosted.
+- Opt-in `VIDEO_FILM_LOOK` freezes the active `PreviewLookLut` at take start and applies trilinear 33³
+  LUT grading inside `VideoRotationSurface` (`highp float` GLES 2.0) alongside mirrored live preview
+  during SDR takes, while automatically bypassing when 10-bit HLG10 HDR is active.
+- `PhotoEditorActivity` can export any non-destructive `RawDeveloper.Look` recipe as a standard
+  UTF-8 33³ Adobe `.cube` LUT (`LutManager.exportLookAsCube`).
 
 ## Validation and device checklist
 
@@ -92,10 +104,13 @@ capture recipe retention, archive v4 compatibility/v5 round trips, `.sraw` cache
 enforcement, `AppSettings` v1→v2 migration, all six preview brains, off-grid interpolation,
 LUT strength, warm illuminant metadata, ISO/compensation/manual recovery, pre-look metering,
 night integration, sensor highlight reconstruction, colour-matrix validation, $C^1$ filmic curve
-monotonicity, photochemical per-brain signatures, achromatic monochrome halation, luminance-only
-cored sharpening, bilateral chroma NR, built-in LUT black/white preservation, resolution-independent
-neutral grain, `ManualFocusHelper`, `CaptureFileNaming`, and `VideoRecordingCoordinator` (25 fps,
-HLG10 HDR, 180° Auto-ISO, audio zoom, mid-take switches).
+monotonicity, photochemical per-brain signatures, 12-patch Oklab ColorChecker golden invariants &
+throughput sanity, tile-based `NightStacker` alignment & ghost rejection, `LiveLookPreview.SpatialParams`,
+achromatic monochrome halation, luminance-only cored sharpening, bilateral chroma NR, built-in LUT
+black/white preservation, 33³ `.cube` export round-trip parity, resolution-independent neutral grain,
+`ManualFocusHelper`, `CaptureFileNaming`, and `VideoRecordingCoordinator` (25 fps, HLG10 HDR,
+`VIDEO_FILM_LOOK` SDR gate, `VideoRotationSurface.packLutRgbaBuffer`, 180° Auto-ISO, audio zoom,
+mid-take switches).
 
 Before releasing to users, test a real camera device:
 
@@ -109,15 +124,17 @@ Before releasing to users, test a real camera device:
 4. Repeat daylight, skin, foliage and high-contrast window scenes through all six brains.
    Use a tripod and identical exposure/recipe settings, then render the same archived RAW
    through every brain to isolate the colour transform from capture differences.
-5. Check imported LUT strengths 0/50/100%, toggle live preview, scrub sliders, switch lenses,
-   background/resume the app, and confirm no stale effect or flickering ungraded frames.
+5. Check imported LUT strengths 0/50/100%, toggle live preview, scrub grain/halation/sliders,
+   switch lenses, background/resume the app, and confirm no stale effect or flickering ungraded
+   frames. Export an editor look as `.cube` and re-import it to confirm parity.
 6. Confirm a steady, normally lit scene does not activate night integration. In dim light,
-   check that automatic integration reduces ISO without a brightness jump.
+   check that automatic integration reduces ISO without a brightness jump and rejects walking
+   subjects without ghosting.
 7. Verify Option B `Processed JPEG only` saves only JPEG to MediaStore Gallery, retains private
    `.sraw` for re-editing, enforces the storage limit without removing open edits or DNGs, and
    clears unpinned `.sraw` caches cleanly from General settings.
 8. Verify Camera2 manual focus diopter range, optional 5× loupe activation (`LOUPE_ON_MF_ADJUST`
-   and manual pill), 25 fps PAL / HLG10 HDR / 180° shutter Auto-ISO video, and ringer-mode shutter
-   sound compliance.
+   and manual pill), 25 fps PAL / HLG10 HDR / SDR `Bake film look into SDR video` / 180° shutter
+   Auto-ISO video, and ringer-mode shutter sound compliance.
 9. Capture front-camera selfies with mirroring enabled and disabled; hold to compare the RAW original
    and confirm its display direction matches the processed JPEG.

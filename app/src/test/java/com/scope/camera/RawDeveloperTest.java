@@ -1022,4 +1022,126 @@ public class RawDeveloperTest {
                 brightSpread <= 14);
     }
 
+    private static float[] srgbIntToOklab(int argb) {
+        float lr = RawDeveloper.srgbByteToLinear((argb >> 16) & 0xff);
+        float lg = RawDeveloper.srgbByteToLinear((argb >> 8) & 0xff);
+        float lb = RawDeveloper.srgbByteToLinear(argb & 0xff);
+        double l = Math.cbrt(Math.max(0.0, 0.41222147 * lr + 0.53633254 * lg + 0.05144599 * lb));
+        double m = Math.cbrt(Math.max(0.0, 0.21190350 * lr + 0.68069955 * lg + 0.10739696 * lb));
+        double s = Math.cbrt(Math.max(0.0, 0.08830246 * lr + 0.28171884 * lg + 0.62997870 * lb));
+        return new float[]{
+                (float) (0.21045426 * l + 0.79361779 * m - 0.00407205 * s),
+                (float) (1.97799850 * l - 2.42859221 * m + 0.45059371 * s),
+                (float) (0.02590404 * l + 0.78277177 * m - 0.80867577 * s)
+        };
+    }
+
+    @Test
+    public void testColorCheckerGoldenInvariantsAcrossAllBrains() {
+        // 12 synthetic scene-linear Macbeth-inspired patches:
+        // 0..3: neutral ramp (shadow, 18% grey, bright card, white),
+        // 4..6: deep/medium/light skin,
+        // 7..11: crimson, golden yellow, foliage green, sky blue, tungsten wall.
+        float[][] patches = {
+                {0.03f, 0.03f, 0.03f},
+                {0.18f, 0.18f, 0.18f},
+                {0.55f, 0.55f, 0.55f},
+                {1.20f, 1.20f, 1.20f},
+                {0.18f, 0.085f, 0.055f},
+                {0.44f, 0.24f, 0.15f},
+                {0.66f, 0.44f, 0.31f},
+                {0.48f, 0.07f, 0.07f},
+                {0.68f, 0.52f, 0.08f},
+                {0.14f, 0.34f, 0.11f},
+                {0.11f, 0.28f, 0.62f},
+                {0.28f, 0.18f, 0.10f}
+        };
+
+        for (String brain : AppSettings.BRAIN_CHOICES) {
+            RawDeveloper.Look look = new RawDeveloper.Look();
+            look.brain = brain;
+            look.grain = 0f;
+            look.easyMode = true;
+            RawDeveloper.PreparedLook prep = new RawDeveloper.PreparedLook(look, null, null);
+
+            float prevL = -1f;
+            for (int n = 0; n < 4; n++) {
+                int c = RawDeveloper.renderPreparedLook(patches[n][0], patches[n][1], patches[n][2], prep, 0, 0, 1);
+                float[] lab = srgbIntToOklab(c);
+                float minStep = n == 3 ? 0.02f : 0.08f;
+                org.junit.Assert.assertTrue(brain + " neutral ramp must be strictly monotonic at patch " + n
+                                + " (prevL=" + prevL + ", L=" + lab[0] + ")",
+                        lab[0] > prevL + minStep);
+                prevL = lab[0];
+                if (AppSettings.BRAIN_MONO_SILVER.equals(brain) || AppSettings.BRAIN_NEUTRAL_RAW.equals(brain)) {
+                    float chroma = (float) Math.hypot(lab[1], lab[2]);
+                    org.junit.Assert.assertTrue(brain + " neutral ramp chroma must stay <= 0.015, got " + chroma,
+                            chroma <= 0.015f);
+                }
+            }
+            // Bright diffuse card (1.20) retains highlight headroom without blocking soft-cinema stocks
+            // like Fuji Eterna, while specular white (2.50) reaches paper white (>= 245).
+            int whiteOut = RawDeveloper.renderPreparedLook(patches[3][0], patches[3][1], patches[3][2], prep, 0, 0, 1);
+            int specularOut = RawDeveloper.renderPreparedLook(2.5f, 2.5f, 2.5f, prep, 0, 0, 1);
+            for (int shift : new int[]{16, 8, 0}) {
+                int ch = (whiteOut >> shift) & 0xff;
+                int sp = (specularOut >> shift) & 0xff;
+                org.junit.Assert.assertTrue(brain + " diffuse white (1.20) must preserve headroom (>= 225), got " + ch, ch >= 225);
+                org.junit.Assert.assertTrue(brain + " specular white (2.50) must reach luminous headroom (>= 245), got " + sp, sp >= 245);
+            }
+
+            // Skin corridor: for colour brains, light/medium/deep skin must keep R > G > B and avoid nuclear oversaturation
+            if (!AppSettings.BRAIN_MONO_SILVER.equals(brain) && !AppSettings.BRAIN_BLEACH_BYPASS.equals(brain)) {
+                for (int s = 4; s <= 6; s++) {
+                    int skin = RawDeveloper.renderPreparedLook(patches[s][0], patches[s][1], patches[s][2], prep, 0, 0, 1);
+                    int r = (skin >> 16) & 0xff;
+                    int g = (skin >> 8) & 0xff;
+                    int b = skin & 0xff;
+                    org.junit.Assert.assertTrue(brain + " skin patch " + s + " must preserve natural R > G > B ("
+                            + r + "," + g + "," + b + ")", r > g && g > b);
+                    float[] lab = srgbIntToOklab(skin);
+                    float chroma = (float) Math.hypot(lab[1], lab[2]);
+                    org.junit.Assert.assertTrue(brain + " skin patch " + s + " chroma must stay natural (<= 0.145), got " + chroma,
+                            chroma <= 0.145f);
+                }
+            }
+        }
+    }
+
+    @Test
+    public void testRawDevelopThroughputSanity() {
+        RawArchive.Frame frame = new RawArchive.Frame();
+        frame.width = 512;
+        frame.height = 384;
+        frame.rowStride = frame.width * 2;
+        frame.pixelStride = 2;
+        frame.staticWhiteLevel = 1023;
+        frame.dynamicWhiteLevel = 1023;
+        frame.blackLevels = new float[]{16f, 16f, 16f, 16f};
+        frame.wbGains = new float[]{1.5f, 1.0f, 1.0f, 1.6f};
+        frame.colorCorrectionTransform = new float[]{1.1f, -0.05f, -0.05f, -0.04f, 1.08f, -0.04f, -0.02f, -0.08f, 1.1f};
+
+        java.nio.ByteBuffer cap = java.nio.ByteBuffer.allocate(frame.width * frame.height * 2)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (int y = 0; y < frame.height; y++) {
+            for (int x = 0; x < frame.width; x++) {
+                cap.putShort((short) (64 + ((x * 3 + y * 5) & 511)));
+            }
+        }
+        cap.flip();
+        frame.captureBuffer = cap;
+
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.brain = AppSettings.BRAIN_LIKA_FILM;
+        look.easyMode = true;
+        look.sharpening = 0.15f;
+
+        long t0 = System.nanoTime();
+        int[] out = RawDeveloper.developPixels(frame, look, 0);
+        long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
+        assertNotNull(out);
+        assertEquals(frame.width * frame.height, out.length);
+        org.junit.Assert.assertTrue("512x384 full-pipeline develop took too long: " + elapsedMs + "ms", elapsedMs < 8000L);
+    }
+
 }

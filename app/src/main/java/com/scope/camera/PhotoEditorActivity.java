@@ -556,6 +556,7 @@ public class PhotoEditorActivity extends Activity {
     }
 
     private static final int REQUEST_CODE_PICK_LUT = 1055;
+    private static final int REQUEST_CODE_EXPORT_LUT = 1056;
 
     private void addLutControls() {
         LinearLayout card = new LinearLayout(this);
@@ -685,6 +686,24 @@ public class PhotoEditorActivity extends Activity {
         }
     }
 
+    private void launchExportCubeLut() {
+        String rawTitle = (look != null && look.brain != null && !look.brain.trim().isEmpty())
+                ? look.brain.trim() : "Lika Lens Look";
+        String sanitized = rawTitle.toLowerCase(Locale.US)
+                .replaceAll("[^a-z0-9]+", "_")
+                .replaceAll("^_+|_+$", "");
+        if (sanitized.isEmpty()) sanitized = "lika_lens_look";
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/octet-stream");
+        intent.putExtra(Intent.EXTRA_TITLE, sanitized + ".cube");
+        try {
+            startActivityForResult(intent, REQUEST_CODE_EXPORT_LUT);
+        } catch (Exception e) {
+            Toast.makeText(this, "File saver unavailable: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -705,6 +724,31 @@ public class PhotoEditorActivity extends Activity {
                     } else {
                         Toast.makeText(this, "Could not import LUT. Ensure file is a valid .cube format.", Toast.LENGTH_LONG).show();
                     }
+                });
+            });
+        } else if (requestCode == REQUEST_CODE_EXPORT_LUT && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            final Uri uri = data.getData();
+            final RawDeveloper.Look exportLook = look != null ? look.copy() : new RawDeveloper.Look();
+            final RawArchive.Frame exportFrame = frame;
+            final String exportTitle = (exportLook.brain != null && !exportLook.brain.trim().isEmpty())
+                    ? exportLook.brain.trim() : "Lika Lens Look";
+            final android.content.Context appContext = getApplicationContext();
+            worker.execute(() -> {
+                boolean ok = false;
+                try (java.io.OutputStream out = appContext.getContentResolver().openOutputStream(uri)) {
+                    if (out != null) {
+                        LutManager.exportLookAsCube(exportLook, exportTitle, exportFrame, out);
+                        ok = true;
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed exporting .cube LUT", e);
+                }
+                final boolean exported = ok;
+                mainHandler.post(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    Toast.makeText(this,
+                            exported ? "Exported 33³ .cube LUT" : "Could not export .cube LUT.",
+                            exported ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
                 });
             });
         }
@@ -1130,7 +1174,7 @@ public class PhotoEditorActivity extends Activity {
     private void showEditorMenu(View anchor) {
         if (sourceJob.phase() != JobState.Phase.READY || saveJob.isBusy()) return;
         PopupMenu menu = new PopupMenu(this, anchor);
-        for (String title : new String[]{"Copy look", "Paste look", "Save as custom look…", "Reset adjustments…"}) menu.getMenu().add(title);
+        for (String title : new String[]{"Copy look", "Paste look", "Save as custom look…", "Export .cube LUT…", "Reset adjustments…"}) menu.getMenu().add(title);
         menu.getMenu().getItem(1).setEnabled(PhotoEditStore.hasClipboard(this));
         menu.setOnMenuItemClickListener(item -> {
             String title = item.getTitle().toString();
@@ -1141,6 +1185,7 @@ public class PhotoEditorActivity extends Activity {
                 RawDeveloper.Look copied = PhotoEditStore.pasteFromClipboard(this);
                 if (copied != null) { recordEdit(); look = copied; refreshEditingState(); }
             } else if (title.equals("Save as custom look…")) showSaveRecipeDialog();
+            else if (title.equals("Export .cube LUT…")) launchExportCubeLut();
             else new AlertDialog.Builder(this).setTitle("Reset adjustments?")
                     .setMessage("Restore default adjustments in this editor. The original photo stays unchanged.")
                     .setNegativeButton("Cancel", null).setPositiveButton("Reset", (d, w) -> resetLook()).show();

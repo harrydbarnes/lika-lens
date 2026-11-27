@@ -234,4 +234,45 @@ public class LutManagerTest {
             }
         }
     }
+
+    @Test
+    public void testExportLookAsCubeRoundTripMatchesRenderDisplayRgb() throws Exception {
+        RawDeveloper.Look look = new RawDeveloper.Look();
+        look.brain = AppSettings.BRAIN_KODACHROME;
+        look.warmth = 0.25f;
+        look.contrast = 1.18f;
+        look.saturation = 1.06f;
+        look.lutName = LutManager.LUT_PORTRA;
+        look.lutIntensity = 0.6f;
+
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        LutManager.exportLookAsCube(look, "Kodachrome Test \"Quoted\"", null, baos);
+
+        byte[] bytes = baos.toByteArray();
+        assertTrue(bytes.length > 100000);
+
+        LutManager.Lut3D parsed = LutManager.parseCube(new ByteArrayInputStream(bytes), "Fallback");
+        assertNotNull(parsed);
+        assertEquals(33, parsed.size);
+        assertEquals("Kodachrome Test 'Quoted'", parsed.title);
+
+        RawDeveloper.PreparedLook prepared = RawDeveloper.preparePreviewCubeLook(look.copy(), null);
+        float[][] probes = {
+                {0f, 0f, 0f},
+                {1f, 1f, 1f},
+                {0.5f, 0.5f, 0.5f},
+                {0.62f, 0.44f, 0.34f},
+                {0.25f, 0.58f, 0.30f},
+                {0.18f, 0.36f, 0.72f}
+        };
+        for (float[] p : probes) {
+            int expected = RawDeveloper.renderDisplayRgb(p[0], p[1], p[2], prepared);
+            int actual = parsed.applyToRgb(p[0], p[1], p[2], 1f);
+            for (int shift : new int[]{16, 8, 0}) {
+                int diff = Math.abs(((expected >> shift) & 0xff) - ((actual >> shift) & 0xff));
+                assertTrue("Exported .cube mismatch at (" + p[0] + "," + p[1] + "," + p[2] + "): diff=" + diff,
+                        diff <= 3);
+            }
+        }
+    }
 }
