@@ -66,4 +66,30 @@ public class ExposureAidsAnalyzerTest {
         assertFalse(ExposureAidsAnalyzer.isSkinTonePixel(40, 120, 200));
         assertFalse(ExposureAidsAnalyzer.isSkinTonePixel(120, 120, 120));
     }
+
+    @Test
+    public void testVideo180LumaIsCenterWeighted() {
+        ExposureAidsAnalyzer analyzer = new ExposureAidsAnalyzer();
+        int w = 64, h = 48;
+        int[] px = new int[w * h];
+        // Bright overcast sky across outer/upper border (luma ~240), darker subject in center (luma ~60)
+        Arrays.fill(px, 0xfff0f0f0);
+        for (int y = h / 4; y < h - h / 4; y++) {
+            for (int x = w / 4; x < w - w / 4; x++) {
+                px[y * w + x] = 0xff3c3c3c;
+            }
+        }
+        final double[] reported = new double[1];
+        analyzer.analyzePixels(px, w, h, false, false, false, false, false, true, false, 1000L,
+                new ExposureAidsAnalyzer.Callback() {
+                    @Override public void onDirtyLensDetected() {}
+                    @Override public void onPalmDetected() {}
+                    @Override public void onVideo180MeanLuma(double meanLuma) {
+                        reported[0] = meanLuma;
+                    }
+                });
+        // Unweighted mean would be 0.75 * 240 + 0.25 * 60 = 195; center-weighted (3x center) must be much lower.
+        assertTrue("Center-weighted luma should prioritize foreground subject over bright border, got " + reported[0],
+                reported[0] < 165.0 && reported[0] > 120.0);
+    }
 }

@@ -282,7 +282,7 @@ public final class VideoRecordingCoordinator {
      */
     static int step180AutoIso(int currentIso, double meanLuma, float evOffset, int minIso, int maxIso) {
         if (minIso <= 0 || maxIso < minIso || currentIso <= 0) return -1;
-        double targetLuma = Math.max(48.0, Math.min(195.0, 112.0 * Math.pow(2.0, evOffset * 0.45)));
+        double targetLuma = Math.max(48.0, Math.min(195.0, 120.0 * Math.pow(2.0, evOffset * 0.45)));
         if (currentIso <= minIso && meanLuma > targetLuma * 1.65) {
             return -1;
         }

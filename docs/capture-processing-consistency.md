@@ -38,6 +38,12 @@ This is a closer preview, not guaranteed pixel identity: demosaicing, lens corre
 local RAW tone recovery, grain, halation, borders, sharpening and HDR gallery rendering
 can still differ. The six authored looks are not claimed to be measured film-stock profiles.
 
+In Video mode, `LiveLookPreview` is cleared so the viewfinder matches `MediaRecorder`'s ungraded
+Camera2 stream, and `VIDEO_SHUTTER_MODE` defaults to `Auto exposure (AE)` (`CONTROL_AE_MODE_ON`)
+so computational HDR tone mapping and face-weighted metering stay active. When `180° Shutter
+(Auto ISO)` is explicitly enabled, `ExposureAidsAnalyzer` uses center-weighted luma metering so
+bright skies do not underexpose foreground subjects.
+
 ## Noise and automatic night integration
 
 - Global scene recovery is capped at 3x at low ISO and reduced as ISO rises; nearly black

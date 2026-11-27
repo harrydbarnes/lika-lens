@@ -140,8 +140,8 @@ final class AppSettings {
     static final String VIDEO_SHUTTER_180 = "180° Shutter (Auto ISO)";
     static final String VIDEO_SHUTTER_AUTO = "Auto exposure (AE)";
     static final String[] VIDEO_SHUTTER_MODES = {
-            VIDEO_SHUTTER_180,
-            VIDEO_SHUTTER_AUTO
+            VIDEO_SHUTTER_AUTO,
+            VIDEO_SHUTTER_180
     };
     static final String SHUTTER_SOUND = "shutter_sound";
 

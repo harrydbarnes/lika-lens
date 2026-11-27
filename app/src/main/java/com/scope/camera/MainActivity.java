@@ -556,7 +556,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             metadata.sensitivityIso = iso == null ? 0 : iso;
             previewColourMetadata = metadata;
             runOnUiThread(() -> {
-                if (prefLiveFilmPreview) {
+                if (prefLiveFilmPreview && !videoMode) {
                     applyLiveFilmPreview();
                 }
                 updateContextualStatus();
@@ -2542,6 +2542,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         updateQuickButtons();
         updateReadouts();
         animateModeStatusText(enabled);
+        applyLiveFilmPreview();
         refreshPreviewRequest();
         if (previousFrame != null) {
             animateFramingRectTransition(previousFrame);
@@ -6892,7 +6893,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     private void applyLiveFilmPreview() {
         if (!activityResumed || textureView == null || !textureView.isAvailable()) return;
-        if (!prefLiveFilmPreview) {
+        if (!prefLiveFilmPreview || videoMode) {
             liveLookPreview.clear();
             textureView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
             textureView.invalidate();
@@ -7076,7 +7077,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             String fpsTag = fps.startsWith("24") ? "24 FPS CINEMATIC"
                     : fps.startsWith("25") ? "25 FPS PAL"
                     : fps.startsWith("30") ? "30 FPS" : "60 FPS";
-            status = videoState.isRecordingOrPaused() ? "TAP ⟳ TO SWITCH" : "CINEMATIC VIDEO · " + fpsTag;
+            status = videoState.isRecordingOrPaused() ? "TAP ⟳ TO SWITCH" : "VIDEO · " + fpsTag;
         } else {
             boolean easy = AppSettings.getBoolean(this, AppSettings.EASY_MODE, true);
             if (isNightStackingActive()) {
@@ -7665,7 +7666,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         Matrix previewTransform = new Matrix();
         textureView.getTransform(previewTransform);
         lensTransitionOverlay.setImageMatrix(previewTransform);
-        if (prefLiveFilmPreview) {
+        if (prefLiveFilmPreview && !videoMode) {
             if (Build.VERSION.SDK_INT >= 33) {
                 liveLookPreview.mirrorActiveEffectTo(lensTransitionOverlay);
             } else {
@@ -8350,7 +8351,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private boolean isVideo180Requested() {
         return videoMode
                 && AppSettings.VIDEO_SHUTTER_180.equals(
-                        AppSettings.get(this, AppSettings.VIDEO_SHUTTER_MODE, AppSettings.VIDEO_SHUTTER_180))
+                        AppSettings.get(this, AppSettings.VIDEO_SHUTTER_MODE, AppSettings.VIDEO_SHUTTER_AUTO))
                 && !AppSettings.get(this, AppSettings.EXPOSURE_MODE, "Auto exposure").startsWith("Manual");
     }
 

@@ -83,6 +83,11 @@ final class ExposureAidsAnalyzer {
         int clipHigh = 0;
         int clipLow = 0;
         long sumLuma = 0L;
+        long sumLumaWeight = 0L;
+        final int cx0 = w >> 2;
+        final int cx1 = w - cx0;
+        final int cy0 = h >> 2;
+        final int cy1 = h - cy0;
         for (int i = 0; i < total; i++) {
             int c = px[i];
             int r = (c >> 16) & 0xff;
@@ -91,7 +96,11 @@ final class ExposureAidsAnalyzer {
             int y = (r * 77 + g * 150 + b * 29) >> 8;
             luma[i] = y;
             if (want180Luma) {
-                sumLuma += y;
+                int pxY = i / w;
+                int pxX = i - pxY * w;
+                int weight = (pxX >= cx0 && pxX < cx1 && pxY >= cy0 && pxY < cy1) ? 3 : 1;
+                sumLuma += (long) y * weight;
+                sumLumaWeight += weight;
             }
             if (wantHist) {
                 int bin = Math.min(HIST_BINS - 1, y >> 3);
@@ -141,7 +150,7 @@ final class ExposureAidsAnalyzer {
             checkPalmGesture(px, w, h, palmAllowed, nowMs, callback);
         }
         if (want180Luma && callback != null) {
-            callback.onVideo180MeanLuma(sumLuma / (double) total);
+            callback.onVideo180MeanLuma(sumLumaWeight > 0L ? (sumLuma / (double) sumLumaWeight) : 0.0);
         }
     }
 

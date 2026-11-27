@@ -64,6 +64,7 @@ public class AppSettingsTest {
             assertFalse("VIDEO_AUDIO_CHOICES must not claim wind filter", a.contains("Wind filter"));
         }
         assertTrue("VIDEO_AUDIO_CHOICES must include Speech enhanced", hasSpeech);
+        assertEquals(AppSettings.VIDEO_SHUTTER_AUTO, AppSettings.VIDEO_SHUTTER_MODES[0]);
     }
 
     @Test
