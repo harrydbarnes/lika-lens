@@ -1,11 +1,18 @@
 package com.scope.camera;
 
 import android.Manifest;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.ContentValues;
+import android.transition.ChangeBounds;
+import android.transition.Fade;
+import android.transition.TransitionManager;
+import android.transition.TransitionSet;
+import android.view.animation.PathInterpolator;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -475,7 +482,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private View topSpacer;
     private LinearLayout telemetry;
     private ZoomPresetRow lensRow;
-    private LinearLayout modeRow;
+    private FrameLayout modeRow;
+    private View modeSelectionPill;
+    private ValueAnimator modePillAnimator;
+    private float modePillProgress;
+    private boolean modePillInitialized;
+    private GradientDrawable shutterInnerDrawable;
+    private GradientDrawable shutterRingDrawable;
+    private ValueAnimator shutterMorphAnimator;
+    private int shutterCurrentFill = 0xfffaf9f5;
+    private int shutterCurrentStroke = 0xfffaf9f5;
+    private float shutterCurrentScale = ModeTransitionMotion.PHOTO_SHUTTER_SCALE;
+    private float shutterTargetScale = ModeTransitionMotion.PHOTO_SHUTTER_SCALE;
+    private float shutterCurrentCornerFraction = ModeTransitionMotion.CIRCLE_CORNER_FRACTION;
+    private boolean shutterMorphInitialized;
+    private ValueAnimator frameMorphAnimator;
+    private final RectF animatedFrameRect = new RectF();
+    private final float[] frameMorphScratch = new float[4];
+    private boolean frameMorphActive;
+    private final PathInterpolator modeMotionInterpolator = new PathInterpolator(0.22f, 1f, 0.36f, 1f);
     private LinearLayout lookRow;
     private FrameLayout shootRow;
     private View deckSpacer;
@@ -1099,6 +1124,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
     @Override protected void onDestroy() {
         cameraUiHandler.removeCallbacksAndMessages(null);
+        cancelModeTransitionAnimators();
         unregisterCameraAvailabilityCallback();
         liveLookPreview.close();
         closeCamera();
@@ -1616,12 +1642,23 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
         });
 
-        modeRow = row();
-        modeRow.setGravity(Gravity.CENTER);
+        modeRow = new FrameLayout(this);
         modeRow.setPadding(dp(4), dp(3), dp(4), dp(3));
         modeRow.setClipToPadding(false);
         modeRow.setClipChildren(false);
         modeRow.setBackground(round(0xd016191a, 100, 0, 0));
+
+        modeSelectionPill = new View(this);
+        modeSelectionPill.setBackground(round(0xfffed36a, 100, 0, 0));
+        FrameLayout.LayoutParams pillLp = new FrameLayout.LayoutParams(dp(76), dp(32), Gravity.START | Gravity.CENTER_VERTICAL);
+        pillLp.setMargins(dp(1), 0, dp(1), 0);
+        modeRow.addView(modeSelectionPill, pillLp);
+
+        LinearLayout modeButtonsRow = row();
+        modeButtonsRow.setGravity(Gravity.CENTER);
+        modeButtonsRow.setClipToPadding(false);
+        modeButtonsRow.setClipChildren(false);
+
         photoModeButton = new TextView(this);
         photoModeButton.setText("PHOTO");
         photoModeButton.setGravity(Gravity.CENTER);
@@ -1638,8 +1675,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         LinearLayout.LayoutParams modeLp = new LinearLayout.LayoutParams(dp(76), dp(32));
         modeLp.setMargins(dp(1), 0, dp(1), 0);
-        modeRow.addView(photoModeButton, modeLp);
-        modeRow.addView(videoModeButton, modeLp);
+        modeButtonsRow.addView(photoModeButton, modeLp);
+        modeButtonsRow.addView(videoModeButton, modeLp);
+        modeRow.addView(modeButtonsRow, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
         photoModeButton.setOnClickListener(v -> { hapticClick(v); setVideoMode(false); });
         videoModeButton.setOnClickListener(v -> { hapticClick(v); setVideoMode(true); });
 
@@ -1734,12 +1772,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
         captureButton = label("", 12, BG, false);
         captureButton.setGravity(Gravity.CENTER);
-        captureButton.setBackground(round(0xfffaf9f5, 100, 0xfffaf9f5, dp(2)));
+        shutterInnerDrawable = round(0xfffaf9f5, 100, 0xfffaf9f5, dp(2));
+        captureButton.setBackground(shutterInnerDrawable);
         captureButton.setClickable(false);
         captureButton.setFocusable(false);
 
         shutterFrame = new FrameLayout(this);
-        shutterFrame.setBackground(round(0x00202020, 100, 0xfffaf9f5, dp(3)));
+        shutterRingDrawable = round(0x00202020, 100, 0xfffaf9f5, dp(3));
+        shutterFrame.setBackground(shutterRingDrawable);
         shutterFrame.addView(captureButton, new FrameLayout.LayoutParams(dp(80), dp(80), Gravity.CENTER));
         shutterFrame.setClickable(true);
         shutterFrame.setFocusable(true);
@@ -2462,19 +2502,58 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (videoState.isBusy() || videoMode == enabled) return;
         videoState.cancelPermissionPending();
         cancelDelayedCapture();
+        RectF previousFrame = null;
+        if (gridOverlay != null && gridOverlay.getWidth() > 0 && gridOverlay.getHeight() > 0) {
+            previousFrame = new RectF();
+            if (frameMorphActive) {
+                previousFrame.set(animatedFrameRect);
+            } else {
+                framingRectInto(gridOverlay.getWidth(), gridOverlay.getHeight(), previousFrame);
+            }
+        }
         videoMode = enabled;
         video180Active = false;
         video180Iso = 0;
         video180FallbackNotified = false;
         lastVideo180StepAt = 0L;
         AppSettings.prefs(this).edit().putBoolean(AppSettings.LAST_USED_MODE, enabled).apply();
-        if (quickAdjustPanel != null) quickAdjustPanel.setVisibility(View.GONE);
-        updateVideoModeUi();
+        if (quickAdjustPanel != null && quickAdjustPanel.getVisibility() == View.VISIBLE) {
+            quickAdjustPanel.animate().cancel();
+            quickAdjustPanel.animate()
+                    .alpha(0f)
+                    .setDuration(120L)
+                    .withEndAction(() -> {
+                        if (quickAdjustPanel != null) {
+                            quickAdjustPanel.setVisibility(View.GONE);
+                            quickAdjustPanel.setAlpha(1f);
+                        }
+                    })
+                    .start();
+        }
+        beginModeUiTransition();
+        updateVideoModeUi(true);
+        animateModeEnteringControls(enabled);
         updateQuickButtons();
         updateReadouts();
+        animateModeStatusText(enabled);
         refreshPreviewRequest();
-        if (gridOverlay != null) gridOverlay.invalidate();
-        if (textureView != null) configureTransform(textureView.getWidth(), textureView.getHeight());
+        if (previousFrame != null) {
+            animateFramingRectTransition(previousFrame);
+        } else if (gridOverlay != null) {
+            gridOverlay.invalidate();
+        }
+        if (textureView != null) {
+            configureTransform(textureView.getWidth(), textureView.getHeight());
+            textureView.animate().cancel();
+            textureView.setScaleX(0.988f);
+            textureView.setScaleY(0.988f);
+            textureView.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(240L)
+                    .setInterpolator(modeMotionInterpolator)
+                    .start();
+        }
     }
 
     private void cycleVideoFps() {
@@ -2558,6 +2637,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void updateVideoModeUi() {
+        updateVideoModeUi(false);
+    }
+
+    private void updateVideoModeUi(boolean animateModeSwitch) {
         if (photoModeButton == null) return;
         final boolean recording = videoState.isRecordingOrPaused();
         final boolean starting = videoState.isPreparing();
@@ -2565,8 +2648,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         final boolean paused = videoState.isPaused();
         final boolean quickTake = videoState.isQuickTake();
 
-        styleModeButton(photoModeButton, !videoMode);
-        styleModeButton(videoModeButton, videoMode);
+        updateModePillSelection(videoMode, animateModeSwitch);
         if (brainButton != null) brainButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (aspectButton != null) aspectButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         if (timerButton != null) timerButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
@@ -2637,16 +2719,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (captureButton != null && shutterFrame != null) {
             boolean isVidActive = videoMode || quickTake;
             boolean recUi = recording || switching || quickTake;
-            int fill = isVidActive ? (recUi ? 0xfff0443c : 0xffd93632) : 0xfffaf9f5;
-            int stroke = isVidActive ? 0xffff827a : 0xfffaf9f5;
-            captureButton.setBackground(round(fill, 100, fill, dp(2)));
-            captureButton.setText(isVidActive && recUi ? "■" : "");
-            captureButton.setTextColor(isVidActive ? 0xffffffff : BG);
-            captureButton.setTextSize(recUi ? 18 : 12);
-            captureButton.setContentDescription(isVidActive
-                    ? recUi ? "Stop video recording" : "Start video recording"
-                    : "Take photo");
-            shutterFrame.setBackground(round(0x00202020, 100, stroke, dp(3)));
+            updateShutterVisual(isVidActive, recUi, animateModeSwitch || shutterMorphInitialized);
         }
 
         if (cameraState != null && outputModeText != null) {
@@ -2692,15 +2765,276 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         return "RAW SENSOR  ·  PROCESSED JPEG (EDITABLE RAW)";
     }
 
-    private void styleModeButton(TextView button, boolean active) {
-        button.setTypeface(Typeface.DEFAULT_BOLD);
-        if (active) {
-            button.setTextColor(BG);
-            button.setBackground(round(0xfffed36a, 100, 0, 0));
-        } else {
-            button.setTextColor(0xffffffff);
-            button.setBackground(null);
+    private void beginModeUiTransition() {
+        TransitionSet headerTransition = createModeLayoutTransition();
+        if (header != null && header.isLaidOut()) {
+            TransitionManager.endTransitions(header);
+            TransitionManager.beginDelayedTransition(header, headerTransition);
         }
+        if (lookRow != null && lookRow.isLaidOut()) {
+            TransitionManager.endTransitions(lookRow);
+            TransitionManager.beginDelayedTransition(lookRow, createModeLayoutTransition());
+        }
+    }
+
+    private TransitionSet createModeLayoutTransition() {
+        TransitionSet set = new TransitionSet();
+        set.setOrdering(TransitionSet.ORDERING_TOGETHER);
+
+        ChangeBounds bounds = new ChangeBounds();
+        bounds.setDuration(ModeTransitionMotion.MODE_SWITCH_DURATION_MS);
+        bounds.setInterpolator(modeMotionInterpolator);
+
+        Fade fadeOut = new Fade(Fade.OUT);
+        fadeOut.setDuration(110L);
+
+        Fade fadeIn = new Fade(Fade.IN);
+        fadeIn.setStartDelay(70L);
+        fadeIn.setDuration(200L);
+        fadeIn.setInterpolator(modeMotionInterpolator);
+
+        set.addTransition(bounds);
+        set.addTransition(fadeOut);
+        set.addTransition(fadeIn);
+        return set;
+    }
+
+    private void animateModeEnteringControls(boolean toVideo) {
+        float startShift = toVideo ? dp(10) : -dp(10);
+        View[] entering = toVideo
+                ? new View[]{videoFpsButton, videoAspectButton, videoStabButton}
+                : new View[]{aspectButton, timerButton, focusToggleButton, loupeToggleButton, brainButton, easyButton, adjustButton};
+        for (int i = 0; i < entering.length; i++) {
+            View v = entering[i];
+            if (v == null || v.getVisibility() != View.VISIBLE) continue;
+            v.animate().cancel();
+            v.setTranslationX(startShift);
+            v.setScaleX(0.92f);
+            v.setScaleY(0.92f);
+            v.animate()
+                    .translationX(0f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setStartDelay(i * 18L)
+                    .setDuration(ModeTransitionMotion.PILL_ENTER_DURATION_MS)
+                    .setInterpolator(modeMotionInterpolator)
+                    .start();
+        }
+    }
+
+    private void animateModeStatusText(boolean toVideo) {
+        float shift = toVideo ? dp(8) : -dp(8);
+        for (View textView : new View[]{modeNote, cameraState, outputModeText}) {
+            if (textView == null || textView.getVisibility() != View.VISIBLE) continue;
+            textView.animate().cancel();
+            textView.setAlpha(0.32f);
+            textView.setTranslationX(shift);
+            textView.animate()
+                    .alpha(1f)
+                    .translationX(0f)
+                    .setDuration(ModeTransitionMotion.TEXT_SWAP_DURATION_MS)
+                    .setInterpolator(modeMotionInterpolator)
+                    .start();
+        }
+    }
+
+    private void animateFramingRectTransition(RectF fromRect) {
+        if (gridOverlay == null || gridOverlay.getWidth() <= 0 || gridOverlay.getHeight() <= 0) return;
+        RectF toRect = new RectF();
+        framingRectInto(gridOverlay.getWidth(), gridOverlay.getHeight(), toRect);
+        if (fromRect.equals(toRect)) {
+            frameMorphActive = false;
+            gridOverlay.invalidate();
+            return;
+        }
+        if (frameMorphAnimator != null) {
+            frameMorphAnimator.cancel();
+            frameMorphAnimator = null;
+        }
+        frameMorphActive = true;
+        animatedFrameRect.set(fromRect);
+        frameMorphAnimator = ValueAnimator.ofFloat(0f, 1f);
+        frameMorphAnimator.setDuration(ModeTransitionMotion.FRAME_MORPH_DURATION_MS);
+        frameMorphAnimator.setInterpolator(modeMotionInterpolator);
+        frameMorphAnimator.addUpdateListener(anim -> {
+            if (isFinishing() || isDestroyed() || gridOverlay == null) return;
+            float t = (float) anim.getAnimatedValue();
+            ModeTransitionMotion.lerpBounds(
+                    fromRect.left, fromRect.top, fromRect.right, fromRect.bottom,
+                    toRect.left, toRect.top, toRect.right, toRect.bottom,
+                    t, frameMorphScratch);
+            animatedFrameRect.set(frameMorphScratch[0], frameMorphScratch[1], frameMorphScratch[2], frameMorphScratch[3]);
+            gridOverlay.invalidate();
+        });
+        frameMorphAnimator.addListener(new AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(Animator animation) {
+                frameMorphActive = false;
+                frameMorphAnimator = null;
+                if (gridOverlay != null) gridOverlay.invalidate();
+            }
+            @Override public void onAnimationCancel(Animator animation) {
+                frameMorphActive = false;
+            }
+        });
+        frameMorphAnimator.start();
+    }
+
+    private void updateModePillSelection(boolean toVideo, boolean animate) {
+        if (photoModeButton == null || videoModeButton == null) return;
+        photoModeButton.setTypeface(Typeface.DEFAULT_BOLD);
+        videoModeButton.setTypeface(Typeface.DEFAULT_BOLD);
+        photoModeButton.setBackground(null);
+        videoModeButton.setBackground(null);
+
+        float target = toVideo ? 1f : 0f;
+        if (modePillAnimator != null) {
+            modePillAnimator.cancel();
+            modePillAnimator = null;
+        }
+        if (!animate || !modePillInitialized || modeSelectionPill == null) {
+            modePillInitialized = true;
+            modePillProgress = target;
+            applyModePillState(target);
+            return;
+        }
+        float start = modePillProgress;
+        if (Math.abs(start - target) < 0.001f) {
+            applyModePillState(target);
+            return;
+        }
+        modePillAnimator = ValueAnimator.ofFloat(start, target);
+        modePillAnimator.setDuration(ModeTransitionMotion.MODE_SWITCH_DURATION_MS);
+        modePillAnimator.setInterpolator(modeMotionInterpolator);
+        modePillAnimator.addUpdateListener(anim -> {
+            if (isFinishing() || isDestroyed()) return;
+            modePillProgress = (float) anim.getAnimatedValue();
+            applyModePillState(modePillProgress);
+        });
+        modePillAnimator.addListener(new AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(Animator animation) {
+                modePillProgress = target;
+                applyModePillState(target);
+                modePillAnimator = null;
+            }
+        });
+        modePillAnimator.start();
+    }
+
+    private void applyModePillState(float progress) {
+        float t = ModeTransitionMotion.clamp01(progress);
+        if (modeSelectionPill != null) {
+            float travel = dp(78);
+            if (photoModeButton != null && videoModeButton != null && videoModeButton.getLeft() > photoModeButton.getLeft()) {
+                travel = videoModeButton.getLeft() - photoModeButton.getLeft();
+            }
+            modeSelectionPill.setTranslationX(travel * t);
+            modeSelectionPill.setScaleX(ModeTransitionMotion.pillStretchScaleX(t));
+            modeSelectionPill.setScaleY(ModeTransitionMotion.pillSquashScaleY(t));
+        }
+        if (photoModeButton != null) {
+            photoModeButton.setTextColor(ModeTransitionMotion.lerpColor(BG, 0xffffffff, t));
+        }
+        if (videoModeButton != null) {
+            videoModeButton.setTextColor(ModeTransitionMotion.lerpColor(0xffffffff, BG, t));
+        }
+    }
+
+    private void updateShutterVisual(boolean isVidActive, boolean recUi, boolean animate) {
+        if (captureButton == null || shutterFrame == null) return;
+        int targetFill = isVidActive ? (recUi ? 0xfff0443c : 0xffd93632) : 0xfffaf9f5;
+        int targetStroke = isVidActive ? 0xffff827a : 0xfffaf9f5;
+        float targetScale = ModeTransitionMotion.shutterRestingScale(isVidActive, recUi);
+        float targetCornerFraction = ModeTransitionMotion.shutterCornerFraction(isVidActive, recUi);
+        shutterTargetScale = targetScale;
+
+        captureButton.setText("");
+        captureButton.setTextColor(isVidActive ? 0xffffffff : BG);
+        captureButton.setContentDescription(isVidActive
+                ? (recUi ? "Stop video recording" : "Start video recording")
+                : "Take photo");
+
+        if (shutterMorphAnimator != null) {
+            shutterMorphAnimator.cancel();
+            shutterMorphAnimator = null;
+        }
+        if (!animate || !shutterMorphInitialized) {
+            shutterMorphInitialized = true;
+            applyShutterVisual(targetFill, targetStroke, targetScale, targetCornerFraction);
+            return;
+        }
+        final int startFill = shutterCurrentFill;
+        final int startStroke = shutterCurrentStroke;
+        final float startScale = shutterCurrentScale;
+        final float startCorner = shutterCurrentCornerFraction;
+        if (startFill == targetFill && startStroke == targetStroke
+                && Math.abs(startScale - targetScale) < 0.001f
+                && Math.abs(startCorner - targetCornerFraction) < 0.001f) {
+            applyShutterVisual(targetFill, targetStroke, targetScale, targetCornerFraction);
+            return;
+        }
+        shutterMorphAnimator = ValueAnimator.ofFloat(0f, 1f);
+        shutterMorphAnimator.setDuration(ModeTransitionMotion.SHUTTER_MORPH_DURATION_MS);
+        shutterMorphAnimator.setInterpolator(modeMotionInterpolator);
+        shutterMorphAnimator.addUpdateListener(anim -> {
+            if (isFinishing() || isDestroyed()) return;
+            float t = (float) anim.getAnimatedValue();
+            int fill = ModeTransitionMotion.lerpColor(startFill, targetFill, t);
+            int stroke = ModeTransitionMotion.lerpColor(startStroke, targetStroke, t);
+            float scale = ModeTransitionMotion.lerp(startScale, targetScale, t);
+            float corner = ModeTransitionMotion.lerp(startCorner, targetCornerFraction, t);
+            applyShutterVisual(fill, stroke, scale, corner);
+        });
+        shutterMorphAnimator.addListener(new AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(Animator animation) {
+                applyShutterVisual(targetFill, targetStroke, targetScale, targetCornerFraction);
+                shutterMorphAnimator = null;
+            }
+        });
+        shutterMorphAnimator.start();
+    }
+
+    private void applyShutterVisual(int fill, int stroke, float scale, float cornerFraction) {
+        shutterCurrentFill = fill;
+        shutterCurrentStroke = stroke;
+        shutterCurrentScale = scale;
+        shutterCurrentCornerFraction = cornerFraction;
+        if (captureButton != null) {
+            if (shutterInnerDrawable == null) {
+                shutterInnerDrawable = round(fill, 100, fill, dp(2));
+                captureButton.setBackground(shutterInnerDrawable);
+            } else {
+                shutterInnerDrawable.setColor(fill);
+                shutterInnerDrawable.setStroke(dp(2), fill);
+                float maxRadius = captureButton.getWidth() > 0 ? captureButton.getWidth() * 0.5f : dp(40);
+                shutterInnerDrawable.setCornerRadius(maxRadius * cornerFraction);
+            }
+            captureButton.setScaleX(scale);
+            captureButton.setScaleY(scale);
+        }
+        if (shutterFrame != null) {
+            if (shutterRingDrawable == null) {
+                shutterRingDrawable = round(0x00202020, 100, stroke, dp(3));
+                shutterFrame.setBackground(shutterRingDrawable);
+            } else {
+                shutterRingDrawable.setStroke(dp(3), stroke);
+            }
+        }
+    }
+
+    private void cancelModeTransitionAnimators() {
+        if (modePillAnimator != null) {
+            modePillAnimator.cancel();
+            modePillAnimator = null;
+        }
+        if (shutterMorphAnimator != null) {
+            shutterMorphAnimator.cancel();
+            shutterMorphAnimator = null;
+        }
+        if (frameMorphAnimator != null) {
+            frameMorphAnimator.cancel();
+            frameMorphAnimator = null;
+        }
+        frameMorphActive = false;
     }
 
     private void onShutterPressed() {
@@ -8536,7 +8870,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     shutterFrame.animate().cancel();
                     captureButton.animate().cancel();
                     shutterFrame.animate().scaleX(0.88f).scaleY(0.88f).setDuration(70).setInterpolator(new DecelerateInterpolator()).start();
-                    captureButton.animate().scaleX(0.92f).scaleY(0.92f).setDuration(70).setInterpolator(new DecelerateInterpolator()).start();
+                    float pressedInnerScale = shutterTargetScale * 0.92f;
+                    captureButton.animate().scaleX(pressedInnerScale).scaleY(pressedInnerScale).setDuration(70).setInterpolator(new DecelerateInterpolator()).start();
 
                     if (!videoMode && videoState.isIdle()) {
                         shutterHandler.postDelayed(quickTakeRunnable, 450L);
@@ -8550,7 +8885,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         captureButton.animate().cancel();
                         shutterFrame.animate().scaleX(1.0f).scaleY(1.0f).setDuration(220)
                                 .setInterpolator(new android.view.animation.OvershootInterpolator(2.0f)).start();
-                        captureButton.animate().scaleX(1.0f).scaleY(1.0f).setDuration(220)
+                        captureButton.animate().scaleX(shutterTargetScale).scaleY(shutterTargetScale).setDuration(220)
                                 .setInterpolator(new android.view.animation.OvershootInterpolator(1.8f)).start();
 
                         if (videoState.isTriggeredBy(VideoStateMachine.Trigger.QUICK_TAKE_SHUTTER)) {
@@ -8581,7 +8916,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         captureButton.animate().cancel();
                         shutterFrame.animate().scaleX(1.0f).scaleY(1.0f).setDuration(160)
                                 .setInterpolator(new DecelerateInterpolator()).start();
-                        captureButton.animate().scaleX(1.0f).scaleY(1.0f).setDuration(160)
+                        captureButton.animate().scaleX(shutterTargetScale).scaleY(shutterTargetScale).setDuration(160)
                                 .setInterpolator(new DecelerateInterpolator()).start();
                         if (videoState.isTriggeredBy(VideoStateMachine.Trigger.QUICK_TAKE_SHUTTER)) {
                             videoState.clearQuickTakeTrigger(VideoStateMachine.Trigger.QUICK_TAKE_SHUTTER);
@@ -9063,7 +9398,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             super.onDraw(canvas);
             float w = getWidth(), h = getHeight();
             if (w <= 0 || h <= 0) return;
-            framingRectInto(w, h, cachedFrame);
+            if (frameMorphActive) {
+                cachedFrame.set(animatedFrameRect);
+            } else {
+                framingRectInto(w, h, cachedFrame);
+            }
             RectF frame = cachedFrame;
             if (frame.width() <= 0 || frame.height() <= 0) return;
             float density = getResources().getDisplayMetrics().density;
