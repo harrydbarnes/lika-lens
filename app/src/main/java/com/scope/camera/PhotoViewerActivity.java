@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.TextUtils;
 import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
@@ -20,10 +21,13 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.widget.VideoView;
 import android.util.Log;
 
 import java.io.InputStream;
@@ -33,18 +37,32 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Full-screen viewer with interactive pinch-to-zoom, EXIF metadata inspection, sharing, and editor access. */
+/** Full-screen viewer with interactive pinch-to-zoom, video playback, EXIF metadata inspection, sharing, and editor access. */
 public class PhotoViewerActivity extends Activity {
     private static final String TAG = "PhotoViewerActivity";
     static final String EXTRA_URI = "scope_image_uri";
     static final String EXTRA_NAME = "scope_image_name";
     static final String EXTRA_FROM_LIBRARY = "scope_from_library";
     static final String EXTRA_IMPORTED = "scope_imported";
+    static final String EXTRA_IS_VIDEO = "scope_is_video";
+    static final String EXTRA_DURATION_MS = "scope_duration_ms";
     private static final int EDIT_REQUEST = 51;
     private static final int BG = 0xff0b0d0e;
     private static final int ACCENT = 0xffd7b574;
 
     private ImageView photoView;
+    private FrameLayout videoContainer;
+    private VideoView videoView;
+    private View videoGestureOverlay;
+    private TextView videoPlayOverlayButton;
+    private LinearLayout videoScrubberBar;
+    private TextView videoPlayPauseButton;
+    private SeekBar videoSeekBar;
+    private TextView videoTimeText;
+    private boolean videoPrepared;
+    private boolean videoScrubbing;
+    private boolean currentIsVideo;
+    private long currentVideoDurationMs;
     private Uri photoUri;
     private String archiveKey;
     private String photoName;
@@ -99,6 +117,17 @@ public class PhotoViewerActivity extends Activity {
     private float downY = 0f;
     private GestureMode gestureMode = GestureMode.IDLE;
 
+    private final Runnable videoProgressTicker = new Runnable() {
+        @Override
+        public void run() {
+            if (!currentIsVideo || videoView == null || isFinishing() || isDestroyed()) return;
+            updateVideoPlaybackUi();
+            if (videoView.isPlaying()) {
+                mainHandler.postDelayed(this, 200L);
+            }
+        }
+    };
+
     private void hapticClick(View v) {
         UiKit.hapticClick(this, v);
     }
@@ -124,6 +153,8 @@ public class PhotoViewerActivity extends Activity {
         photoUri = uriValue == null ? null : Uri.parse(uriValue);
         archiveKey = getIntent().getStringExtra(PhotoEditorActivity.EXTRA_KEY);
         photoName = getIntent().getStringExtra(EXTRA_NAME);
+        currentIsVideo = getIntent().getBooleanExtra(EXTRA_IS_VIDEO, false);
+        currentVideoDurationMs = Math.max(0L, getIntent().getLongExtra(EXTRA_DURATION_MS, 0L));
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(BG);
@@ -142,50 +173,80 @@ public class PhotoViewerActivity extends Activity {
         });
         root.addView(photoView, new FrameLayout.LayoutParams(-1, -1));
 
+        buildVideoPlayerView(root);
         initTouchGestures();
 
-        // Header controls overlay
+        // Clean top header: Back, readable filename title, Info, and optional Grid
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(dp(12), dp(10), dp(12), dp(10));
         header.setBackground(new android.graphics.drawable.GradientDrawable(
                 android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{0xb8080b0c, 0x00080b0c}));
+                new int[]{0xcc080b0c, 0x00080b0c}));
 
         TextView back = text("‹", 28, 0xffedf0e9, true);
         back.setGravity(Gravity.CENTER);
-        header.addView(back, new LinearLayout.LayoutParams(dp(34), dp(40)));
+        header.addView(back, new LinearLayout.LayoutParams(dp(36), dp(40)));
         back.setOnClickListener(v -> { hapticClick(v); finishAfterTransition(); });
 
-        titleView = text(photoName == null ? "LIKA LENS" : photoName, 9, 0xffe6eae4, true);
-        titleView.setPadding(dp(6), 0, 0, 0);
-        titleView.setMaxLines(1);
-        header.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1));
+        titleView = text(photoName == null ? "LIKA LENS" : photoName, 11, 0xffe6eae4, true);
+        titleView.setPadding(dp(6), 0, dp(8), 0);
+        titleView.setSingleLine(true);
+        titleView.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+        header.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1f));
 
         infoButton = pill("INFO", false);
-        LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(dp(44), dp(32));
+        infoButton.setPadding(dp(12), 0, dp(12), 0);
+        LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(-2, dp(34));
         infoLp.leftMargin = dp(4);
         header.addView(infoButton, infoLp);
         infoButton.setOnClickListener(v -> { hapticClick(v); toggleInfo(); });
 
-        TextView shareBtn = pill("SHARE", false);
-        LinearLayout.LayoutParams shareLp = new LinearLayout.LayoutParams(dp(50), dp(32));
-        shareLp.leftMargin = dp(4);
-        header.addView(shareBtn, shareLp);
-        shareBtn.setOnClickListener(v -> { hapticClick(v); sharePhoto(); });
+        if (!getIntent().getBooleanExtra(EXTRA_FROM_LIBRARY, false)) {
+            TextView library = pill("GRID", false);
+            library.setPadding(dp(12), 0, dp(12), 0);
+            LinearLayout.LayoutParams gridLp = new LinearLayout.LayoutParams(-2, dp(34));
+            gridLp.leftMargin = dp(6);
+            header.addView(library, gridLp);
+            library.setOnClickListener(v -> { hapticClick(v); startActivity(new Intent(this, GalleryActivity.class)); });
+        }
 
-        TextView deleteBtn = pill("DEL", false);
-        LinearLayout.LayoutParams delLp = new LinearLayout.LayoutParams(dp(40), dp(32));
-        delLp.leftMargin = dp(4);
-        header.addView(deleteBtn, delLp);
-        deleteBtn.setOnClickListener(v -> { hapticClick(v); confirmDeleteCurrentPhoto(); });
+        root.addView(header, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+
+        compareBadge = text("ORIGINAL SENSOR RAW", 8, ACCENT, true);
+        compareBadge.setBackground(round(0xdd0b0d0e, 14, ACCENT, dp(1)));
+        compareBadge.setPadding(dp(12), dp(4), dp(12), dp(4));
+        compareBadge.setVisibility(View.GONE);
+        FrameLayout.LayoutParams cbLp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        cbLp.topMargin = dp(62);
+        root.addView(compareBadge, cbLp);
+
+        zoomHud = text("100% · FIT", 8, ACCENT, true);
+        zoomHud.setBackground(round(0xdd0b0d0e, 12, 0x66d7b574, dp(1)));
+        zoomHud.setPadding(dp(10), dp(4), dp(10), dp(4));
+        zoomHud.setVisibility(View.GONE);
+        FrameLayout.LayoutParams zhLp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        zhLp.bottomMargin = dp(80);
+        root.addView(zoomHud, zhLp);
+
+        // Darkroom bottom action deck (keeps header uncluttered and prevents title overlap)
+        HorizontalScrollView actionScroll = new HorizontalScrollView(this);
+        actionScroll.setHorizontalScrollBarEnabled(false);
+        actionScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        actionScroll.setBackground(round(0xe6121617, 22, 0x4439413e, dp(1)));
+        actionScroll.setPadding(dp(8), dp(6), dp(8), dp(6));
+
+        LinearLayout bottomActions = new LinearLayout(this);
+        bottomActions.setOrientation(LinearLayout.HORIZONTAL);
+        bottomActions.setGravity(Gravity.CENTER_VERTICAL);
 
         compareButton = pill("RAW", false);
+        compareButton.setPadding(dp(14), 0, dp(14), 0);
         compareButton.setVisibility(View.GONE);
-        LinearLayout.LayoutParams compLp = new LinearLayout.LayoutParams(dp(44), dp(32));
-        compLp.leftMargin = dp(4);
-        header.addView(compareButton, compLp);
+        LinearLayout.LayoutParams compLp = new LinearLayout.LayoutParams(-2, dp(36));
+        compLp.rightMargin = dp(6);
+        bottomActions.addView(compareButton, compLp);
         compareButton.setOnTouchListener((v, event) -> {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
@@ -200,43 +261,38 @@ public class PhotoViewerActivity extends Activity {
         });
 
         editButton = pill("EDIT", true);
+        editButton.setPadding(dp(14), 0, dp(14), 0);
         editButton.setVisibility(View.GONE);
-        LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(dp(46), dp(32));
-        editLp.leftMargin = dp(4);
-        header.addView(editButton, editLp);
+        LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(-2, dp(36));
+        editLp.rightMargin = dp(6);
+        bottomActions.addView(editButton, editLp);
         editButton.setOnClickListener(v -> { hapticClick(v); openEditor(); });
 
         TextView gifBtn = pill("GIF", false);
-        LinearLayout.LayoutParams gifLp = new LinearLayout.LayoutParams(dp(44), dp(32));
-        gifLp.leftMargin = dp(4);
-        header.addView(gifBtn, gifLp);
+        gifBtn.setPadding(dp(14), 0, dp(14), 0);
+        LinearLayout.LayoutParams gifLp = new LinearLayout.LayoutParams(-2, dp(36));
+        gifLp.rightMargin = dp(6);
+        bottomActions.addView(gifBtn, gifLp);
         gifBtn.setOnClickListener(v -> { hapticClick(v); openGifFromViewer(); });
 
-        if (!getIntent().getBooleanExtra(EXTRA_FROM_LIBRARY, false)) {
-            TextView library = pill("GRID", false);
-            LinearLayout.LayoutParams gridLp = new LinearLayout.LayoutParams(dp(44), dp(32));
-            gridLp.leftMargin = dp(4);
-            header.addView(library, gridLp);
-            library.setOnClickListener(v -> { hapticClick(v); startActivity(new Intent(this, GalleryActivity.class)); });
-        }
+        TextView shareBtn = pill("SHARE", false);
+        shareBtn.setPadding(dp(14), 0, dp(14), 0);
+        LinearLayout.LayoutParams shareLp = new LinearLayout.LayoutParams(-2, dp(36));
+        shareLp.rightMargin = dp(6);
+        bottomActions.addView(shareBtn, shareLp);
+        shareBtn.setOnClickListener(v -> { hapticClick(v); sharePhoto(); });
 
-        root.addView(header, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+        TextView deleteBtn = pill("DEL", false);
+        deleteBtn.setPadding(dp(14), 0, dp(14), 0);
+        bottomActions.addView(deleteBtn, new LinearLayout.LayoutParams(-2, dp(36)));
+        deleteBtn.setOnClickListener(v -> { hapticClick(v); confirmDeleteCurrentPhoto(); });
 
-        compareBadge = text("ORIGINAL SENSOR RAW", 8, ACCENT, true);
-        compareBadge.setBackground(round(0xdd0b0d0e, 14, ACCENT, dp(1)));
-        compareBadge.setPadding(dp(12), dp(4), dp(12), dp(4));
-        compareBadge.setVisibility(View.GONE);
-        FrameLayout.LayoutParams cbLp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        cbLp.topMargin = dp(56);
-        root.addView(compareBadge, cbLp);
-
-        zoomHud = text("100% · FIT", 8, ACCENT, true);
-        zoomHud.setBackground(round(0xdd0b0d0e, 12, 0x66d7b574, dp(1)));
-        zoomHud.setPadding(dp(10), dp(4), dp(10), dp(4));
-        zoomHud.setVisibility(View.GONE);
-        FrameLayout.LayoutParams zhLp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        zhLp.bottomMargin = dp(80);
-        root.addView(zoomHud, zhLp);
+        actionScroll.addView(bottomActions, new FrameLayout.LayoutParams(-2, -2));
+        FrameLayout.LayoutParams actionLp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        actionLp.leftMargin = dp(12);
+        actionLp.rightMargin = dp(12);
+        actionLp.bottomMargin = dp(12);
+        root.addView(actionScroll, actionLp);
 
         // EXIF Metadata bottom overlay card
         infoCard = PhotoViewerMetadataSheet.build(this);
@@ -255,7 +311,7 @@ public class PhotoViewerActivity extends Activity {
                 ? (Gravity.BOTTOM | Gravity.END)
                 : (Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(cardWidth, ViewGroup.LayoutParams.WRAP_CONTENT, gravity);
-        lp.setMargins(dp(16), 0, dp(16), dp(20));
+        lp.setMargins(dp(16), 0, dp(16), dp(currentIsVideo ? 118 : 72));
         return lp;
     }
 
@@ -510,6 +566,184 @@ public class PhotoViewerActivity extends Activity {
         });
     }
 
+    private void buildVideoPlayerView(FrameLayout root) {
+        videoContainer = new FrameLayout(this);
+        videoContainer.setBackgroundColor(BG);
+        videoContainer.setVisibility(View.GONE);
+
+        videoView = new VideoView(this);
+        videoView.setVisibility(View.GONE);
+        videoContainer.addView(videoView, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+
+        videoGestureOverlay = new View(this);
+        videoContainer.addView(videoGestureOverlay, new FrameLayout.LayoutParams(-1, -1));
+
+        videoPlayOverlayButton = text("▶", 24, ACCENT, true);
+        videoPlayOverlayButton.setGravity(Gravity.CENTER);
+        videoPlayOverlayButton.setBackground(round(0xcc0b0d0e, 32, ACCENT, dp(1)));
+        videoPlayOverlayButton.setVisibility(View.GONE);
+        videoContainer.addView(videoPlayOverlayButton, new FrameLayout.LayoutParams(dp(64), dp(64), Gravity.CENTER));
+        videoPlayOverlayButton.setOnClickListener(v -> { hapticClick(v); toggleVideoPlayback(); });
+
+        videoScrubberBar = new LinearLayout(this);
+        videoScrubberBar.setOrientation(LinearLayout.HORIZONTAL);
+        videoScrubberBar.setGravity(Gravity.CENTER_VERTICAL);
+        videoScrubberBar.setBackground(round(0xdd121617, 16, 0x4439413e, dp(1)));
+        videoScrubberBar.setPadding(dp(10), dp(6), dp(10), dp(6));
+
+        videoPlayPauseButton = text("❚❚", 11, ACCENT, true);
+        videoPlayPauseButton.setGravity(Gravity.CENTER);
+        videoScrubberBar.addView(videoPlayPauseButton, new LinearLayout.LayoutParams(dp(32), dp(28)));
+        videoPlayPauseButton.setOnClickListener(v -> { hapticClick(v); toggleVideoPlayback(); });
+
+        videoSeekBar = new SeekBar(this);
+        videoSeekBar.getThumb().setTint(ACCENT);
+        videoSeekBar.getProgressDrawable().setTint(ACCENT);
+        LinearLayout.LayoutParams seekLp = new LinearLayout.LayoutParams(0, -2, 1f);
+        seekLp.leftMargin = dp(4);
+        seekLp.rightMargin = dp(6);
+        videoScrubberBar.addView(videoSeekBar, seekLp);
+
+        videoTimeText = text("0:00 / 0:00", 9, 0xffe6eae4, true);
+        videoScrubberBar.addView(videoTimeText, new LinearLayout.LayoutParams(-2, -2));
+
+        FrameLayout.LayoutParams scrubLp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+        scrubLp.leftMargin = dp(16);
+        scrubLp.rightMargin = dp(16);
+        scrubLp.bottomMargin = dp(68);
+        videoContainer.addView(videoScrubberBar, scrubLp);
+
+        videoSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser && videoPrepared && videoView != null) {
+                    int dur = Math.max(0, videoView.getDuration());
+                    if (dur > 0) {
+                        videoTimeText.setText(PhotoRepository.formatDuration(progress) + " / " + PhotoRepository.formatDuration(dur));
+                    }
+                }
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {
+                videoScrubbing = true;
+            }
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {
+                videoScrubbing = false;
+                if (videoPrepared && videoView != null) {
+                    videoView.seekTo(seekBar.getProgress());
+                    updateVideoPlaybackUi();
+                }
+            }
+        });
+
+        videoView.setOnPreparedListener(mp -> {
+            if (!currentIsVideo || isFinishing() || isDestroyed()) return;
+            videoPrepared = true;
+            mp.setLooping(false);
+            int dur = Math.max(0, videoView.getDuration());
+            if (dur > 0) currentVideoDurationMs = dur;
+            if (videoSeekBar != null) {
+                videoSeekBar.setMax(Math.max(1, (int) currentVideoDurationMs));
+            }
+            if (viewerActive) {
+                videoView.start();
+            } else {
+                videoView.seekTo(1);
+            }
+            updateVideoPlaybackUi();
+            mainHandler.removeCallbacks(videoProgressTicker);
+            mainHandler.post(videoProgressTicker);
+        });
+        videoView.setOnCompletionListener(mp -> {
+            mainHandler.removeCallbacks(videoProgressTicker);
+            if (videoView != null && videoPrepared) {
+                videoView.seekTo(0);
+            }
+            updateVideoPlaybackUi();
+        });
+        videoView.setOnErrorListener((mp, what, extra) -> {
+            videoPrepared = false;
+            mainHandler.removeCallbacks(videoProgressTicker);
+            Toast.makeText(this, "Could not play this video.", Toast.LENGTH_SHORT).show();
+            return true;
+        });
+
+        final float[] touchDown = new float[2];
+        videoGestureOverlay.setOnTouchListener((v, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    touchDown[0] = event.getX();
+                    touchDown[1] = event.getY();
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    float dx = event.getX() - touchDown[0];
+                    float dy = event.getY() - touchDown[1];
+                    if (dy > dp(110) && Math.abs(dx) < Math.abs(dy) * 0.7f) {
+                        finishAfterTransition();
+                        return true;
+                    }
+                    if (Math.abs(dx) > dp(72) && Math.abs(dx) > Math.abs(dy) * 1.3f) {
+                        stepPhoto(dx < 0 ? 1 : -1);
+                        return true;
+                    }
+                    if (Math.abs(dx) < dp(16) && Math.abs(dy) < dp(16)) {
+                        toggleVideoPlayback();
+                    }
+                    return true;
+            }
+            return false;
+        });
+
+        root.addView(videoContainer, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private void toggleVideoPlayback() {
+        if (!currentIsVideo || videoView == null || !videoPrepared) return;
+        if (videoView.isPlaying()) {
+            videoView.pause();
+            mainHandler.removeCallbacks(videoProgressTicker);
+        } else {
+            videoView.start();
+            mainHandler.removeCallbacks(videoProgressTicker);
+            mainHandler.post(videoProgressTicker);
+        }
+        updateVideoPlaybackUi();
+    }
+
+    private void updateVideoPlaybackUi() {
+        if (!currentIsVideo || videoView == null) return;
+        boolean playing = videoPrepared && videoView.isPlaying();
+        if (videoPlayOverlayButton != null) {
+            videoPlayOverlayButton.setVisibility(playing ? View.GONE : View.VISIBLE);
+        }
+        if (videoPlayPauseButton != null) {
+            videoPlayPauseButton.setText(playing ? "❚❚" : "▶");
+        }
+        int dur = videoPrepared ? Math.max(0, videoView.getDuration()) : (int) Math.max(0L, currentVideoDurationMs);
+        int pos = videoPrepared ? Math.max(0, videoView.getCurrentPosition()) : 0;
+        if (videoSeekBar != null && !videoScrubbing) {
+            if (dur > 0 && videoSeekBar.getMax() != dur) videoSeekBar.setMax(dur);
+            videoSeekBar.setProgress(Math.min(pos, Math.max(1, videoSeekBar.getMax())));
+        }
+        if (videoTimeText != null) {
+            videoTimeText.setText(PhotoRepository.formatDuration(pos) + " / " + PhotoRepository.formatDuration(dur));
+        }
+    }
+
+    private void stopVideoPlayback() {
+        mainHandler.removeCallbacks(videoProgressTicker);
+        videoPrepared = false;
+        videoScrubbing = false;
+        if (videoView != null) {
+            try {
+                videoView.stopPlayback();
+            } catch (Throwable ignored) {
+            }
+            videoView.setVisibility(View.GONE);
+        }
+        if (videoContainer != null) {
+            videoContainer.setVisibility(View.GONE);
+        }
+    }
+
     private void refreshPhotoListAsync(Runnable onReady) {
         if (worker.isShutdown()) return;
         final android.content.Context appContext = getApplicationContext();
@@ -544,7 +778,7 @@ public class PhotoViewerActivity extends Activity {
         if (allPhotos.size() <= 1 || currentIndex < 0) return;
         int nextIndex = currentIndex + delta;
         if (nextIndex < 0 || nextIndex >= allPhotos.size()) {
-            showZoomHud(delta < 0 ? "NEWEST FRAME" : "OLDEST FRAME");
+            showZoomHud(delta < 0 ? "NEWEST" : "OLDEST");
             return;
         }
         hapticClick(photoView);
@@ -554,15 +788,21 @@ public class PhotoViewerActivity extends Activity {
         PhotoRepository.Photo next = allPhotos.get(currentIndex);
         photoUri = next.uri;
         photoName = next.name;
+        currentIsVideo = next.isVideo;
+        currentVideoDurationMs = next.durationMs;
         archiveKey = PhotoRepository.archiveKey(next.name);
         if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
             rawOriginalBitmap.recycle();
         }
         rawOriginalBitmap = null;
-        photoView.animate().alpha(0.35f).setDuration(80).withEndAction(() -> {
+        if (next.isVideo || photoView.getVisibility() != View.VISIBLE) {
             loadPhoto();
-            photoView.animate().alpha(1f).setDuration(140).start();
-        }).start();
+        } else {
+            photoView.animate().alpha(0.35f).setDuration(80).withEndAction(() -> {
+                loadPhoto();
+                photoView.animate().alpha(1f).setDuration(140).start();
+            }).start();
+        }
     }
 
     private void confirmDeleteCurrentPhoto() {
@@ -571,11 +811,15 @@ public class PhotoViewerActivity extends Activity {
         LinearLayout sheet = new LinearLayout(this);
         android.app.Dialog dialog = UiKit.createBottomSheetDialog(this, scrim, sheet, 440);
 
-        TextView title = text("DELETE THIS FRAME?", 11, ACCENT, true);
+        TextView title = text(currentIsVideo ? "DELETE THIS VIDEO?" : "DELETE THIS FRAME?", 11, ACCENT, true);
         title.setLetterSpacing(.14f);
         sheet.addView(title);
 
-        TextView sub = text("Removes " + (photoName != null ? photoName : "this photo") + " and its private editable cache. Any saved DNG original stays untouched.", 9, 0xff9ba59e, false);
+        String defaultName = currentIsVideo ? "this video" : "this photo";
+        TextView sub = text(currentIsVideo
+                ? ("Removes " + (photoName != null ? photoName : defaultName) + " from Movies / Lika Lens. This cannot be undone.")
+                : ("Removes " + (photoName != null ? photoName : defaultName) + " and its private editable cache. Any saved DNG original stays untouched."),
+                9, 0xff9ba59e, false);
         sub.setPadding(0, dp(6), 0, dp(16));
         sheet.addView(sub);
 
@@ -600,7 +844,9 @@ public class PhotoViewerActivity extends Activity {
             final Uri targetUri = photoUri;
             final String targetName = photoName;
             final String targetKey = archiveKey;
+            final boolean wasVideo = currentIsVideo;
             final android.content.Context appContext = getApplicationContext();
+            if (wasVideo) stopVideoPlayback();
             worker.execute(() -> {
                 boolean deleted = PhotoRepository.delete(appContext, targetUri, targetName, targetKey);
                 List<PhotoRepository.Photo> remaining = deleted ? PhotoRepository.all(appContext) : null;
@@ -608,7 +854,7 @@ public class PhotoViewerActivity extends Activity {
                     if (isFinishing() || isDestroyed()) return;
                     dialog.dismiss();
                     if (deleted) {
-                        Toast.makeText(this, "Frame deleted", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, wasVideo ? "Video deleted" : "Frame deleted", Toast.LENGTH_SHORT).show();
                         allPhotos = remaining != null ? remaining : new ArrayList<>();
                         if (allPhotos.isEmpty()) {
                             finish();
@@ -620,6 +866,8 @@ public class PhotoViewerActivity extends Activity {
                             PhotoRepository.Photo next = allPhotos.get(idx);
                             photoUri = next.uri;
                             photoName = next.name;
+                            currentIsVideo = next.isVideo;
+                            currentVideoDurationMs = next.durationMs;
                             archiveKey = PhotoRepository.archiveKey(next.name);
                             if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
                                 rawOriginalBitmap.recycle();
@@ -628,7 +876,7 @@ public class PhotoViewerActivity extends Activity {
                             loadPhoto();
                         }
                     } else {
-                        Toast.makeText(this, "Could not delete this frame", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, "Could not delete this item", Toast.LENGTH_SHORT).show();
                     }
                 });
             });
@@ -664,7 +912,15 @@ public class PhotoViewerActivity extends Activity {
 
     private void toggleInfo() {
         infoVisible = !infoVisible;
-        infoCard.setVisibility(infoVisible ? View.VISIBLE : View.GONE);
+        if (infoCard != null) {
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) infoCard.getLayoutParams();
+            int desiredBottom = dp(currentIsVideo ? 118 : 72);
+            if (lp != null && lp.bottomMargin != desiredBottom) {
+                lp.bottomMargin = desiredBottom;
+                infoCard.setLayoutParams(lp);
+            }
+            infoCard.setVisibility(infoVisible ? View.VISIBLE : View.GONE);
+        }
         infoButton.setTextColor(infoVisible ? ACCENT : 0xffd8ded7);
         if (infoVisible) populateInfoData();
     }
@@ -673,22 +929,42 @@ public class PhotoViewerActivity extends Activity {
         PhotoViewerMetadataSheet.populate(this, infoCard, photoUri, archiveKey, imageWidth, imageHeight);
     }
 
+    private boolean isCurrentItemVideo() {
+        if (currentIsVideo) return true;
+        if (photoName != null && photoName.toLowerCase(Locale.US).endsWith(".mp4")) return true;
+        if (photoUri != null) {
+            try {
+                String mime = getContentResolver().getType(photoUri);
+                if (mime != null && mime.startsWith("video/")) return true;
+            } catch (Throwable ignored) { }
+        }
+        return false;
+    }
+
     private void sharePhoto() {
         if (photoUri == null) return;
         try {
-            boolean isGif = photoName != null && photoName.toLowerCase(Locale.US).endsWith(".gif");
+            boolean isVideo = isCurrentItemVideo();
+            boolean isGif = !isVideo && photoName != null && photoName.toLowerCase(Locale.US).endsWith(".gif");
             Intent share = new Intent(Intent.ACTION_SEND);
-            share.setType(isGif ? "image/gif" : "image/jpeg");
+            share.setType(isVideo ? "video/mp4" : (isGif ? "image/gif" : "image/jpeg"));
             share.putExtra(Intent.EXTRA_STREAM, photoUri);
             share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(share, isGif ? "Share Lika Lens GIF" : "Share Lika Lens Photo"));
+            startActivity(Intent.createChooser(share,
+                    isVideo ? "Share Lika Lens Video" : (isGif ? "Share Lika Lens GIF" : "Share Lika Lens Photo")));
         } catch (Exception e) {
-            Toast.makeText(this, "Could not share this photo.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Could not share this item.", Toast.LENGTH_SHORT).show();
         }
     }
 
     private void openGifFromViewer() {
         if (photoUri == null) return;
+        if (isCurrentItemVideo()) {
+            Intent intent = new Intent(this, GifStudioActivity.class);
+            intent.putExtra(GifStudioActivity.EXTRA_VIDEO_URI, photoUri.toString());
+            startActivity(intent);
+            return;
+        }
         boolean isGif = photoName != null && photoName.toLowerCase(Locale.US).endsWith(".gif");
         if (isGif) {
             sharePhoto();
@@ -702,7 +978,7 @@ public class PhotoViewerActivity extends Activity {
             for (int i = 0; i < allPhotos.size(); i++) {
                 if (i == currentIndex) continue;
                 PhotoRepository.Photo other = allPhotos.get(i);
-                if (!other.isGif && Math.abs(other.timestampMillis - current.timestampMillis) <= 15000L) {
+                if (!other.isGif && !other.isVideo && Math.abs(other.timestampMillis - current.timestampMillis) <= 15000L) {
                     burstUris.add(other.uri.toString());
                 }
             }
@@ -715,7 +991,7 @@ public class PhotoViewerActivity extends Activity {
 
     private void updateEditButtonState(boolean isGif, boolean hasRaw) {
         if (editButton == null) return;
-        if (isGif) {
+        if (isGif || currentIsVideo) {
             editButton.setVisibility(View.GONE);
             return;
         }
@@ -752,6 +1028,8 @@ public class PhotoViewerActivity extends Activity {
                     photoName = nextName;
                     archiveKey = PhotoRepository.archiveKey(nextName);
                 }
+                currentIsVideo = false;
+                currentVideoDurationMs = 0L;
                 stopComparing();
                 compareGeneration++;
                 if (rawOriginalBitmap != null && !rawOriginalBitmap.isRecycled()) {
@@ -775,10 +1053,53 @@ public class PhotoViewerActivity extends Activity {
         final int maxH = getResources().getDisplayMetrics().heightPixels * 2;
         final android.content.Context appContext = getApplicationContext();
         currentHasRaw = false;
+        currentIsVideo = isCurrentItemVideo();
         if (titleView != null) titleView.setText(name == null ? "LIKA LENS" : name);
         if (compareButton != null) compareButton.setVisibility(View.GONE);
         if (editButton != null) editButton.setVisibility(View.GONE);
         stopAnimatedPhoto();
+        stopVideoPlayback();
+
+        if (currentIsVideo) {
+            photoView.setVisibility(View.GONE);
+            photoView.setImageDrawable(null);
+            if (infoCard != null) {
+                FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) infoCard.getLayoutParams();
+                if (lp != null && lp.bottomMargin != dp(118)) {
+                    lp.bottomMargin = dp(118);
+                    infoCard.setLayoutParams(lp);
+                }
+            }
+            if (videoContainer != null && videoView != null) {
+                videoContainer.setVisibility(View.VISIBLE);
+                videoView.setVisibility(View.VISIBLE);
+                if (videoPlayOverlayButton != null) videoPlayOverlayButton.setVisibility(View.GONE);
+                if (videoSeekBar != null) {
+                    videoSeekBar.setMax((int) Math.max(1L, currentVideoDurationMs));
+                    videoSeekBar.setProgress(0);
+                }
+                if (videoTimeText != null) {
+                    videoTimeText.setText("0:00 / " + PhotoRepository.formatDuration(currentVideoDurationMs));
+                }
+                videoView.setVideoURI(uri);
+                imageJob.move(ticket, JobState.Phase.READY);
+                if (infoVisible) populateInfoData();
+            } else {
+                imageJob.move(ticket, JobState.Phase.FAILED);
+            }
+            return;
+        }
+
+        if (infoCard != null) {
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) infoCard.getLayoutParams();
+            if (lp != null && lp.bottomMargin != dp(72)) {
+                lp.bottomMargin = dp(72);
+                infoCard.setLayoutParams(lp);
+            }
+        }
+        photoView.setVisibility(View.VISIBLE);
+        photoView.setAlpha(1f);
+
         worker.execute(() -> {
             if (!imageJob.accepts(ticket)) return;
             try {
@@ -860,8 +1181,20 @@ public class PhotoViewerActivity extends Activity {
         super.onResume(); viewerActive = true;
         if (Build.VERSION.SDK_INT >= 28 && photoView != null && photoView.getDrawable() instanceof android.graphics.drawable.AnimatedImageDrawable)
             ((android.graphics.drawable.AnimatedImageDrawable) photoView.getDrawable()).start();
+        if (currentIsVideo && videoView != null && videoPrepared) {
+            updateVideoPlaybackUi();
+        }
     }
-    @Override protected void onPause() { viewerActive = false; stopAnimatedPhoto(); super.onPause(); }
+    @Override protected void onPause() {
+        viewerActive = false;
+        stopAnimatedPhoto();
+        mainHandler.removeCallbacks(videoProgressTicker);
+        if (currentIsVideo && videoView != null && videoView.isPlaying()) {
+            videoView.pause();
+            updateVideoPlaybackUi();
+        }
+        super.onPause();
+    }
 
     private TextView text(String value, float size, int color, boolean bold) {
         return UiKit.text(this, value == null ? "LIKA LENS FRAME" : value, size, color, bold);
@@ -881,6 +1214,7 @@ public class PhotoViewerActivity extends Activity {
     @Override protected void onDestroy() {
         imageJob.close(); compareGeneration++;
         stopAnimatedPhoto();
+        stopVideoPlayback();
         mainHandler.removeCallbacksAndMessages(null);
         worker.shutdown();
         if (photoView != null) photoView.setImageDrawable(null);

@@ -4,7 +4,7 @@ The take keeps one playback rotation matrix, taken from the camera at recording 
 
 When a segment needs a different rotation, `VideoRotationSurface` inserts a recordable EGL surface between Camera2 and MediaRecorder. It retains the SurfaceTexture's valid crop, removes preview-specific producer rotation/mirroring, and rotates the pixels into the original take's coordinates before encoding. Segments with matching rotation retain the direct recording surface. The preview is independent, and selfie recordings retain the existing non-mirrored output.
 
-Quarter-turn corrections fit the frame without stretching. Camera sessions and rendering are stopped before recorder teardown; the EGL context, texture and surfaces are released on their owning thread. An initialization/render failure reports the error and retains footage already recorded instead of silently producing incorrectly oriented pixels.
+Quarter-turn corrections fit the frame without stretching. Camera sessions, `VideoRotationSurface` draining/closing, `MediaRecorder.stop()`, and `CameraDevice.close()` run off the UI thread on `cameraHandler` synchronized via `videoPipelineLock`, handing off to the target camera cleanly in `onClosed` (with a 500 ms fallback) while skipping still `ImageReader` allocation and reusing cached HEVC Main10 / audio-capability probes. An initialization/render failure reports the error and retains footage already recorded instead of silently producing incorrectly oriented pixels.
 
 ## Verification
 

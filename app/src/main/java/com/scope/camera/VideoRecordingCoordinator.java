@@ -321,8 +321,14 @@ public final class VideoRecordingCoordinator {
         return preferredLevel > 0 ? preferredLevel : fallbackLevel;
     }
 
+    private static volatile Integer cachedHevcMain10Level;
+    private static volatile Boolean cachedAudioZoomSupported;
+    private static volatile Boolean cachedUnprocessedAudioSupported;
+
     /** Queries hardware/regular HEVC encoders for a supported Main10 level, or -1 if unsupported. */
     static int findSupportedHevcMain10Level() {
+        Integer cached = cachedHevcMain10Level;
+        if (cached != null) return cached;
         try {
             MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
             for (MediaCodecInfo info : list.getCodecInfos()) {
@@ -344,8 +350,12 @@ public final class VideoRecordingCoordinator {
                     levels[i] = caps.profileLevels[i].level;
                 }
                 int level = selectHevcMain10Level(profiles, levels);
-                if (level > 0) return level;
+                if (level > 0) {
+                    cachedHevcMain10Level = level;
+                    return level;
+                }
             }
+            cachedHevcMain10Level = -1;
         } catch (Throwable t) {
             Log.w(TAG, "Failed to query HEVC Main10 codec capabilities", t);
         }
@@ -400,12 +410,17 @@ public final class VideoRecordingCoordinator {
     }
 
     static boolean probeAudioZoomSupported(Context context) {
+        Boolean cached = cachedAudioZoomSupported;
+        if (cached != null) return cached;
         if (context == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false;
         try {
             AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
             if (am == null) return false;
             List<MicrophoneInfo> mics = am.getMicrophones();
-            if (mics == null || mics.isEmpty()) return false;
+            if (mics == null || mics.isEmpty()) {
+                cachedAudioZoomSupported = false;
+                return false;
+            }
             List<Integer> dirs = new ArrayList<>(mics.size());
             int builtInCount = 0;
             for (MicrophoneInfo mic : mics) {
@@ -415,7 +430,9 @@ public final class VideoRecordingCoordinator {
                     dirs.add(mic.getDirectionality());
                 }
             }
-            return supportsAudioZoomField(Build.VERSION.SDK_INT, dirs, builtInCount);
+            boolean supported = supportsAudioZoomField(Build.VERSION.SDK_INT, dirs, builtInCount);
+            cachedAudioZoomSupported = supported;
+            return supported;
         } catch (Throwable t) {
             Log.w(TAG, "Could not inspect microphone array capabilities", t);
             return false;
@@ -423,11 +440,15 @@ public final class VideoRecordingCoordinator {
     }
 
     static boolean probeUnprocessedAudioSupported(Context context) {
+        Boolean cached = cachedUnprocessedAudioSupported;
+        if (cached != null) return cached;
         if (context == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false;
         try {
             AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
             if (am == null) return false;
-            return "true".equalsIgnoreCase(am.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED));
+            boolean supported = "true".equalsIgnoreCase(am.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED));
+            cachedUnprocessedAudioSupported = supported;
+            return supported;
         } catch (Throwable ignored) {
             return false;
         }

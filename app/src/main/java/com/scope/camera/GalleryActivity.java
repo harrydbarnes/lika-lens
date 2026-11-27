@@ -5,7 +5,6 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -22,7 +21,6 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -305,8 +303,9 @@ public class GalleryActivity extends Activity {
                 if (generation != loadGeneration.get()) return;
                 String key = PhotoRepository.archiveKey(photo.name);
                 if ("All".equals(filter)
-                        || ("RAW".equals(filter) && RawArchive.exists(appContext, key))
-                        || ("Edited".equals(filter) && PhotoEditStore.hasEdits(appContext, key))
+                        || ("Videos".equals(filter) && photo.isVideo)
+                        || ("RAW".equals(filter) && !photo.isVideo && !photo.isGif && RawArchive.exists(appContext, key))
+                        || ("Edited".equals(filter) && !photo.isVideo && !photo.isGif && PhotoEditStore.hasEdits(appContext, key))
                         || ("GIFs".equals(filter) && photo.isGif)) {
                     String day;
                     synchronized (dayFormat) {
@@ -333,7 +332,21 @@ public class GalleryActivity extends Activity {
     }
 
     private void renderPhotoGrid(List<FilteredEntry> entries, String filter, int generation) {
-        countView.setText(String.format(Locale.US, "%02d %s", entries.size(), entries.size() == 1 ? "PHOTO" : "PHOTOS"));
+        if ("Videos".equals(filter)) {
+            countView.setText(String.format(Locale.US, "%02d %s", entries.size(), entries.size() == 1 ? "VIDEO" : "VIDEOS"));
+        } else if ("GIFs".equals(filter)) {
+            countView.setText(String.format(Locale.US, "%02d %s", entries.size(), entries.size() == 1 ? "GIF" : "GIFS"));
+        } else {
+            int videoCount = 0;
+            for (FilteredEntry e : entries) {
+                if (e.photo.isVideo) videoCount++;
+            }
+            if (videoCount > 0) {
+                countView.setText(String.format(Locale.US, "%02d %s", entries.size(), entries.size() == 1 ? "ITEM" : "ITEMS"));
+            } else {
+                countView.setText(String.format(Locale.US, "%02d %s", entries.size(), entries.size() == 1 ? "PHOTO" : "PHOTOS"));
+            }
+        }
         WindowMetricsHelper.WindowSizeInfo windowInfo = WindowMetricsHelper.computeWindowSizeInfo(this);
         int columns = WindowMetricsHelper.calculateGalleryColumns(windowInfo.widthDp);
         String signature = computeGridSignature(entries, filter, columns);
@@ -347,11 +360,14 @@ public class GalleryActivity extends Activity {
 
         if (entries.isEmpty()) {
             adapter.setData(Collections.emptyList(), columns, dp(112), dp(112), generation);
-            emptyTitleView.setText("All".equals(filter) ? "NO PHOTOS YET"
-                    : ("GIFs".equals(filter) ? "NO GIFS YET" : "NO " + filter.toUpperCase(Locale.US) + " PHOTOS"));
+            emptyTitleView.setText("All".equals(filter) ? "NO MEDIA YET"
+                    : ("Videos".equals(filter) ? "NO VIDEOS YET"
+                    : ("GIFs".equals(filter) ? "NO GIFS YET" : "NO " + filter.toUpperCase(Locale.US) + " PHOTOS")));
             emptyHintView.setText("All".equals(filter)
-                    ? "Capture a photo or tap Import to start your library."
-                    : "Choose All to see the rest of your library.");
+                    ? "Capture a photo or video, or tap Import to start your library."
+                    : ("Videos".equals(filter)
+                            ? "Switch to Video mode in the camera to record a clip."
+                            : "Choose All to see the rest of your library."));
             emptyStateView.setVisibility(View.VISIBLE);
             listView.setVisibility(View.GONE);
             return;
@@ -521,7 +537,17 @@ public class GalleryActivity extends Activity {
                 Integer order = selecting ? selectionOrderMap.get(photo.uri) : null;
                 boolean isSelected = order != null;
                 slot.tile.setBackground(round(0xff202626, 9, isSelected ? 0xffd7b574 : 0xff293031, isSelected ? pad2 : pad1));
-                slot.gifBadge.setVisibility(photo.isGif ? View.VISIBLE : View.GONE);
+                if (photo.isVideo) {
+                    slot.gifBadge.setText(photo.durationMs > 0L
+                            ? ("▶ " + PhotoRepository.formatDuration(photo.durationMs))
+                            : "▶ VIDEO");
+                    slot.gifBadge.setVisibility(View.VISIBLE);
+                } else if (photo.isGif) {
+                    slot.gifBadge.setText("GIF");
+                    slot.gifBadge.setVisibility(View.VISIBLE);
+                } else {
+                    slot.gifBadge.setVisibility(View.GONE);
+                }
                 if (isSelected) {
                     slot.numBadge.setText(String.valueOf(order));
                     slot.numBadge.setVisibility(View.VISIBLE);
@@ -541,7 +567,7 @@ public class GalleryActivity extends Activity {
                     loadExecutor.execute(() -> {
                         if (bindGen != loadGeneration.get()) return;
                         if (!photo.uri.equals(targetImage.getTag())) return;
-                        Bitmap decoded = decodeThumbnail(appContext, photo.uri, targetPx);
+                        Bitmap decoded = PhotoRepository.loadThumbnail(appContext, photo, targetPx);
                         if (decoded == null) return;
                         if (thumbCache != null) thumbCache.put(cacheKey, decoded);
                         mainHandler.post(() -> {
@@ -666,38 +692,13 @@ public class GalleryActivity extends Activity {
         });
     }
 
-    private static Bitmap decodeThumbnail(Context context, Uri uri, int targetPx) {
-        try {
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            try (InputStream in = context.getContentResolver().openInputStream(uri)) {
-                if (in == null) return null;
-                BitmapFactory.decodeStream(in, null, bounds);
-            }
-            int sample = 1;
-            int minTarget = Math.max(128, targetPx);
-            while (bounds.outWidth / (sample * 2) >= minTarget && bounds.outHeight / (sample * 2) >= minTarget) {
-                sample *= 2;
-            }
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = sample;
-            options.inPreferredConfig = Bitmap.Config.RGB_565;
-            try (InputStream stream = context.getContentResolver().openInputStream(uri)) {
-                if (stream == null) return null;
-                Bitmap decoded = BitmapFactory.decodeStream(stream, null, options);
-                return CaptureOrientation.orientBitmap(context, uri, decoded);
-            }
-        } catch (Exception e) {
-            android.util.Log.w("GalleryActivity", "Failed to decode thumbnail: " + uri, e);
-            return null;
-        }
-    }
-
     private void openPhoto(PhotoRepository.Photo photo) {
         Intent view = new Intent(this, PhotoViewerActivity.class);
         view.putExtra(PhotoViewerActivity.EXTRA_URI, photo.uri.toString());
         view.putExtra(PhotoViewerActivity.EXTRA_NAME, photo.name);
         view.putExtra(PhotoViewerActivity.EXTRA_FROM_LIBRARY, true);
+        view.putExtra(PhotoViewerActivity.EXTRA_IS_VIDEO, photo.isVideo);
+        view.putExtra(PhotoViewerActivity.EXTRA_DURATION_MS, photo.durationMs);
         view.putExtra(PhotoEditorActivity.EXTRA_KEY, PhotoRepository.archiveKey(photo.name));
         startActivity(view);
     }
@@ -740,9 +741,9 @@ public class GalleryActivity extends Activity {
     }
 
     private void generateContactSheet() {
-        List<PhotoRepository.Photo> photos = selectedPhotos();
+        List<PhotoRepository.Photo> photos = selectedImagePhotos();
         if (photos.isEmpty()) {
-            Toast.makeText(this, "No photos to generate proof sheet", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Select photos (not videos) to generate proof sheet", Toast.LENGTH_SHORT).show();
             return;
         }
         final long proofTicket = exportJob.tryBegin(JobState.Phase.SAVING);
@@ -774,7 +775,7 @@ public class GalleryActivity extends Activity {
     }
 
     private void showBatchPasteLookDialog() {
-        final List<PhotoRepository.Photo> photos = selectedPhotos();
+        final List<PhotoRepository.Photo> photos = selectedImagePhotos();
         if (!PhotoEditStore.hasClipboard(this)) {
             new AlertDialog.Builder(this).setTitle("No copied look")
                     .setMessage("Open a RAW photo in Edit and choose Copy look from its menu.")
@@ -807,10 +808,12 @@ public class GalleryActivity extends Activity {
 
     private void refreshFilters() {
         filters.removeAllViews();
-        for (String name : new String[]{"All", "RAW", "Edited", "GIFs"}) {
+        for (String name : new String[]{"All", "Videos", "RAW", "Edited", "GIFs"}) {
             TextView filter = pill(name, name.equals(activeFilter));
+            filter.setSingleLine(true);
+            filter.setPadding(dp(4), 0, dp(4), 0);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(44), 1f);
-            if (filters.getChildCount() > 0) lp.leftMargin = dp(6);
+            if (filters.getChildCount() > 0) lp.leftMargin = dp(4);
             filters.addView(filter, lp);
             filter.setOnClickListener(v -> {
                 hapticClick(v);
@@ -839,22 +842,40 @@ public class GalleryActivity extends Activity {
         return photos;
     }
 
+    private List<PhotoRepository.Photo> selectedImagePhotos() {
+        List<PhotoRepository.Photo> images = new ArrayList<>();
+        for (PhotoRepository.Photo p : selectedPhotos()) {
+            if (!p.isVideo) images.add(p);
+        }
+        return images;
+    }
+
     private void showSelectionActions() {
         if (selectedUris.isEmpty() || exportJob.isBusy()) return;
-        new AlertDialog.Builder(this).setTitle(selectedUris.size() + " photos selected")
+        final List<PhotoRepository.Photo> chosen = selectedPhotos();
+        PhotoRepository.Photo firstVideo = null;
+        for (PhotoRepository.Photo p : chosen) {
+            if (p.isVideo) {
+                firstVideo = p;
+                break;
+            }
+        }
+        final PhotoRepository.Photo selectedVideo = firstVideo;
+        new AlertDialog.Builder(this).setTitle(selectedUris.size() + " items selected")
                 .setItems(new String[]{"Share", "Apply copied look…", "Create GIF…", "Proof sheet…", "Video to GIF…", "Delete selected…"}, (d, which) -> {
-                    if (which == 0) shareSelection();
+                    if (which == 0) shareSelection(chosen);
                     else if (which == 1) showBatchPasteLookDialog();
-                    else if (which == 2) launchGifStudioWithSelection();
+                    else if (which == 2) launchGifStudioWithSelectedImages(chosen);
                     else if (which == 3) generateContactSheet();
                     else if (which == 4) {
                         Intent video = new Intent(this, GifStudioActivity.class);
-                        video.putExtra(GifStudioActivity.EXTRA_VIDEO_URI, "");
+                        video.putExtra(GifStudioActivity.EXTRA_VIDEO_URI,
+                                selectedVideo != null ? selectedVideo.uri.toString() : "");
                         startActivity(video);
-                    } else new AlertDialog.Builder(this).setTitle("Delete selected photos?")
-                            .setMessage("Delete " + selectedUris.size() + " selected photos and their private editable cache? Any saved DNG originals stay untouched. This cannot be undone.")
+                    } else new AlertDialog.Builder(this).setTitle("Delete selected items?")
+                            .setMessage("Delete " + selectedUris.size() + " selected items and any private editable cache? Any saved DNG originals stay untouched. This cannot be undone.")
                             .setNegativeButton("Cancel", null).setPositiveButton("Delete", (dialog, choice) -> {
-                                final List<PhotoRepository.Photo> toDelete = selectedPhotos();
+                                final List<PhotoRepository.Photo> toDelete = chosen;
                                 final Context appContext = getApplicationContext();
                                 exitSelectionMode();
                                 loadExecutor.execute(() -> {
@@ -869,15 +890,36 @@ public class GalleryActivity extends Activity {
                 }).show();
     }
 
-    private void shareSelection() {
+    private void launchGifStudioWithSelectedImages(List<PhotoRepository.Photo> chosen) {
+        ArrayList<String> uriStrings = new ArrayList<>();
+        for (PhotoRepository.Photo p : chosen) {
+            if (!p.isVideo && p.uri != null) uriStrings.add(p.uri.toString());
+        }
+        if (uriStrings.size() < 2) {
+            Toast.makeText(this, "Please select at least 2 photos for GIF (or choose Video to GIF)", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Intent intent = new Intent(this, GifStudioActivity.class);
+        intent.putStringArrayListExtra(GifStudioActivity.EXTRA_PHOTO_URIS, uriStrings);
+        startActivity(intent);
+        exitSelectionMode();
+    }
+
+    private void shareSelection(List<PhotoRepository.Photo> chosen) {
+        boolean hasVideo = false;
+        boolean hasImage = false;
+        for (PhotoRepository.Photo p : chosen) {
+            if (p.isVideo) hasVideo = true;
+            else hasImage = true;
+        }
         Intent share = new Intent(Intent.ACTION_SEND_MULTIPLE);
-        share.setType("image/*");
+        share.setType(hasVideo && !hasImage ? "video/mp4" : (hasVideo ? "*/*" : "image/*"));
         share.putParcelableArrayListExtra(Intent.EXTRA_STREAM, new ArrayList<>(selectedUris));
         android.content.ClipData clip = android.content.ClipData.newUri(getContentResolver(), "Lika Lens", selectedUris.get(0));
         for (int i = 1; i < selectedUris.size(); i++) clip.addItem(new android.content.ClipData.Item(selectedUris.get(i)));
         share.setClipData(clip);
         share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        startActivity(Intent.createChooser(share, "Share photos"));
+        startActivity(Intent.createChooser(share, hasVideo ? "Share media" : "Share photos"));
     }
 
     private void applyCopiedLook(List<PhotoRepository.Photo> photos, RawDeveloper.Look look) {

@@ -88,45 +88,87 @@ public final class PhotoViewerMetadataSheet {
         final Context appContext = context.getApplicationContext();
 
         IO.execute(() -> {
-            String shutter = "1/120s";
-            String iso = "ISO 100";
-            String focal = "Wide";
-            String dimensions = imageWidth > 0 ? (imageWidth + " × " + imageHeight) : "";
-
-            try (InputStream stream = appContext.getContentResolver().openInputStream(photoUri)) {
-                if (stream != null) {
-                    ExifInterface exif = new ExifInterface(stream);
-                    String expTime = exif.getAttribute(ExifInterface.TAG_EXPOSURE_TIME);
-                    if (expTime != null) {
-                        try {
-                            double sec = Double.parseDouble(expTime);
-                            shutter = formatShutterSpeed(sec);
-                        } catch (Exception ignored) { shutter = expTime + "s"; }
-                    }
-                    String isoVal = exif.getAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS);
-                    if (isoVal == null || isoVal.isEmpty()) isoVal = exif.getAttribute("PhotographicSensitivity");
-                    if (isoVal != null && !isoVal.isEmpty()) iso = "ISO " + isoVal;
-                    String fLen = exif.getAttribute(ExifInterface.TAG_FOCAL_LENGTH);
-                    if (fLen != null && !fLen.isEmpty()) focal = fLen + "mm";
-                }
-            } catch (Throwable t) {
-                Log.w(TAG, "Failed to parse EXIF metadata", t);
-            }
-
-            final boolean hasRaw = archiveKey != null && RawArchive.exists(appContext, archiveKey);
             String mime = null;
             try {
                 mime = appContext.getContentResolver().getType(photoUri);
             } catch (Throwable ignored) {
             }
-            final boolean isGif = (mime != null && "image/gif".equalsIgnoreCase(mime))
-                    || photoUri.toString().toLowerCase(Locale.US).endsWith(".gif");
-            final String text1 = shutter + "  ·  " + iso + "  ·  " + focal + (dimensions.isEmpty() ? "" : "  ·  " + dimensions);
-            final String text2 = hasRaw
-                    ? "EDITABLE RAW ARCHIVE AVAILABLE  ·  NON-DESTRUCTIVE RE-EDIT"
-                    : (isGif
-                            ? "ANIMATED GIF  ·  EXPORTED LOOP"
-                            : "PROCESSED JPEG  ·  NO EDITABLE RAW CACHE (CLEARED OR UNAVAILABLE)");
+            final String lowerUri = photoUri.toString().toLowerCase(Locale.US);
+            final boolean isVideo = (mime != null && mime.startsWith("video/")) || lowerUri.endsWith(".mp4");
+            final boolean isGif = !isVideo && ((mime != null && "image/gif".equalsIgnoreCase(mime)) || lowerUri.endsWith(".gif"));
+
+            final String text1;
+            final String text2;
+            if (isVideo) {
+                long durationMs = 0L;
+                int vw = imageWidth;
+                int vh = imageHeight;
+                String fpsLabel = "";
+                android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+                try {
+                    retriever.setDataSource(appContext, photoUri);
+                    String dur = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+                    if (dur != null) durationMs = Math.max(0L, Long.parseLong(dur));
+                    String wStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+                    String hStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+                    String rotStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
+                    int rawW = wStr != null ? Integer.parseInt(wStr) : vw;
+                    int rawH = hStr != null ? Integer.parseInt(hStr) : vh;
+                    int rot = rotStr != null ? Integer.parseInt(rotStr) : 0;
+                    if (rot == 90 || rot == 270) {
+                        vw = rawH;
+                        vh = rawW;
+                    } else {
+                        vw = rawW;
+                        vh = rawH;
+                    }
+                    String fps = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE);
+                    if (fps != null && !fps.isEmpty()) {
+                        fpsLabel = "  ·  " + Math.round(Float.parseFloat(fps)) + " FPS";
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "Failed to parse video metadata", t);
+                } finally {
+                    try { retriever.release(); } catch (Throwable ignored) { }
+                }
+                String durText = PhotoRepository.formatDuration(durationMs);
+                String dims = (vw > 0 && vh > 0) ? ("  ·  " + vw + " × " + vh) : "";
+                text1 = durText + dims + fpsLabel;
+                text2 = "MP4 VIDEO  ·  MOVIES / LIKA LENS";
+            } else {
+                String shutter = "1/120s";
+                String iso = "ISO 100";
+                String focal = "Wide";
+                String dimensions = imageWidth > 0 ? (imageWidth + " × " + imageHeight) : "";
+
+                try (InputStream stream = appContext.getContentResolver().openInputStream(photoUri)) {
+                    if (stream != null) {
+                        ExifInterface exif = new ExifInterface(stream);
+                        String expTime = exif.getAttribute(ExifInterface.TAG_EXPOSURE_TIME);
+                        if (expTime != null) {
+                            try {
+                                double sec = Double.parseDouble(expTime);
+                                shutter = formatShutterSpeed(sec);
+                            } catch (Exception ignored) { shutter = expTime + "s"; }
+                        }
+                        String isoVal = exif.getAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS);
+                        if (isoVal == null || isoVal.isEmpty()) isoVal = exif.getAttribute("PhotographicSensitivity");
+                        if (isoVal != null && !isoVal.isEmpty()) iso = "ISO " + isoVal;
+                        String fLen = exif.getAttribute(ExifInterface.TAG_FOCAL_LENGTH);
+                        if (fLen != null && !fLen.isEmpty()) focal = fLen + "mm";
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "Failed to parse EXIF metadata", t);
+                }
+
+                final boolean hasRaw = archiveKey != null && RawArchive.exists(appContext, archiveKey);
+                text1 = shutter + "  ·  " + iso + "  ·  " + focal + (dimensions.isEmpty() ? "" : "  ·  " + dimensions);
+                text2 = hasRaw
+                        ? "EDITABLE RAW ARCHIVE AVAILABLE  ·  NON-DESTRUCTIVE RE-EDIT"
+                        : (isGif
+                                ? "ANIMATED GIF  ·  EXPORTED LOOP"
+                                : "PROCESSED JPEG  ·  NO EDITABLE RAW CACHE (CLEARED OR UNAVAILABLE)");
+            }
 
             MAIN.post(() -> {
                 if (!photoUri.equals(card.getTag())) return;
