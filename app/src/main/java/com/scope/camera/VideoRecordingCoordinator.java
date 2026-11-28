@@ -573,6 +573,7 @@ public final class VideoRecordingCoordinator {
 
             // Discover tracks from first valid segment
             long fallbackStepUs = 33_333L;
+            long fallbackAudioStepUs = 21_333L;
             for (File seg : segments) {
                 if (seg == null || !seg.exists() || seg.length() == 0) continue;
                 MediaExtractor extractor = new MediaExtractor();
@@ -590,6 +591,10 @@ public final class VideoRecordingCoordinator {
                             }
                         } else if (mime.startsWith("audio/") && outAudioTrack < 0) {
                             outAudioTrack = muxer.addTrack(fmt);
+                            if (fmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                                int sampleRate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+                                if (sampleRate > 0) fallbackAudioStepUs = 1_024_000_000L / sampleRate;
+                            }
                         }
                     }
                     if (outVideoTrack >= 0) break;
@@ -621,19 +626,28 @@ public final class VideoRecordingCoordinator {
                         else if (mime.startsWith("audio/") && segAudioTrack < 0) segAudioTrack = i;
                     }
 
-                    long maxSegPtsUs = 0L;
+                    // Both tracks in a recording share a clock. Keep their original
+                    // offset instead of independently moving each first sample to zero.
+                    long firstVideoPts = firstSampleTime(extractor, segVideoTrack);
+                    long firstAudioPts = firstSampleTime(extractor, segAudioTrack);
+                    if (firstVideoPts < 0) throw new IllegalStateException("Segment has no video samples");
+                    if (outAudioTrack >= 0 && firstAudioPts < 0) {
+                        throw new IllegalStateException("Segment has no audio samples");
+                    }
+                    long originUs = VideoSegmentTimeline.origin(firstVideoPts, firstAudioPts);
+                    long videoEndUs = 0L;
+                    long audioEndUs = 0L;
                     long lastVideoDeltaUs = fallbackStepUs;
                     if (segVideoTrack >= 0) {
                         extractor.selectTrack(segVideoTrack);
-                        long firstVideoPts = -1L;
+                        extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
                         long prevRelPts = -1L;
                         while (true) {
                             buffer.clear();
                             int sampleSize = extractor.readSampleData(buffer, 0);
                             if (sampleSize < 0) break;
                             long rawPts = extractor.getSampleTime();
-                            if (firstVideoPts < 0) firstVideoPts = Math.max(0L, rawPts);
-                            long relPts = Math.max(0L, rawPts - firstVideoPts);
+                            long relPts = Math.max(0L, rawPts - originUs);
                             if (prevRelPts >= 0 && relPts > prevRelPts) {
                                 lastVideoDeltaUs = relPts - prevRelPts;
                             }
@@ -643,7 +657,7 @@ public final class VideoRecordingCoordinator {
                             info.presentationTimeUs = timelineOffsetUs + relPts;
                             info.flags = extractor.getSampleFlags();
                             muxer.writeSampleData(outVideoTrack, buffer, info);
-                            if (relPts > maxSegPtsUs) maxSegPtsUs = relPts;
+                            videoEndUs = Math.max(videoEndUs, relPts);
                             extractor.advance();
                         }
                         extractor.unselectTrack(segVideoTrack);
@@ -651,26 +665,32 @@ public final class VideoRecordingCoordinator {
 
                     if (segAudioTrack >= 0 && outAudioTrack >= 0) {
                         extractor.selectTrack(segAudioTrack);
-                        long firstAudioPts = -1L;
+                        extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+                        long prevAudioPts = -1L;
+                        long lastAudioDeltaUs = fallbackAudioStepUs;
                         while (true) {
                             buffer.clear();
                             int sampleSize = extractor.readSampleData(buffer, 0);
                             if (sampleSize < 0) break;
                             long rawPts = extractor.getSampleTime();
-                            if (firstAudioPts < 0) firstAudioPts = Math.max(0L, rawPts);
-                            long relPts = Math.max(0L, rawPts - firstAudioPts);
+                            long relPts = Math.max(0L, rawPts - originUs);
+                            if (prevAudioPts >= 0 && relPts > prevAudioPts) {
+                                lastAudioDeltaUs = relPts - prevAudioPts;
+                            }
+                            prevAudioPts = relPts;
                             info.offset = 0;
                             info.size = sampleSize;
                             info.presentationTimeUs = timelineOffsetUs + relPts;
                             info.flags = extractor.getSampleFlags();
                             muxer.writeSampleData(outAudioTrack, buffer, info);
-                            if (relPts > maxSegPtsUs) maxSegPtsUs = relPts;
+                            audioEndUs = Math.max(audioEndUs, relPts);
                             extractor.advance();
                         }
+                        audioEndUs += lastAudioDeltaUs;
                         extractor.unselectTrack(segAudioTrack);
                     }
 
-                    timelineOffsetUs += maxSegPtsUs + Math.max(1_000L, lastVideoDeltaUs);
+                    timelineOffsetUs += VideoSegmentTimeline.duration(videoEndUs, lastVideoDeltaUs, audioEndUs);
                 } finally {
                     extractor.release();
                 }
@@ -691,4 +711,15 @@ public final class VideoRecordingCoordinator {
             }
         }
     }
+    private static long firstSampleTime(MediaExtractor extractor, int track) {
+        if (track < 0) return -1L;
+        extractor.selectTrack(track);
+        try {
+            extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+            return extractor.getSampleTime();
+        } finally {
+            extractor.unselectTrack(track);
+        }
+    }
+
 }

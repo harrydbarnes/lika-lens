@@ -6891,7 +6891,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         view.putExtra(PhotoEditorActivity.EXTRA_KEY, PhotoRepository.archiveKey(latest.name));
         view.putExtra(PhotoViewerActivity.EXTRA_IS_VIDEO, latest.isVideo);
         view.putExtra(PhotoViewerActivity.EXTRA_DURATION_MS, latest.durationMs);
-        startActivity(view);
+        // Let Android animate the actual thumbnail from its on-screen position
+        // into the viewer, instead of using the default activity slide.
+        android.graphics.drawable.Drawable thumbnail = galleryButton != null ? galleryButton.getDrawable() : null;
+        if (galleryButton != null && thumbnail instanceof android.graphics.drawable.BitmapDrawable
+                && ((android.graphics.drawable.BitmapDrawable) thumbnail).getBitmap() != null
+                && !((android.graphics.drawable.BitmapDrawable) thumbnail).getBitmap().isRecycled()) {
+            android.app.ActivityOptions options = android.app.ActivityOptions.makeThumbnailScaleUpAnimation(
+                    galleryButton, ((android.graphics.drawable.BitmapDrawable) thumbnail).getBitmap(), 0, 0);
+            startActivity(view, options.toBundle());
+        } else if (galleryContainer != null) {
+            android.app.ActivityOptions options = android.app.ActivityOptions.makeScaleUpAnimation(
+                    galleryContainer, 0, 0, galleryContainer.getWidth(), galleryContainer.getHeight());
+            startActivity(view, options.toBundle());
+        } else {
+            startActivity(view);
+        }
     }
 
     private void openLibrary() {
