@@ -6891,18 +6891,21 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         view.putExtra(PhotoEditorActivity.EXTRA_KEY, PhotoRepository.archiveKey(latest.name));
         view.putExtra(PhotoViewerActivity.EXTRA_IS_VIDEO, latest.isVideo);
         view.putExtra(PhotoViewerActivity.EXTRA_DURATION_MS, latest.durationMs);
-        // Let Android animate the actual thumbnail from its on-screen position
-        // into the viewer, instead of using the default activity slide.
-        android.graphics.drawable.Drawable thumbnail = galleryButton != null ? galleryButton.getDrawable() : null;
-        if (galleryButton != null && thumbnail instanceof android.graphics.drawable.BitmapDrawable
-                && ((android.graphics.drawable.BitmapDrawable) thumbnail).getBitmap() != null
-                && !((android.graphics.drawable.BitmapDrawable) thumbnail).getBitmap().isRecycled()) {
+        // The system animation sizes its starting image from the bitmap, not
+        // the source view. Snapshot the visible button at its actual pixel size
+        // so its crop, position and bounds match the first animated frame.
+        View source = galleryContainer;
+        if (source != null && source.isLaidOut() && source.getWidth() > 0 && source.getHeight() > 0) {
+            Bitmap thumbnail = Bitmap.createBitmap(source.getWidth(), source.getHeight(), Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas canvas = new android.graphics.Canvas(thumbnail);
+            android.graphics.Path clip = new android.graphics.Path();
+            float radius = dp(14);
+            clip.addRoundRect(0, 0, source.getWidth(), source.getHeight(), radius, radius,
+                    android.graphics.Path.Direction.CW);
+            canvas.clipPath(clip);
+            source.draw(canvas);
             android.app.ActivityOptions options = android.app.ActivityOptions.makeThumbnailScaleUpAnimation(
-                    galleryButton, ((android.graphics.drawable.BitmapDrawable) thumbnail).getBitmap(), 0, 0);
-            startActivity(view, options.toBundle());
-        } else if (galleryContainer != null) {
-            android.app.ActivityOptions options = android.app.ActivityOptions.makeScaleUpAnimation(
-                    galleryContainer, 0, 0, galleryContainer.getWidth(), galleryContainer.getHeight());
+                    source, thumbnail, 0, 0);
             startActivity(view, options.toBundle());
         } else {
             startActivity(view);
