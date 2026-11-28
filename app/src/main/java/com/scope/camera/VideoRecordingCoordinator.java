@@ -33,6 +33,16 @@ public final class VideoRecordingCoordinator {
 
     private VideoRecordingCoordinator() {}
 
+    /** Video files are unmirrored, unlike the usual front-camera photo preview. */
+    static boolean unmirrorFrontVideoPreview(boolean front, boolean videoMode) {
+        return front && videoMode;
+    }
+
+    /** Video stills follow the existing selfie-photo mirror preference. */
+    static boolean flipVideoStill(boolean front, boolean previewUnmirrored, boolean wantMirror) {
+        return front && (previewUnmirrored == wantMirror);
+    }
+
     /** Pixel rotation required before encoding under the take's single playback matrix. */
     static int rotationCorrection(int cameraOrientation, int takeOrientation) {
         return Math.floorMod(cameraOrientation - takeOrientation, 360);

@@ -3178,8 +3178,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         final long stillJob = captureJobs.begin();
         updateGalleryProcessingUi();
         final RawDeveloper.Look stillLook = RawDeveloper.Look.fromPreferences(this);
-        // TextureView.getBitmap() on front camera is already mirrored in upright coordinates after rotation.
-        stillLook.flipHorizontal = isFront && !wantMirror;
+        // The video preview is unmirrored; Quick Take in photo mode remains mirrored.
+        stillLook.flipHorizontal = VideoRecordingCoordinator.flipVideoStill(isFront,
+                VideoRecordingCoordinator.unmirrorFrontVideoPreview(isFront, videoMode), wantMirror);
         processor.execute(() -> {
             boolean stillSucceeded = false;
             Bitmap frameBmp = rawBitmap;
@@ -4361,7 +4362,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
             Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
             boolean isFront = facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT;
-            Rect focusRect = CameraExposureHelper.computeMeteringRect(cropRegion, nx, ny, isFront, 0.10f);
+            boolean mirroredPreview = isFront && !VideoRecordingCoordinator.unmirrorFrontVideoPreview(isFront, videoMode);
+            Rect focusRect = CameraExposureHelper.computeMeteringRect(cropRegion, nx, ny, mirroredPreview, 0.10f);
 
             MeteringRectangle meteringRect = new MeteringRectangle(focusRect, MeteringRectangle.METERING_WEIGHT_MAX);
             currentAfRegions = doAf ? new MeteringRectangle[]{meteringRect} : null;
@@ -9093,6 +9095,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         // Only compensate for actual display rotation. In portrait, the old
         // hard-coded 90° rotation turned the preview sideways and into a band.
         matrix.postRotate(-surfaceRotationDegrees, centerX, centerY);
+        // Video encoders save the front camera unmirrored, so show that same
+        // orientation before recording instead of flipping on playback.
+        if (VideoRecordingCoordinator.unmirrorFrontVideoPreview(
+                facing == CameraCharacteristics.LENS_FACING_FRONT, videoMode)) {
+            matrix.postScale(-1f, 1f, centerX, centerY);
+        }
         float frameScale = Math.min(frame.width() / viewWidth, frame.height() / viewHeight);
         matrix.postScale(frameScale, frameScale, centerX, centerY);
         matrix.postTranslate(frame.centerX() - centerX, frame.centerY() - centerY);

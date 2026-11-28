@@ -14,6 +14,20 @@ import static org.junit.Assert.assertArrayEquals;
 
 public class VideoRecordingCoordinatorTest {
 
+    @Test public void selfieVideoPreviewMatchesUnmirroredRecording() {
+        org.junit.Assert.assertTrue(VideoRecordingCoordinator.unmirrorFrontVideoPreview(true, true));
+        assertFalse(VideoRecordingCoordinator.unmirrorFrontVideoPreview(true, false));
+        assertFalse(VideoRecordingCoordinator.unmirrorFrontVideoPreview(false, true));
+    }
+
+    @Test public void videoStillRespectsSelfieMirrorPreference() {
+        org.junit.Assert.assertTrue(VideoRecordingCoordinator.flipVideoStill(true, true, true));
+        assertFalse(VideoRecordingCoordinator.flipVideoStill(true, true, false));
+        assertFalse(VideoRecordingCoordinator.flipVideoStill(true, false, true));
+        org.junit.Assert.assertTrue(VideoRecordingCoordinator.flipVideoStill(true, false, false));
+        assertFalse(VideoRecordingCoordinator.flipVideoStill(false, false, true));
+    }
+
     @Test public void correctsOppositeSensorMountsInBothSwitchDirections() {
         assertEquals(180, VideoRecordingCoordinator.rotationCorrection(270, 90));
         assertEquals(180, VideoRecordingCoordinator.rotationCorrection(90, 270));
