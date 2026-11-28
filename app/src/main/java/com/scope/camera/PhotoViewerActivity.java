@@ -46,11 +46,16 @@ public class PhotoViewerActivity extends Activity {
     static final String EXTRA_IMPORTED = "scope_imported";
     static final String EXTRA_IS_VIDEO = "scope_is_video";
     static final String EXTRA_DURATION_MS = "scope_duration_ms";
+    static final String EXTRA_OPEN_THUMBNAIL = "scope_open_thumbnail";
+    static final String EXTRA_OPEN_BOUNDS = "scope_open_bounds";
     private static final int EDIT_REQUEST = 51;
     private static final int BG = 0xff0b0d0e;
     private static final int ACCENT = 0xffd7b574;
 
     private ImageView photoView;
+    private ImageView openingThumbnail;
+    private boolean openingAnimationFinished;
+    private boolean openingMediaReady;
     private FrameLayout videoContainer;
     private VideoView videoView;
     private View videoGestureOverlay;
@@ -299,9 +304,85 @@ public class PhotoViewerActivity extends Activity {
         infoCard.setVisibility(View.GONE);
         root.addView(infoCard, getInfoCardLayoutParams());
 
+        setupOpeningAnimation(root, saved);
         setContentView(root);
         refreshPhotoListAsync(null);
         loadPhoto();
+    }
+
+    private void setupOpeningAnimation(FrameLayout root, Bundle saved) {
+        if (saved != null) return;
+        byte[] bytes = getIntent().getByteArrayExtra(EXTRA_OPEN_THUMBNAIL);
+        int[] bounds = getIntent().getIntArrayExtra(EXTRA_OPEN_BOUNDS);
+        if (bytes == null || bounds == null || bounds.length != 4 || bounds[2] <= 0 || bounds[3] <= 0) return;
+        Bitmap preview = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        if (preview == null) return;
+        openingThumbnail = new ImageView(this);
+        openingThumbnail.setImageBitmap(preview);
+        openingThumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        openingThumbnail.setClickable(true);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(bounds[2], bounds[3]);
+        root.addView(openingThumbnail, lp);
+        openingThumbnail.setVisibility(View.INVISIBLE);
+        root.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+          @Override public void onLayoutChange(View v, int left, int top, int right, int bottom,
+                                               int oldLeft, int oldTop, int oldRight, int oldBottom) {
+            if (right <= left || bottom <= top) return;
+            root.removeOnLayoutChangeListener(this);
+            if (openingThumbnail == null || isFinishing() || isDestroyed()) return;
+            int[] rootPosition = new int[2];
+            root.getLocationOnScreen(rootPosition);
+            float startX = bounds[0] - rootPosition[0];
+            float startY = bounds[1] - rootPosition[1];
+            float scale = Math.min((float) root.getWidth() / preview.getWidth(),
+                    (float) root.getHeight() / preview.getHeight());
+            int targetWidth = Math.max(1, Math.round(preview.getWidth() * scale));
+            int targetHeight = Math.max(1, Math.round(preview.getHeight() * scale));
+            float targetX = (root.getWidth() - targetWidth) / 2f;
+            float targetY = (root.getHeight() - targetHeight) / 2f;
+            openingThumbnail.setX(startX);
+            openingThumbnail.setY(startY);
+            openingThumbnail.setVisibility(View.VISIBLE);
+            android.animation.ValueAnimator animator = android.animation.ValueAnimator.ofFloat(0f, 1f);
+            animator.setDuration(340);
+            animator.setInterpolator(new android.view.animation.DecelerateInterpolator(1.5f));
+            animator.addUpdateListener(animation -> {
+                if (openingThumbnail == null) return;
+                float t = (float) animation.getAnimatedValue();
+                FrameLayout.LayoutParams frame = (FrameLayout.LayoutParams) openingThumbnail.getLayoutParams();
+                frame.width = Math.max(1, Math.round(bounds[2] + (targetWidth - bounds[2]) * t));
+                frame.height = Math.max(1, Math.round(bounds[3] + (targetHeight - bounds[3]) * t));
+                openingThumbnail.setLayoutParams(frame);
+                openingThumbnail.setX(startX + (targetX - startX) * t);
+                openingThumbnail.setY(startY + (targetY - startY) * t);
+            });
+            animator.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override public void onAnimationEnd(android.animation.Animator animation) {
+                    openingAnimationFinished = true;
+                    finishOpeningAnimationIfReady();
+                }
+            });
+            animator.start();
+            // Do not leave the preview blocking the viewer if decoding fails or
+            // a device does not report its first rendered video frame.
+            mainHandler.postDelayed(() -> {
+                openingMediaReady = true;
+                finishOpeningAnimationIfReady();
+            }, 3000L);
+          }
+        });
+    }
+
+    private void finishOpeningAnimationIfReady() {
+        if (!openingAnimationFinished || !openingMediaReady || openingThumbnail == null) return;
+        ImageView thumbnail = openingThumbnail;
+        openingThumbnail = null;
+        thumbnail.animate().alpha(0f).setDuration(160).withEndAction(() -> {
+            if (thumbnail.getParent() instanceof ViewGroup) {
+                ((ViewGroup) thumbnail.getParent()).removeView(thumbnail);
+            }
+            thumbnail.setImageDrawable(null);
+        }).start();
     }
 
     private FrameLayout.LayoutParams getInfoCardLayoutParams() {
@@ -652,6 +733,13 @@ public class PhotoViewerActivity extends Activity {
             mainHandler.removeCallbacks(videoProgressTicker);
             mainHandler.post(videoProgressTicker);
         });
+        videoView.setOnInfoListener((mp, what, extra) -> {
+            if (what == android.media.MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+                openingMediaReady = true;
+                finishOpeningAnimationIfReady();
+            }
+            return false;
+        });
         videoView.setOnCompletionListener(mp -> {
             mainHandler.removeCallbacks(videoProgressTicker);
             if (videoView != null && videoPrepared) {
@@ -661,6 +749,8 @@ public class PhotoViewerActivity extends Activity {
         });
         videoView.setOnErrorListener((mp, what, extra) -> {
             videoPrepared = false;
+            openingMediaReady = true;
+            finishOpeningAnimationIfReady();
             mainHandler.removeCallbacks(videoProgressTicker);
             Toast.makeText(this, "Could not play this video.", Toast.LENGTH_SHORT).show();
             return true;
@@ -1117,6 +1207,8 @@ public class PhotoViewerActivity extends Activity {
                             imageHeight = drawable.getIntrinsicHeight();
                             currentScale = 1f;
                             photoView.setImageDrawable(drawable);
+                            openingMediaReady = true;
+                            finishOpeningAnimationIfReady();
                             fitImageToView();
                             if (viewerActive && drawable instanceof android.graphics.drawable.AnimatedImageDrawable)
                                 ((android.graphics.drawable.AnimatedImageDrawable) drawable).start();
@@ -1158,6 +1250,8 @@ public class PhotoViewerActivity extends Activity {
                     imageHeight = bitmap.getHeight();
                     currentScale = 1f;
                     photoView.setImageBitmap(bitmap);
+                    openingMediaReady = true;
+                    finishOpeningAnimationIfReady();
                     fitImageToView();
                     photoView.post(this::fitImageToView);
                     if (old != null && old != bitmap && !old.isRecycled()) old.recycle();
@@ -1166,8 +1260,11 @@ public class PhotoViewerActivity extends Activity {
                 });
             } catch (Exception error) {
                 mainHandler.post(() -> {
-                    if (imageJob.move(ticket, JobState.Phase.FAILED) && !isDestroyed())
+                    if (imageJob.move(ticket, JobState.Phase.FAILED) && !isDestroyed()) {
+                        openingMediaReady = true;
+                        finishOpeningAnimationIfReady();
                         Toast.makeText(this, "Could not open this frame.", Toast.LENGTH_SHORT).show();
+                    }
                 });
             }
         });

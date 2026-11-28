@@ -6891,24 +6891,29 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         view.putExtra(PhotoEditorActivity.EXTRA_KEY, PhotoRepository.archiveKey(latest.name));
         view.putExtra(PhotoViewerActivity.EXTRA_IS_VIDEO, latest.isVideo);
         view.putExtra(PhotoViewerActivity.EXTRA_DURATION_MS, latest.durationMs);
-        // The system animation sizes its starting image from the bitmap, not
-        // the source view. Snapshot the visible button at its actual pixel size
-        // so its crop, position and bounds match the first animated frame.
         View source = galleryContainer;
-        if (source != null && source.isLaidOut() && source.getWidth() > 0 && source.getHeight() > 0) {
-            Bitmap thumbnail = Bitmap.createBitmap(source.getWidth(), source.getHeight(), Bitmap.Config.ARGB_8888);
-            android.graphics.Canvas canvas = new android.graphics.Canvas(thumbnail);
-            android.graphics.Path clip = new android.graphics.Path();
-            float radius = dp(14);
-            clip.addRoundRect(0, 0, source.getWidth(), source.getHeight(), radius, radius,
-                    android.graphics.Path.Direction.CW);
-            canvas.clipPath(clip);
-            source.draw(canvas);
-            android.app.ActivityOptions options = android.app.ActivityOptions.makeThumbnailScaleUpAnimation(
-                    source, thumbnail, 0, 0);
-            startActivity(view, options.toBundle());
-        } else {
-            startActivity(view);
+        android.graphics.drawable.Drawable drawable = galleryButton != null ? galleryButton.getDrawable() : null;
+        if (source != null && source.isShown() && source.getWidth() > 0 && source.getHeight() > 0
+                && drawable instanceof android.graphics.drawable.BitmapDrawable) {
+            Bitmap original = ((android.graphics.drawable.BitmapDrawable) drawable).getBitmap();
+            if (original != null && !original.isRecycled()) {
+                float scale = Math.min(1f, 256f / Math.max(original.getWidth(), original.getHeight()));
+                Bitmap preview = Bitmap.createScaledBitmap(original,
+                        Math.max(1, Math.round(original.getWidth() * scale)),
+                        Math.max(1, Math.round(original.getHeight() * scale)), true);
+                java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                preview.compress(Bitmap.CompressFormat.JPEG, 85, bytes);
+                if (preview != original) preview.recycle();
+                int[] position = new int[2];
+                source.getLocationOnScreen(position);
+                view.putExtra(PhotoViewerActivity.EXTRA_OPEN_THUMBNAIL, bytes.toByteArray());
+                view.putExtra(PhotoViewerActivity.EXTRA_OPEN_BOUNDS,
+                        new int[] { position[0], position[1], source.getWidth(), source.getHeight() });
+            }
+        }
+        startActivity(view);
+        if (view.hasExtra(PhotoViewerActivity.EXTRA_OPEN_THUMBNAIL)) {
+            overridePendingTransition(0, 0);
         }
     }
 
